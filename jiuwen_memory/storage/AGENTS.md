@@ -292,6 +292,7 @@ ES 实体未配置 hosts/endpoint 时先返回 None。
 依赖加载失败时不得留下新目录。
 正维度规则统一由 `vector_impl/milvus_vector.py` 的 `require_positive_dim` 实现，
 向量构造函数与融合工厂共用；融合工厂的错误使用 `milvus_graph fusion` 标明后端。
+Milvus 向量后端的 `load_timeout`（默认 30s，须为有限正数）用于集合初始化的共享截止时间：`_ensure_collection` 拆开建集合（不传 `index_params`）、异步建索引（`sync=False` + 本层轮询 `describe_index`，返空继续轮询，`pymilvus 2.4.0` 缺 `state` 键回退 `get_index_state(..., timestamp=0)`）与异步装载（三处装载均传 `_async=True` 关闭 SDK 内部等待，由 `_wait_for_load_complete` 轮询），各步按剩余预算传入正整数秒 `int` 超时（兼容 `pymilvus 2.4.15` 重试总时限），预算耗尽即停发下一轮并抛 `BackendError`，消除无 deadline 无限悬挂（单次 SDK 方法内部若连发多跳 RPC 则各自受当次剩余预算约束）。已有集合直接装载（不新增 `IndexDetail` 权限要求），仅遇明确缺索引错误后才按 `field_name="vector"` 检查（缺失则补建、已有未完成向量索引则等待就绪后再装载）；轮询仅容忍索引暂不可见与集合尚未载入（`code=101`）的短暂窗口，权限、参数、超时等异常立即上抛；初始化失败（含 `BaseException`）释放建连锁、关闭未发布的局部连接且不写入客户端缓存。
 
 - `LocalMarkdownStore` 的正常写入与补偿恢复共享标题渲染；标题、`md_title`、团队坐标与 `memory_class`（含未知非空值）必须通过 `redact_for_log` 记录，日志脱敏不修改实际 Markdown、正文或元数据。
 - 文档更新同步写回显式提供的 `md_title`（含仅标题变化和空标题）；缺失时保留文件原标题，daily 文件保留团队标题。标题和正文在同次文件写入及失败补偿中处理。

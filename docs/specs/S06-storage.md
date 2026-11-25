@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-24 |
+| 最近一次修订日期 | 2026-11-25 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-postgres-backend.md，docs/features/storage/F03-storage-ssl.md，docs/features/storage/F04-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Markdown 块更新契约
@@ -191,6 +191,8 @@ ES 实体未配置 hosts/endpoint 时仍关闭该端口，不要求安装客户�
 直接构造 Store 的手工接线仍保留惰性导入语义。
 这是将运行期冷加载前移到启动期的缓解措施，不代表已定位或修复 Windows loader
 底层慢加载机制；部署应为启动依赖加载保留时间。
+
+Milvus 向量后端在集合初始化（存在检查、建集合、异步建索引及状态轮询、异步装载与就绪轮询）中复用有限正数 `load_timeout`（默认 30s）作为共享截止时间：各步按剩余时间传入正整数秒 RPC 超时以消除无 deadline 无限悬挂并兼容 `pymilvus>=2.4` 重试总时限判定，预算耗尽停止发起下一轮（单次 SDK 辅助方法内部若含多跳 RPC 则各自受当次剩余预算约束）；建集合与建索引（`sync=False`）、装载（`_async=True`）拆步由存储层负责等待，已有集合先直接装载、仅遇明确缺索引错误再按 `vector` 字段检查（缺失则补建、已有未完成索引则等待就绪后再装载），轮询仅容忍索引暂不可见与集合尚未载入（`code=101`）状态，权限/参数/超时等异常立即上抛。初始化失败（含取消/中断）须保留底层异常、释放建连锁、关闭未发布的局部连接且不缓存未就绪客户端；服务恢复后同一 Store 可重试完成初始化与写入。
 
 ### StoreManager（管理面，`store_manager.py`）
 

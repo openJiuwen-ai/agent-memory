@@ -16,8 +16,10 @@ pymilvus 2.4+）。``score``
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 from jiuwen_memory.common.errors import (
@@ -97,27 +99,100 @@ def _logical_id(physical_id: str) -> str:
     return parts[-1] if len(parts) == 6 else physical_id
 
 
+def _is_collection_not_loaded(exc: Exception) -> bool:
+    """判断 Milvus 异常是否为集合尚未载入（code=101）。"""
+    if getattr(exc, "code", None) == 101:
+        return True
+    msg = str(exc).lower()
+    return "not loaded" in msg or "code=101" in msg
+
+
+def _is_connection_lost(exc: Exception) -> bool:
+    """判断 Milvus 异常是否为连接关闭/别名丢失（ConnectionNotExistException）。"""
+    return "should create connection first" in str(exc).lower()
+
+
 def _is_not_loaded(exc: Exception) -> bool:
     """Check if a Milvus exception indicates collection not loaded or connection lost.
 
     两类可自愈故障：code=101 (collection not loaded) 或
     ConnectionNotExistException (connection closed/lost, e.g. shared alias removed)。
     """
+    return _is_collection_not_loaded(exc) or _is_connection_lost(exc)
+
+
+_INDEX_NOT_EXIST_CODE = 700
+_INDEX_FINISHED_STATES = frozenset({"Finished", "IndexState.Finished", "3"})
+_INDEX_FAILED_STATES = frozenset({"Failed", "IndexState.Failed", "4"})
+
+
+def _is_missing_index_error(exc: Exception) -> bool:
+    """判断 Milvus 异常是否为集合缺少索引（如错误码 700 IndexNotExist）。"""
     code = getattr(exc, "code", None)
-    if code == 101:
+    if code == _INDEX_NOT_EXIST_CODE:
         return True
     msg = str(exc).lower()
     return (
-        "not loaded" in msg
-        or "code=101" in msg
-        or "should create connection first" in msg
+        "index not found" in msg
+        or "index doesn't exist" in msg
+        or "index does not exist" in msg
+        or "no index" in msg
+        or "no vector index" in msg
+        or f"code={_INDEX_NOT_EXIST_CODE}" in msg
     )
+
+
+def _parse_describe_index(info: Any) -> tuple[str, str] | None:
+    if not info:
+        # 索引查不到时 pymilvus 返回 None（或空字典），属尚未可见，不能提前判完成。
+        return "Pending", ""
+    if not isinstance(info, dict):
+        return (str(info).strip() or "Pending"), ""
+    raw_state = info.get("state")
+    state_text = "" if raw_state is None else str(raw_state).strip()
+    if state_text:
+        return state_text, str(info.get("fail_reason") or "")
+    # pymilvus 2.4.0 的 describe_index 返回非空字典但无 state 键，交由调用方按需回退。
+    return None
+
+
+def _resolve_index_state_fallback(client: Any) -> Any:
+    """获取 pymilvus 2.4.0 的底层 get_index_state 回退方法；不可用或异常时返回 None。
+
+    为什么必须走私有 API：pymilvus 2.4.0 的 MilvusClient 没有公开的
+    ``get_index_state`` 等价方法，且 ``describe_index`` 返回字典不含 ``state`` 键；
+    需经由私有 ``_get_connection()`` 获取底层 handler 才能读取索引构建状态（并显式传
+    ``timestamp=0`` 避开无超时的 ``alloc_timestamp``）。若连接别名尚未建立、已被移除或
+    私有 API 变更，捕获异常降级为 ``None``，避免阻断 ``describe_index`` 轮询。
+    """
+    get_conn = getattr(client, "_get_connection", None)
+    if not callable(get_conn):
+        return None
+    try:
+        conn = get_conn()
+    except Exception:
+        return None
+    get_index_state = getattr(conn, "get_index_state", None) if conn is not None else None
+    return get_index_state if callable(get_index_state) else None
 
 
 def require_positive_dim(dim: int, *, backend: str = "milvus vector store") -> None:
     """向量后端与融合工厂共用正维度规则，错误标明实际后端。"""
     if dim <= 0:
         raise ValidationError(f"{backend} requires positive 'dim'")
+
+
+def _parse_positive_timeout(value: Any, *, name: str) -> float:
+    """校验超时参数为有限正数，拒绝布尔、NaN、无穷与非正数。"""
+    if isinstance(value, bool):
+        raise ValidationError(f"milvus vector store requires positive '{name}'")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"milvus vector store requires positive '{name}'") from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise ValidationError(f"milvus vector store requires positive '{name}'")
+    return parsed
 
 
 #: ``record_ids_for_units`` 单次查询上限（Milvus 默认 query 结果窗口）；达到即报错，不静默截断。
@@ -144,8 +219,7 @@ class MilvusVectorStore(VectorStore):
         **options: Any,
     ) -> None:
         require_positive_dim(dim)
-        if load_timeout <= 0:
-            raise ValidationError("milvus vector store requires positive 'load_timeout'")
+        self._load_timeout = _parse_positive_timeout(load_timeout, name="load_timeout")
         self._fallback_uri = uri or f"http://{host}:{port}"
         self._config_source = config_source
         self._config_namespace = config_namespace
@@ -159,7 +233,6 @@ class MilvusVectorStore(VectorStore):
         self._scope_len = scope_field_max_length
         self._id_len = id_max_length
         self._physical_id_len = id_max_length + 5 * (scope_field_max_length + 1)
-        self._load_timeout = load_timeout
         self._options = options
         self._client: Any = None
         self._client_uri: str | None = None
@@ -193,7 +266,7 @@ class MilvusVectorStore(VectorStore):
             try:
                 with wrap_backend("milvus connect"):
                     self._ensure_collection(client)
-            except Exception:
+            except BaseException:
                 closer = getattr(client, "close", None)
                 if callable(closer):
                     try:
@@ -208,33 +281,6 @@ class MilvusVectorStore(VectorStore):
         # 窗口内被 _recover_connection 清空会返回 None，调用方 client.search(...)
         # 将抛裸 AttributeError 而非归一化的 BackendError。
         return client
-
-    def _wait_for_load_complete(self, client: Any, timeout: float | None = None) -> None:
-        """Poll load state until the collection is fully loaded or timeout elapses."""
-        # load_collection 可能在集合真正载入 query node 之前就返回，紧随其后的
-        # search 会撞 code=101 (collection not loaded)（如首次 mem2_add 后的
-        # dedup search）；故轮询 get_load_state 直到 Loaded。
-        # timeout 缺省取 load_timeout——慢集群调大、fail-fast 部署调小。
-        if not callable(getattr(client, "get_load_state", None)):
-            return
-        if timeout is None:
-            timeout = self._load_timeout
-        deadline = time.monotonic() + timeout
-        last_error: Exception | None = None
-        while time.monotonic() < deadline:
-            try:
-                state = client.get_load_state(collection_name=self._collection)
-                load_state = state.get("state") if isinstance(state, dict) else state
-                if str(load_state) == "Loaded":
-                    return
-                # 查询成功但尚未 Loaded：清掉历史异常，继续轮询。
-                last_error = None
-            except Exception as exc:
-                last_error = exc
-            time.sleep(0.5)
-        raise BackendError(
-            f"MilvusVectorStore: collection {self._collection} not loaded within {timeout:.1f}s"
-        ) from last_error
 
     # --------------------------------------------------------------- 序列化
     @staticmethod
@@ -416,6 +462,64 @@ class MilvusVectorStore(VectorStore):
         """
         return self._get(scope, ids, "Strong")
 
+    def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
+        expr = self._expr(scope, query.filters)
+        results = self._search_with_not_loaded_retry(
+            op="milvus search",
+            query=query,
+            filter_expr=expr,
+            output_fields=["logical_id"],
+        )
+        hits = results[0] if results else []
+        return [ScoredID(id=_hit_id(hit), score=float(hit["distance"])) for hit in hits]
+
+    def recall(
+        self,
+        scope: Scope,
+        query: VectorQuery,
+        output_fields: list[str] | None = None,
+    ) -> list[ScoredHit]:
+        # 把"召回 + 取 metadata"合并为一次 Milvus search 请求，省掉调用方再发
+        # 一次 get 的网络 RTT 与服务端 id 匹配开销。output_fields 仅认 "metadata"
+        # （归并所需的 unit_id 即在其中），其余值忽略并记日志。
+        fetch_meta = bool(output_fields) and "metadata" in output_fields
+        if output_fields:
+            unknown = [f for f in output_fields if f != "metadata"]
+            if unknown:
+                logger.info(
+                    "MilvusVectorStore.recall: output_fields only supports 'metadata', ignoring %s",
+                    unknown,
+                )
+        expr = self._expr(scope, query.filters)
+        milvus_out = ["logical_id", "metadata"] if fetch_meta else ["logical_id"]
+        results = self._search_with_not_loaded_retry(
+            op="milvus recall",
+            query=query,
+            filter_expr=expr,
+            output_fields=milvus_out,
+        )
+        hits = results[0] if results else []
+        out: list[ScoredHit] = []
+        for hit in hits:
+            meta: dict[str, Any] = {}
+            if fetch_meta:
+                entity = hit.get("entity") or {}
+                raw = entity.get("metadata")
+                if isinstance(raw, dict):
+                    meta = raw
+            out.append(
+                ScoredHit(
+                    id=_hit_id(hit),
+                    score=float(hit["distance"]),
+                    metadata=meta,
+                )
+            )
+        return out
+
+    def score_higher_is_better(self) -> bool:
+        # 分数方向随 metric_type：COSINE/IP 越大越相关；L2 等距离型越小越相关。
+        return str(self._metric_type).upper() in ("COSINE", "IP")
+
     def _get(
         self, scope: Scope, ids: list[str], consistency: str
     ) -> list[VectorRecord]:
@@ -519,63 +623,131 @@ class MilvusVectorStore(VectorStore):
             with wrap_backend("milvus query"):
                 return client.query(self._collection, **kwargs)
 
-    def search(self, scope: Scope, query: VectorQuery) -> list[ScoredID]:
-        expr = self._expr(scope, query.filters)
-        results = self._search_with_not_loaded_retry(
-            op="milvus search",
-            query=query,
-            filter_expr=expr,
-            output_fields=["logical_id"],
-        )
-        hits = results[0] if results else []
-        return [ScoredID(id=_hit_id(hit), score=float(hit["distance"])) for hit in hits]
+    def _wait_for_load_complete(self, client: Any, *, deadline: float) -> None:
+        """Poll load state until the collection is fully loaded or the shared deadline elapses."""
+        # load_collection 可能在集合真正载入 query node 之前就返回，紧随其后的
+        # search 会撞 code=101 (collection not loaded)（如首次 mem2_add 后的
+        # dedup search）；故轮询 get_load_state 直到 Loaded。
+        if not callable(getattr(client, "get_load_state", None)):
+            return
+        last_error: Exception | None = None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                state = client.get_load_state(
+                    collection_name=self._collection,
+                    timeout=max(1, math.ceil(remaining)),
+                )
+                load_state = state.get("state") if isinstance(state, dict) else state
+                if str(load_state) == "Loaded":
+                    return
+                # 查询成功但尚未 Loaded：清掉历史异常，继续轮询。
+                last_error = None
+            except Exception as exc:
+                # 仅容忍集合尚未载入（code=101）的短暂窗口；权限/参数/断连/超时等直接上抛。
+                if not _is_collection_not_loaded(exc):
+                    raise
+                last_error = exc
+            sleep_for = min(0.5, deadline - time.monotonic())
+            if sleep_for <= 0:
+                break
+            time.sleep(sleep_for)
+        raise BackendError(
+            f"MilvusVectorStore: collection {self._collection} not loaded "
+            f"within {self._load_timeout:.1f}s"
+        ) from last_error
 
-    def recall(
+    def _query_index_state(
         self,
-        scope: Scope,
-        query: VectorQuery,
-        output_fields: list[str] | None = None,
-    ) -> list[ScoredHit]:
-        # 把"召回 + 取 metadata"合并为一次 Milvus search 请求，省掉调用方再发
-        # 一次 get 的网络 RTT 与服务端 id 匹配开销。output_fields 仅认 "metadata"
-        # （归并所需的 unit_id 即在其中），其余值忽略并记日志。
-        fetch_meta = bool(output_fields) and "metadata" in output_fields
-        if output_fields:
-            unknown = [f for f in output_fields if f != "metadata"]
-            if unknown:
-                logger.info(
-                    "MilvusVectorStore.recall: output_fields only supports 'metadata', ignoring %s",
-                    unknown,
-                )
-        expr = self._expr(scope, query.filters)
-        milvus_out = ["logical_id", "metadata"] if fetch_meta else ["logical_id"]
-        results = self._search_with_not_loaded_retry(
-            op="milvus recall",
-            query=query,
-            filter_expr=expr,
-            output_fields=milvus_out,
-        )
-        hits = results[0] if results else []
-        out: list[ScoredHit] = []
-        for hit in hits:
-            meta: dict[str, Any] = {}
-            if fetch_meta:
-                entity = hit.get("entity") or {}
-                raw = entity.get("metadata")
-                if isinstance(raw, dict):
-                    meta = raw
-            out.append(
-                ScoredHit(
-                    id=_hit_id(hit),
-                    score=float(hit["distance"]),
-                    metadata=meta,
-                )
-            )
-        return out
+        client: Any,
+        *,
+        deadline: float,
+        index_name: str,
+        use_describe: bool,
+        resolve_fallback: Callable[[], Any],
+    ) -> tuple[str, str, bool]:
+        """查询向量索引构建状态，兼容 describe_index 返空及 pymilvus 2.4.0 无 state 键。
 
-    def score_higher_is_better(self) -> bool:
-        # 分数方向随 metric_type：COSINE/IP 越大越相关；L2 等距离型越小越相关。
-        return str(self._metric_type).upper() in ("COSINE", "IP")
+        返回 ``(state_text, fail_reason, next_use_describe)``：当 ``describe_index``
+        返回非空字典但无 ``state`` 键且回退可用时，关闭后续轮次的 ``describe_index``，
+        避免 pymilvus 2.4.0 每轮多发一次无效 RPC。
+        """
+        if use_describe:
+            info = client.describe_index(
+                collection_name=self._collection,
+                index_name=index_name,
+                timeout=self._remaining_rpc_timeout(deadline, stage="index state"),
+            )
+            parsed = _parse_describe_index(info)
+            if parsed is not None:
+                return parsed[0], parsed[1], True
+        get_index_state = resolve_fallback()
+        if callable(get_index_state):
+            # 显式 timestamp=0：避免 pymilvus 2.4.x 内部触发无超时的 alloc_timestamp()。
+            state, fail_reason = get_index_state(
+                collection_name=self._collection,
+                index_name=index_name,
+                timeout=self._remaining_rpc_timeout(deadline, stage="index state"),
+                timestamp=0,
+            )
+            return str(state).strip(), str(fail_reason or ""), False
+        return "Finished", "", use_describe
+
+    def _wait_for_index_complete(
+        self,
+        client: Any,
+        *,
+        deadline: float,
+        index_name: str = "vector",
+    ) -> None:
+        """Poll vector index build status until finished or the shared deadline elapses."""
+        use_describe = callable(getattr(client, "describe_index", None))
+        fallback_resolved = False
+        cached_get_index_state: Any = None
+
+        def _get_fallback() -> Any:
+            nonlocal fallback_resolved, cached_get_index_state
+            if not fallback_resolved:
+                cached_get_index_state = _resolve_index_state_fallback(client)
+                fallback_resolved = True
+            return cached_get_index_state
+
+        if not use_describe and not callable(_get_fallback()):
+            return
+        last_error: Exception | None = None
+        while deadline - time.monotonic() > 0:
+            try:
+                state_text, fail_reason, use_describe = self._query_index_state(
+                    client,
+                    deadline=deadline,
+                    index_name=index_name,
+                    use_describe=use_describe,
+                    resolve_fallback=_get_fallback,
+                )
+            except Exception as exc:
+                # 仅容忍刚异步提交建索引后元数据暂不可见；权限/参数/超时等直接上抛。
+                if not _is_missing_index_error(exc):
+                    raise
+                last_error = exc
+            else:
+                if state_text in _INDEX_FINISHED_STATES:
+                    return
+                if state_text in _INDEX_FAILED_STATES:
+                    raise BackendError(
+                        f"MilvusVectorStore: vector index creation failed for "
+                        f"{self._collection}: {fail_reason or state_text}"
+                    )
+                last_error = None
+            sleep_for = min(0.5, deadline - time.monotonic())
+            if sleep_for <= 0:
+                break
+            time.sleep(sleep_for)
+        raise BackendError(
+            f"MilvusVectorStore: collection {self._collection} index not ready "
+            f"within {self._load_timeout:.1f}s"
+        ) from last_error
 
     def _resolved_uri(self) -> str:
         """当前 Milvus URI（ConfigSource ``vector_store.uri`` / ``fusion_store.uri``）。"""
@@ -589,35 +761,111 @@ class MilvusVectorStore(VectorStore):
         )
         return live or self._fallback_uri
 
-    def _ensure_collection(self, client: Any) -> None:
-        """Ensure collection exists and is loaded, on the given (possibly unpublished) client."""
-        if client.has_collection(self._collection):
-            client.load_collection(self._collection)
-            self._wait_for_load_complete(client)
-            return
-        from pymilvus import DataType
+    def _remaining_rpc_timeout(self, deadline: float, *, stage: str) -> int:
+        # 返回正整数秒：pymilvus 2.4.15 的 retry_on_rpc_failure 仅在 isinstance(timeout, int)
+        # 时将 timeout 当作重试总时限；传 float 遇到可重试 UNAVAILABLE 会退避数分钟。
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise BackendError(
+                f"MilvusVectorStore: collection {self._collection} {stage} timed out "
+                f"within {self._load_timeout:.1f}s"
+            )
+        return max(1, math.ceil(remaining))
 
-        schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
-        schema.add_field(
-            "id", DataType.VARCHAR, is_primary=True, max_length=self._physical_id_len
+    def _vector_indexes(self, client: Any, deadline: float) -> list[str]:
+        if not callable(getattr(client, "list_indexes", None)):
+            return []
+        indexes = client.list_indexes(
+            collection_name=self._collection,
+            field_name="vector",
+            timeout=self._remaining_rpc_timeout(deadline, stage="index check"),
         )
-        schema.add_field("logical_id", DataType.VARCHAR, max_length=self._id_len)
-        schema.add_field("vector", DataType.FLOAT_VECTOR, dim=self._dim)
-        for fld in _SCOPE_FIELDS:
-            schema.add_field(fld, DataType.VARCHAR, max_length=self._scope_len)
-        schema.add_field("metadata", DataType.JSON)  # scope 之外的元数据整体存 JSON
+        return [str(name) for name in (indexes or []) if name]
+
+    def _create_vector_index(self, client: Any, deadline: float) -> None:
+        timeout = self._remaining_rpc_timeout(deadline, stage="index creation")
         index_params = client.prepare_index_params()
         index_params.add_index(
-            field_name="vector", index_type="AUTOINDEX", metric_type=self._metric_type
+            field_name="vector",
+            index_type="AUTOINDEX",
+            metric_type=self._metric_type,
+            index_name="vector",
         )
-        client.create_collection(
+        # 显式 sync=False：规避 pymilvus 2.4.15 同步等待建索引时无超时调用
+        # alloc_timestamp() 的挂死风险；随后由本层在同一 deadline 内轮询就绪。
+        client.create_index(
             collection_name=self._collection,
-            schema=schema,
             index_params=index_params,
-            consistency_level=self._consistency,
+            sync=False,
+            timeout=timeout,
         )
-        client.load_collection(self._collection)
-        self._wait_for_load_complete(client)
+        self._wait_for_index_complete(client, deadline=deadline)
+
+    def _load_collection_async(self, client: Any, deadline: float) -> None:
+        # 显式 _async=True：关闭 pymilvus 内部 wait_for_loading_collection，
+        # 避免 LoadCollection 与 SDK 内部等待重复消费同一个 load_timeout；
+        # 就绪等待统一交由 _wait_for_load_complete 按共享 deadline 控制。
+        client.load_collection(
+            self._collection,
+            timeout=self._remaining_rpc_timeout(deadline, stage="load"),
+            _async=True,
+        )
+
+    def _ensure_collection(self, client: Any) -> None:
+        """Ensure collection exists, is indexed, and is loaded within load_timeout."""
+        deadline = time.monotonic() + self._load_timeout
+        exists = client.has_collection(
+            self._collection,
+            timeout=self._remaining_rpc_timeout(deadline, stage="existence check"),
+        )
+        if not exists:
+            creation_timeout = self._remaining_rpc_timeout(deadline, stage="creation")
+            from pymilvus import DataType
+
+            schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
+            schema.add_field(
+                "id", DataType.VARCHAR, is_primary=True, max_length=self._physical_id_len
+            )
+            schema.add_field("logical_id", DataType.VARCHAR, max_length=self._id_len)
+            schema.add_field("vector", DataType.FLOAT_VECTOR, dim=self._dim)
+            for fld in _SCOPE_FIELDS:
+                schema.add_field(fld, DataType.VARCHAR, max_length=self._scope_len)
+            schema.add_field("metadata", DataType.JSON)  # scope 之外的元数据整体存 JSON
+            # 拆开建集合（不传 index_params）、异步建索引与异步装载三步共用同一 deadline，
+            # 避免 pymilvus 在 create_collection / load_collection 内重复消费同一 timeout。
+            client.create_collection(
+                collection_name=self._collection,
+                schema=schema,
+                consistency_level=self._consistency,
+                timeout=creation_timeout,
+            )
+            self._create_vector_index(client, deadline)
+            self._load_collection_async(client, deadline)
+        else:
+            # 已有集合先沿用直接装载路径，不额外要求 IndexDetail 权限；仅在收到明确
+            # 缺索引错误时，再按 field_name="vector" 检查：无向量索引则补建，已有未完成
+            # 向量索引（如首轮建索引超时后重试）则等待其构建就绪，再重试装载一次。
+            try:
+                self._load_collection_async(client, deadline)
+            except Exception as exc:
+                if not _is_missing_index_error(exc):
+                    raise
+                vector_indexes = self._vector_indexes(client, deadline)
+                if vector_indexes:
+                    self._wait_for_index_complete(
+                        client,
+                        deadline=deadline,
+                        index_name=vector_indexes[0],
+                    )
+                elif (
+                    callable(getattr(client, "prepare_index_params", None))
+                    and callable(getattr(client, "create_index", None))
+                ):
+                    self._create_vector_index(client, deadline)
+                else:
+                    raise exc
+                self._load_collection_async(client, deadline)
+        self._wait_for_load_complete(client, deadline=deadline)
 
     def _scope_expr(self, scope: Scope) -> str:
         return " && ".join(f'scope_{dim} == {_lit(val)}' for dim, val in scope_dims(scope))
