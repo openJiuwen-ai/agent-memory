@@ -67,7 +67,8 @@ HTTP 和 SDK 使用 `open_config_overlay` 定位配置库。文件路径由可�
 可供 HTTP 接入组合；begin/finish 统一转发到 MemoryAPI 的可选用户访问控制方法，
 不加入普通机器方法目录，也不向 SDK/MCP 暴露还原参数。
 assembly 为处理、KV、构建及用户访问控制装配同一 PrivacyProtection，并绑定最终 AuditLogger。
-启用前检查已有 KV 记忆的保护标记及策略；未迁移明文、文档模式或文件监听组合明确拒绝。
+启用前检查已有 KV 与文档 shadow 记忆的保护标记及策略，未迁移记忆拒绝装配。
+文档模式仅允许已适配的个人写入与编辑，关闭文件监听；用户访问仍经既有 MemoryAPI。
 API 边界保护路由预览、查询文本/上下文和批量回显；更新准备只校验并保留分级，允许
 可信构建处理使用原文，落盘边界统一保护。用户访问控制 begin 和 finish
 均复用既有 get PEP，分别检查初次请求身份与认证后人的身份。HTTP 传入延迟执行的

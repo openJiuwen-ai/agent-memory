@@ -242,6 +242,8 @@ class SpaceOpsMixin:
         security: RequestSecurityContext,
         mode: DeleteMode = DeleteMode.PURGE,
     ) -> SpaceDeleteResult:
+        if self._privacy is not None and self._document_mode:
+            raise ValidationError("Space deletion is unavailable for protected document memories")
         identity = security.auth.actor
         if mode != DeleteMode.PURGE:
             raise ValidationError("delete_space currently supports DeleteMode.PURGE only")

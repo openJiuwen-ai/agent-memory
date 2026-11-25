@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-24 |
+| 最近一次修订日期 | 2026-11-25 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-postgres-backend.md，docs/features/storage/F03-storage-ssl.md，docs/features/storage/F04-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Markdown 块更新契约
@@ -839,7 +839,15 @@ privacy_rule_ids / privacy_categories 只保存有限分类依据，不包含原
 原文展示，分级自动硬删仍是 TODO。指纹和清单校验不替代查看时的正常资源判权。
 清理针对逻辑记录和引用，不声明备份、数据库日志或存储介质已经完成可验证擦除。
 
-原文精确检索、旧库自动迁移、文档/文件监听路径及分级 TTL/cloud/share 执行未提供。
+隐私文档模式需要声明保护能力的 Markdown 和 shadow 端口。SQLite 的受保护快照保存
+Markdown 文本和按块顺序排列的现行单位 ID。scope 仍由影子条目判定。个人文档新写入
+及编辑在发布前生成完整策略处理后的快照，编辑要求保留块数量及标题、单行正文的
+存储结构。文件替换使用临时文件和原子重命名。发布中任一文件失败时，shadow 事务
+回滚，已替换且未被再次修改的文件按旧快照恢复。现行 ID、已取代版本及其索引在同一
+shadow 事务内提交。加密片段使用既有清单检查点和真源回读恢复，跨后端及崩溃不提供
+全局事务。文件不匹配时拒绝文档读取及追加或编辑，并保留已提交的 shadow 条目供检索。
+
+原文精确检索、旧库自动迁移、外部编辑导入及分级 TTL/cloud/share 执行未提供。
 完整披露契约见 [S10](S10-security.md#隐私保护与用户访问控制)。
 
 ## 逻辑分片能力协议（第一阶段已实现）

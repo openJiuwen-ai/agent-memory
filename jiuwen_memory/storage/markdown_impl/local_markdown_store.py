@@ -21,10 +21,12 @@ from __future__ import annotations
 
 import datetime
 import os
+import stat
+import tempfile
 import threading
 from pathlib import Path
 
-from jiuwen_memory.common.errors import NotFoundError, ValidationError
+from jiuwen_memory.common.errors import ConflictError, NotFoundError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger, redact_for_log
 from jiuwen_memory.common.type_def import (
@@ -39,6 +41,7 @@ from jiuwen_memory.config.binding import resolve_connection_url
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.markdown import MarkdownProducer, MarkdownStore
 from jiuwen_memory.storage.markdown_impl import experience_blocks
+from jiuwen_memory.storage.markdown_impl._md_blocks import edited_document_text
 from jiuwen_memory.storage.markdown_impl._md_path import collective_document_path
 
 # memory_class → (子路径模板, 是否进 project 子目录)
@@ -120,6 +123,50 @@ class LocalMarkdownStore(MarkdownStore):
         return None
 
     # -- MarkdownStore 契约 -------------------------------------------------- #
+
+    @property
+    def supports_protected_documents(self) -> bool:
+        return True
+
+    def locate_protected_unit(self, unit: MemoryUnit) -> str:
+        metadata = unit.system_metadata
+        metadata[MEMORY_CLASS_KEY] = self._resolved_memory_class(metadata)
+        path = self._md_path(unit)
+        metadata[MD_FILENAME_KEY] = path
+        return path
+
+    def matches_protected_text(self, path: str, expected: str | None) -> bool:
+        with self._lock:
+            absolute = Path(self._safe_abs_path(self._resolved_root(), path))
+            try:
+                status = absolute.stat()
+                if expected is None or not stat.S_ISREG(status.st_mode):
+                    return False
+                data = expected.encode("utf-8")
+                if status.st_size != len(data):
+                    return False
+                with absolute.open("rb") as handle:
+                    return handle.read(len(data) + 1) == data
+            except FileNotFoundError:
+                return expected is None
+
+    def replace_protected_text(self, path: str, expected: str | None, text: str | None) -> None:
+        with self._lock:
+            if not self.matches_protected_text(path, expected):
+                raise ConflictError("protected Markdown document", path)
+            absolute = Path(self._safe_abs_path(self._resolved_root(), path))
+            if text is None:
+                absolute.unlink(missing_ok=True)
+                return
+            self._ensure_dir(str(absolute.parent))
+            with tempfile.TemporaryDirectory(prefix=".privacy-", dir=absolute.parent) as temp_dir:
+                temporary = Path(temp_dir) / absolute.name
+                temporary.touch(mode=0o600, exist_ok=False)
+                with temporary.open("wb") as handle:
+                    handle.write(text.encode("utf-8"))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, absolute)
 
     def write(self, scope: Scope, units: list[MemoryUnit]) -> None:
         with self._lock:
@@ -483,71 +530,7 @@ class LocalMarkdownStore(MarkdownStore):
                     f"old_text not unique in {md_basename!r} "
                     f"(found {count} occurrences): {old_text!r}"
                 )
-            out = text.replace(old_text, new_text, 1)
-            # 文件工具通常只传正文；沿用旧事实标题会让 USER.md 显示相互矛盾的内容。
-            # 仅处理块结构未变、正文单行且标题未被显式编辑的情形；daily 标题是团队名。
-            if md_basename in ("USER.md", "MEMORY.md") and "\n" not in old_text:
-                old_blocks = text.split("\n\n")
-                new_blocks = out.split("\n\n")
-                if len(old_blocks) == len(new_blocks):
-                    for index, (old_block, new_block) in enumerate(zip(old_blocks, new_blocks)):
-                        old_parts = old_block.split("\n")
-                        new_parts = new_block.split("\n")
-                        if len(old_parts) != 2 or len(new_parts) != 2:
-                            continue
-                        if old_parts[0] != new_parts[0] or not old_parts[0].startswith("# "):
-                            continue
-                        if not old_parts[0][2:].strip() or not new_parts[1].strip():
-                            continue
-                        if old_parts[1] != new_parts[1]:
-                            old_body = old_parts[1]
-                            new_body = new_parts[1]
-                            prefix_len = 0
-                            while (
-                                prefix_len < min(len(old_body), len(new_body))
-                                and old_body[prefix_len] == new_body[prefix_len]
-                            ):
-                                prefix_len += 1
-                            suffix_len = 0
-                            while (
-                                suffix_len < min(
-                                    len(old_body) - prefix_len,
-                                    len(new_body) - prefix_len,
-                                )
-                                and old_body[-suffix_len - 1] == new_body[-suffix_len - 1]
-                            ):
-                                suffix_len += 1
-                            old_end = len(old_body) - suffix_len if suffix_len else len(old_body)
-                            new_end = len(new_body) - suffix_len if suffix_len else len(new_body)
-                            old_title = old_parts[0][2:].strip()
-                            candidates: list[tuple[int, str, str]] = []
-                            changed_len = old_end - prefix_len
-                            context_budget = len(old_title) - changed_len
-                            max_left = min(prefix_len, max(context_budget, 0))
-                            for left_len in range(max_left + 1):
-                                max_right = min(
-                                    suffix_len, max(context_budget - left_len, 0)
-                                )
-                                for right_len in range(max_right + 1):
-                                    old_candidate = old_body[
-                                        prefix_len - left_len:old_end + right_len
-                                    ]
-                                    if not old_candidate or old_title.count(old_candidate) != 1:
-                                        continue
-                                    new_candidate = new_body[
-                                        prefix_len - left_len:new_end + right_len
-                                    ]
-                                    candidates.append(
-                                        (len(old_candidate), old_candidate, new_candidate)
-                                    )
-                            if candidates:
-                                _, old_candidate, new_candidate = max(candidates)
-                                title = old_title.replace(old_candidate, new_candidate, 1)
-                            else:
-                                # “居住地”等概括性标题不含旧事实，无需随正文改写。
-                                title = old_title
-                            new_blocks[index] = f"# {title}\n{new_parts[1]}"
-                    out = "\n\n".join(new_blocks)
+            out = edited_document_text(text, md_basename, old_text, new_text)
 
             # 原子写（见 replace_content 同款）：open("w") 截断后 write 抛错会让旧内容
             # 永久丢失——补偿路径（_supersede_shadow_for_md 回滚 shadow）救不回 md。
@@ -784,9 +767,15 @@ class LocalMarkdownStore(MarkdownStore):
     "local", config_inspectors={"at_rest_locations": lambda config: {"root": config.get("root")}}
 )
 def _build(config):
+    from jiuwen_memory.common.security.privacy.base import privacy_enabled
     from jiuwen_memory.config.config_source import ConfigSourceProducer
 
+    root = Factory.cfg_get(config, "root", "")
+    if privacy_enabled(config):
+        if not root:
+            raise ValidationError("Protected Markdown requires a configured root")
+        return LocalMarkdownStore(os.path.abspath(root))
     return LocalMarkdownStore(
-        Factory.cfg_get(config, "root", ""),
+        root,
         config_source=ConfigSourceProducer.get_cached("default"),
     )

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-24 |
+| 最近一次修订日期 | 2026-11-25 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/F05-personal-memory-portal.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/api/F10-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F09-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/construction/F13-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md，docs/features/control/F10-async-write-orchestration.md |
 
@@ -179,6 +179,14 @@ SDK 和 HTTP 共用定位顺序，优先使用文档根目录，其次使用实�
 浏览器纠正使用 SUPERSEDE，遗忘使用 FORGET。两种操作都要求目标仍有效，否则返回 409。
 文档写入和索引仍使用原链路。
 启用文件监听时，普通文件同步会保留纠正历史和遗忘状态。
+
+隐私保护文档模式下，个人记忆的 `add` 和 `edit_md_file` 保持既有认证及授权，
+返回按分级策略处理后的 MemoryUnit。编辑应用唯一文本替换，并检查完整受影响块，
+要求保留块结构，旧条目由新条目继承并替换。普通 `read_md_file` 只返回当前 Scope
+可见的已提交单位，文件与可信快照不一致时报校验错误。普通 `get` 和 `search`
+仍可从 shadow 读取已提交版本。文档模式的 `update`、`batch_update`、`delete`、
+`delete_space` 和 `evolve` 在准备变更之前拒绝；团队、经验、技能和摄入任务写入未开放。
+访问敏感正文沿用 MemoryAPI 的用户访问控制入口，见 [S10](S10-security.md#隐私保护与用户访问控制)。
 
 SDK 插件默认启动本地页面服务，`portal.enabled` 可关闭它。`portal.port=0` 时自动分配
 端口。重复初始化会复用原实例和监听。端口冲突时，记忆实例继续运行，`portal_status`

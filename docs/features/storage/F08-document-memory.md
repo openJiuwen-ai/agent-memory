@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-11-05 |
+| 日期 | 2026-11-25 |
 | 影响范围 | `jiuwen_memory/storage/`（markdown / shadow / watchdog / sync_gate / domain_store / store_manager）、`jiuwen_memory/config/document_flag.py`、`jiuwen_memory/construction/`（document_index_builder / llm_extractor / llm_router / 两个 evolver）、`jiuwen_memory/retrieval/`（pipeline_retriever / shadow_recaller）、`jiuwen_memory/api/memory_api_impl/`（assembly / write_ops / local_support）、`jiuwen_memory_entry/`（server / http_server / mcp_server）、`pyproject.toml`（deploy extras） |
 | 测试基线 | `tests/unit/storage/`（test_local_markdown_store / test_sqlite_shadow_index / test_local_watchdog / test_sync_gate / test_composite_storage / test_storage_base）、`tests/unit/config/test_document_flag.py`、`tests/unit/construction/`（test_document_index_builder / test_extractor_title / test_llm_router）、`tests/unit/retrieval/`（test_shadow_recaller / test_pipeline_retriever_doc_mode）、`tests/unit/api/test_memory_runtime_lifecycle.py`、`tests/unit/api/test_collective_routing.py`、`tests/unit/config/test_storage_routing.py` |
 | Refs | 仓根设计文档 `F07-document-memory-redesign.md`、`F08-document-memory-impl.md`（本文以已落地代码为准）；代码注释中简称「文档记忆根设计」 |
@@ -211,6 +211,9 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 content 重复类三者的共同后果：md 与影子索引漂移，但看门狗的 content_hash 集合 diff 算法对这类漂移「天然失明」。根因与「写失败补偿的残留风险」（补偿按 content 首次匹配误删）同源——均源于 md 块无稳定 unit_id 锚点、按 content_hash/content 隐式身份标识。彻底闭环需引入 `<!-- id:{unit_id} -->` 锚点，让看门狗对账从「content_hash 集合 diff」改为「按 unit_id reconcile」（见后续演进），消除重复 content 的失真与版本链断裂。
 
 装配（`WatchdogProducer.register("watchdog")`）：shadow 与 markdown 一律从注入的 StoreManager 取端口（不自行 build_named，保证与 CompositeStorage 读写同源）；markdown root 从 `MarkdownStore.root` 契约读（ConfigSource 晚绑定解析后的值，不跨 namespace 摸 params 字面量）；scope 用空 `Scope()` 占位（影子索引不按 scope 隔离）。
+
+隐私保护模式采用受控写入和 shadow 快照，固定 Markdown 和 shadow 的装配位置，不启动
+上述文件监听。保护时机和故障处理见 [F04](../common/F04-security-interfaces-and-encryption.md#94-支持边界与部署前提)。
 
 ### 八、端口与生命周期
 

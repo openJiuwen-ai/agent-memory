@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-11-23 |
+| 最近一次修订日期 | 2026-11-25 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F08-schema-temporal-entity.md`；SDK 运行日志接管见 `docs/features/api/F09-sdk-runtime-logging.md`；Portal 设计见 `docs/features/F05-personal-memory-portal.md`；写入真异步与批量编排见 `docs/features/control/F10-async-write-orchestration.md`、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
@@ -587,8 +587,10 @@ normalizer:
 
 总开关只接受真正布尔值。启用时 `privacy` 仅允许一个共享 `default` 实例，禁止
 `new_instance=true`。没有人机认证器仍可脱敏写入及召回，但不能查看原文。开启前检查
-已装配逻辑 KV 中的 `/memory/`、`/messages/`；未迁移语料、文档模式和文件监听组合拒绝
-启动，不在普通读请求里改写旧数据。
+已装配逻辑 KV 中的 `/memory/`、`/messages/`，以及文档模式下已存在的 shadow 记忆。
+同时启用 `globals.write_document` 时，部署提供受保护文档端口。目前使用 local Markdown
+和 SQLite shadow，Markdown 根目录及 shadow DB 位置固定于装配配置；文件监听停用，
+`watch_document=true` 不会启动监听。未迁移的 shadow 记忆拒绝启动，未登记的文件不导入。
 
 ### `privacy.default.target=regex`
 

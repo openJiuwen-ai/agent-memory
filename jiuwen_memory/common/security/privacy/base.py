@@ -172,15 +172,23 @@ class PrivacyProtection(ABC):
         """Private service operation, callable only after human proof and normal resource PEP."""
 
 
-def optional_privacy(config: Any) -> PrivacyProtection | None:
-    specs = config.ctx.namespaces.get(PrivacyProducer.TOP_NAME, {})
-    enabled = config.ctx.globals.get("privacy_enabled", bool(specs))
+def privacy_enabled(config: Any) -> bool:
+    """Read the deployment's fixed privacy switch without constructing its provider."""
+    default = bool(config.ctx.namespaces.get(PrivacyProducer.TOP_NAME))
+    enabled = config.ctx.globals.get("privacy_enabled", default)
     from jiuwen_memory.common.errors import ValidationError
 
     if not isinstance(enabled, bool):
         raise ValidationError("globals.privacy_enabled must be bool")
-    if not enabled:
+    return enabled
+
+
+def optional_privacy(config: Any) -> PrivacyProtection | None:
+    from jiuwen_memory.common.errors import ValidationError
+
+    if not privacy_enabled(config):
         return None
+    specs = config.ctx.namespaces.get(PrivacyProducer.TOP_NAME, {})
     if not specs:
         raise ValidationError("privacy_enabled requires privacy.default configuration")
 
