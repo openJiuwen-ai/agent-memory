@@ -22,9 +22,8 @@ from jiuwen_memory.common.errors import ValidationError
 WRITE_DOCUMENT_KEY = "write_document"
 
 # globals 下的 key 名（``globals.watch_document``）：文档看门狗启停开关。
-# 仅 ``write_document=true`` 下有意义（无文档真源即无 md 可监听）；默认随 write_document
-# —— 即未配置时取 True（已开文档就该 watch）。与 WRITE_DOCUMENT_KEY 的差异仅在 None 语义：
-# write_document 未配=False（默认不写文档）；watch_document 未配=True（默认随文档开启）。
+# 是否装配看门狗由本开关与默认影子索引端口共同决定。
+# write_document 未配时默认 False，watch_document 未配时默认 True。
 WATCH_DOCUMENT_KEY = "watch_document"
 
 _TRUE_STRINGS = frozenset({"true", "1", "yes", "on"})
@@ -93,15 +92,13 @@ def resolve_watch_document(raw: Any) -> bool:
     """把 ``watch_document`` 原始值归一为布尔。
 
     与 :func:`should_write_document` 共用字符串/数值归一，**唯独 None 语义不同**：
-    ``None``（未配置）→ ``True``——默认随 :func:`should_write_document` 返回 ``True``
-    的文档模式开启看门狗（开了文档就该监听 md 漂移）。已显式配成 ``true/false`` 时
-    原样返回，拼写错误同样 fail-closed 抛 :class:`ValidationError`。
+    ``None``（未配置）→ ``True``。已显式配成 ``true/false`` 时原样返回，
+    拼写错误抛 :class:`ValidationError`。
 
-    调用位置：``build_kernel`` 装配期，仅在 ``write_document=true`` 后判断是否装配
-    并启动看门狗。``write_document=false`` 时本开关无意义（不进文档模式）。
+    内核装配期结合默认影子索引端口是否可用，决定是否装配看门狗。
     """
     if raw is None:
-        return True  # 未配置默认开（随文档）
+        return True
     if isinstance(raw, bool):
         return raw
     if isinstance(raw, (int, float)):

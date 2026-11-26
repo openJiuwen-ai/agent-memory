@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-25 |
+| 最近一次修订日期 | 2026-11-26 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-postgres-backend.md，docs/features/storage/F03-storage-ssl.md，docs/features/storage/F04-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Markdown 块更新契约
@@ -121,8 +121,8 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
     不会自动改写其他 unit；父子双向边维护、剪枝与修复由 construction/control 调用显式
     CRUD 完成。GraphStore 删除节点时清理关联图边的既有语义不适用于 hierarchy。
 23. **Storage capability 唯一来源**：能力集合只包含 KV/VECTOR/FULLTEXT/GRAPH/FUSION/FS/ENTITY/MARKDOWN/DOCUMENT_SHADOW
-    （ENTITY 为 F07 新增第七席；MARKDOWN/DOCUMENT_SHADOW 为 F08 新增第八、第九席，仅文档模式
-    `write_document=true` 装配，见 F08-document-memory.md）。capability 与 `has_*()` **同源于端口表**——某类存储只要有
+    （ENTITY 为 F07 新增第七席；MARKDOWN/DOCUMENT_SHADOW 为 F08 新增第八、第九席，按配置
+    声明装配，见 F08-document-memory.md）。capability 与 `has_*()` **同源于端口表**——某类存储只要有
     任一端口可用即拥有该 capability，二者不会分叉；
     `has_*(name)` 由集合/命名端口表推导，未声明端口访问抛 `UnsupportedStorageCapabilityError`。
 24. **端口单一入口且全量自动**：每个 capability 一对 `xxx(name="default")` / `has_xxx(name="default")`
@@ -348,6 +348,7 @@ class BaseStore(ABC):
 | `list` | `(scope, *, offset=0, limit=100, memory_types=None, filters=None, extensions=None) -> KVMemoryListResult` | 查询 `/memory/` MemoryUnit；先执行 `memory_types AND filters`，再精确计数、稳定排序和分页 |
 | `scan` | `(scope, prefix="") -> list[tuple[str, bytes]]` | 扫描 scope 下的全部 (key, value)（可选只取 prefix 开头的 key）；顺序由实现定义 |
 | `scopes` | `() -> list[Scope]` | 枚举本存储中已用过的全部 scope |
+| `backend_info` | `() -> tuple[str, str \| None]` | 自描述当前生效的 KV 后端及可用的本地路径。默认使用实现类名。缺少可报告的单一本地路径时返回 `None`。该查询无需建立连接，返回值不含连接 URL 和凭据 |
 | `supports_compare_and_swap` | `() -> bool` | 可选原子条件写能力；默认 False，不增加第三方插件的必填抽象方法 |
 | `compare_and_swap` | `(scope, key, expected: bytes \| None, value: bytes \| None) -> bool` | 原子比较并替换；expected=None 表示不存在，value=None 表示删除；不匹配返回 False，后端失败抛异常 |
 
@@ -564,8 +565,9 @@ ID 限制的向量召回路径保持不变。
 Markdown 文件包括 `USER.md` / `MEMORY.md` / `daily_memory/日期.md`，按
 `memory_class` + `project` 分流落盘。`DocumentShadowIndex` 是机器真源（单 sqlite 文件承载 `memory_unit` 全量 + `memory_fts` 倒排
 + `memory_vec` 向量三表同库，靠隐式 rowid 关联）。二者为 F08 新增的第八、第九 capability
-（MARKDOWN / DOCUMENT_SHADOW），仅文档模式装配，经 `manager.markdown(name)` / `manager.shadow_index(name)`
-取用，与其余七类同构暴露。`StorageCapability.namespace` / `port_method` 公开能力对应的
+（MARKDOWN / DOCUMENT_SHADOW）。复合 StoreManager 按配置声明装配端口，经
+`manager.markdown(name)` / `manager.shadow_index(name)` 取用，与其余七类同构暴露。
+`StorageCapability.namespace` / `port_method` 公开能力对应的
 配置命名空间与端口方法，其中 DOCUMENT_SHADOW 对应 shadow_index（非 document_shadow_store）。
 统一静态加密启用时，Markdown root 与影子 SQLite db_path 由插件声明并绑定部署保护；
 两者要求显式位置，SQLite :memory: 仅免部署证明，位置仍固定，详见 common/F04。
@@ -690,6 +692,11 @@ Document 使用与 VectorRecord 相同的六个 hierarchy metadata 键，并保�
 **注**：所有 `metadata` / `filters` / `scalar_filters` 只承载 scope 之外的额外谓词，scope 作为显式第一入参，不混进这些结构体。
 
 ## 文档后台组件生命周期
+
+当 StoreManager 提供默认影子索引端口且 `globals.watch_document` 开启时，装配根解析
+看门狗。默认看门狗依赖默认 Markdown 端口提供非空监听目录。端口缺失或解析后的目录为空
+或仅包含空白字符时，抛出 `ValidationError`。
+`globals.write_document=true` 也要求默认 Markdown 端口。
 
 Watchdog 不属于存储 capability，由装配根持有并显式启动。start 必须在事件循环
 就绪后调用，且该循环须持续运行到 Watchdog 停止；stop 幂等地停止事件/任务准入、

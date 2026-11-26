@@ -1,11 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Profiles & config stacking for the kernel surface (in-process assembly).
 
-``OFFLINE`` is the no-external-deps baseline profile. ``load_config`` stacks JSON
-layers nearest-wins (later layers override earlier), mirroring how the CLI passes
-``--config a.json b.json`` on top of ``OFFLINE``. The minimal reference build
-ignores everything but the ``profile`` name and any ``policies`` map (forwarded to
-the in-memory PolicyManager); a real build would select plugins/storage here.
+``OFFLINE`` is the no-external-deps baseline profile. ``load_config`` stacks
+layers nearest-wins (later layers override earlier), mirroring how the CLI
+applies repeated ``--config`` options on top of ``OFFLINE``. The result keeps
+the merged settings, including the ``memory_api`` configuration for the kernel.
 """
 
 from __future__ import annotations
@@ -13,9 +12,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from jiuwen_memory.api import SECRET_PARAM_KEYS
+from jiuwen_memory.api import SECRET_PARAM_KEYS, ValidationError
 
 OFFLINE: dict[str, Any] = {"profile": "offline"}
+_SERVICE_KEYS = frozenset({"profile", "policies", "http", "memory_api"})
 
 
 def _redact(obj: Any) -> Any:
@@ -35,6 +35,22 @@ class Config:
     policies: dict[str, str] = field(default_factory=dict)
     settings: dict[str, Any] = field(default_factory=dict)
     config_paths: tuple[str, ...] = field(default_factory=tuple, repr=False)
+
+    def __post_init__(self) -> None:
+        misplaced = self.settings.keys() - _SERVICE_KEYS
+        if misplaced:
+            keys = ", ".join(sorted(map(repr, misplaced)))
+            allowed = ", ".join(sorted(_SERVICE_KEYS))
+            message = (
+                f"unexpected top-level service configuration keys {keys}. "
+                f"Allowed top-level keys are {allowed}. Put kernel configuration under memory_api."
+            )
+            if "storage" in misplaced:
+                message += " Migrate the legacy storage section to memory_api.store_manager."
+            raise ValidationError(message)
+        memory_api = self.settings.get("memory_api")
+        if memory_api is not None and not isinstance(memory_api, dict):
+            raise ValidationError("memory_api configuration must be an object")
 
     def __repr__(self) -> str:
         # settings 是 env 展开后的完整配置：secret 键必须脱敏后才能进诊断输出。

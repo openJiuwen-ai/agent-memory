@@ -10,9 +10,8 @@ surface subclasses this class and adds its transport (see
 :class:`jiuwen_memory_entry.http_server.__main__.HttpServer` for the HTTP/socket
 surface); the CLI's ``InProcessClient`` uses the base directly.
 
-The minimal reference build uses :func:`api.assemble_server_runtime` (the per-capability
-impls wired together, pure in-memory, no external deps). Swapping in a real profile
-means assembling real plugins/Stores in :meth:`build` and reusing the same API.
+The build uses :func:`api.assemble_server_runtime` to resolve configured components.
+With the offline defaults, the runtime uses in-memory storage.
 
 本模块是 Access 的 **composition root**：只通过 ``jiuwen_memory.api.assemble_server_runtime``
 装配内核（传入 dict，不 import ``jiuwen_memory.config``）。公开面只保留 ``api``、
@@ -112,6 +111,7 @@ class Server:
         spaces: Any = None,
         *,
         security_runtime: Any = _AUTO_SECURITY,
+        log_kv_backend: bool = False,
     ) -> Server:
         """Assemble a runtime from ``config`` and return a ``cls`` instance.
 
@@ -126,6 +126,7 @@ class Server:
             policies=config.policies or None,
             config=memory_api,
             security_runtime=security_runtime,
+            log_kv_backend=log_kv_backend,
         )
         try:
             return cls(config, runtime, runtime.security_runtime)

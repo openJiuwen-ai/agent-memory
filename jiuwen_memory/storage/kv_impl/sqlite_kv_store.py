@@ -113,6 +113,12 @@ class SQLiteKVStore(KVStore):
     def _expiry(ttl: float) -> float | None:
         return time.time() + ttl if ttl else None
 
+    def backend_info(self) -> tuple[str, str | None]:
+        path = self._resolved_db_path()
+        if path and path != ":memory:":
+            path = str(Path(path).resolve())
+        return type(self).__name__, path or None
+
     def coordination_key(self) -> tuple[str, str | int]:
         path = self._resolved_db_path()
         if path in ("", ":memory:"):

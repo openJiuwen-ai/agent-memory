@@ -86,7 +86,8 @@ def _security_provider(actor: ApiScope, *, role: Role = Role.USER):
     return lambda: context
 
 
-def test_scope_keeps_explicit_space_and_compat_scope_id_as_org() -> None:
+def test_scope_keeps_explicit_space_and_compat_scope_id_as_org(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
     provider = _load_provider()
     adapter = provider.AgentMemoryMemoryProvider(
         user_id="alice",
@@ -94,8 +95,15 @@ def test_scope_keeps_explicit_space_and_compat_scope_id_as_org() -> None:
         space="product",
         security_provider=_security_provider(ApiScope(org="acme", user="alice")),
     )
-    asyncio.run(adapter.initialize(scope_id="acme", session_id="sess-1", space="product"))
-    scope = adapter.bound_scope()
+
+    async def initialize():
+        try:
+            await adapter.initialize(scope_id="acme", session_id="sess-1", space="product")
+            return adapter.bound_scope()
+        finally:
+            await adapter.shutdown()
+
+    scope = asyncio.run(initialize())
     assert scope.org == "acme"
     assert scope.space == "product"
     assert scope.user == "alice"
@@ -103,14 +111,22 @@ def test_scope_keeps_explicit_space_and_compat_scope_id_as_org() -> None:
     assert scope.session == "sess-1"
 
 
-def test_scope_does_not_guess_space_from_scope_id() -> None:
+def test_scope_does_not_guess_space_from_scope_id(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
     provider = _load_provider()
     adapter = provider.AgentMemoryMemoryProvider(
         user_id="alice",
         security_provider=_security_provider(ApiScope(org="acme", user="alice")),
     )
-    asyncio.run(adapter.initialize(scope_id="acme"))
-    scope = adapter.bound_scope()
+
+    async def initialize():
+        try:
+            await adapter.initialize(scope_id="acme")
+            return adapter.bound_scope()
+        finally:
+            await adapter.shutdown()
+
+    scope = asyncio.run(initialize())
     assert scope.org == "acme"
     assert scope.space == ""
 

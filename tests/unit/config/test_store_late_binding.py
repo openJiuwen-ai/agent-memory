@@ -12,9 +12,14 @@ import pytest
 
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config.config_source_impl.dict_config_source import DictConfigSource
+from jiuwen_memory.config.routing import ActiveRouter, RoutingKVStore
 from jiuwen_memory.storage.fs_impl.local_fs import LocalFSStore
+from jiuwen_memory.storage.kv_impl.encrypted_kv_store import EncryptedKVStore
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.kv_impl.redis_kv import RedisKVStore
 from jiuwen_memory.storage.kv_impl.sqlite_kv_store import SQLiteKVStore
+from jiuwen_memory.storage.security import StorageSecurity
+from jiuwen_memory.storage.store_manager_impl import CompositeStoreManager
 
 pytestmark = pytest.mark.unit
 
@@ -57,17 +62,62 @@ def test_redis_kv_late_binds_host_port_when_no_url(monkeypatch: pytest.MonkeyPat
     assert created[-1]["password"] == "pw-b"
 
 
+def test_kv_backend_info_defaults_to_implementation_name() -> None:
+    assert InMemoryKVStore().backend_info() == ("InMemoryKVStore", None)
+
+
+def test_encrypted_kv_reports_the_wrapped_backend(tmp_path: Path, privacy_crypto) -> None:
+    path = tmp_path / "encrypted.sqlite"
+    raw = SQLiteKVStore(str(path))
+    encrypted = EncryptedKVStore(raw, privacy_crypto)
+
+    assert encrypted.backend_info() == ("SQLiteKVStore", str(path.resolve()))
+    assert not path.exists()
+
+
+def test_routing_kv_backend_info_follows_the_active_store(tmp_path: Path) -> None:
+    path = tmp_path / "routed.sqlite"
+    config = DictConfigSource({"kv_store.active": "memory"})
+    router = ActiveRouter(
+        namespace="kv_store",
+        instances={"memory": InMemoryKVStore(), "sqlite": SQLiteKVStore(str(path))},
+        config_source=config,
+        default_name="memory",
+    )
+    routed = RoutingKVStore(router)
+
+    assert routed.backend_info() == ("InMemoryKVStore", None)
+    config.put("kv_store.active", "sqlite")
+    assert routed.backend_info() == ("SQLiteKVStore", str(path.resolve()))
+    assert not path.exists()
+
+
+def test_kv_proxy_reports_backend_without_scoped_authorization(tmp_path: Path) -> None:
+    path = tmp_path / "proxy.sqlite"
+    security = MagicMock(spec=StorageSecurity)
+    security.authorize.side_effect = AssertionError("metadata is not a scoped operation")
+    manager = CompositeStoreManager(kv=SQLiteKVStore(str(path)), security=security)
+
+    assert manager.kv().backend_info() == ("SQLiteKVStore", str(path.resolve()))
+    security.authorize.assert_not_called()
+    assert not path.exists()
+
+
 def test_sqlite_kv_late_binds_db_path(tmp_path: Path) -> None:
     path_a = tmp_path / "a.db"
     path_b = tmp_path / "b.db"
     cfg = DictConfigSource({"kv_store.db_path": str(path_a)})
     store = SQLiteKVStore(db_path=str(path_a), config_source=cfg)
 
+    assert store.backend_info() == ("SQLiteKVStore", str(path_a.resolve()))
+    assert not path_a.exists()
     store.insert(_SCOPE, "k", b"v1")
     assert store.get(_SCOPE, "k") == b"v1"
     assert path_a.exists()
 
     cfg.put("kv_store.db_path", str(path_b))
+    assert store.backend_info() == ("SQLiteKVStore", str(path_b.resolve()))
+    assert not path_b.exists()
     store.insert(_SCOPE, "k", b"v2")
     assert store.get(_SCOPE, "k") == b"v2"
     assert path_b.exists()

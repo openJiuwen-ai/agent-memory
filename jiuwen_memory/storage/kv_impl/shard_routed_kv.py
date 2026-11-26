@@ -206,6 +206,10 @@ class ShardRoutedKVStore(KVStore):
     def store_type(self) -> StoreType:
         return StoreType.KV
 
+    def backend_info(self) -> tuple[str, str | None]:
+        """Report the router itself, which has no single path across its stores."""
+        return type(self).__name__, None
+
     def capabilities(self) -> frozenset[StoreCapability]:
         return frozenset(
             {

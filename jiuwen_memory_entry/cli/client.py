@@ -83,11 +83,12 @@ class InProcessClient:
         if dev_authentication:
             config = with_local_dev_security(config)
         if authenticator is None:
-            self._srv = Server.build(config)
+            self._srv = Server.build(config, log_kv_backend=True)
         else:
             self._srv = Server.build(
                 config,
                 security_runtime=SimpleNamespace(authenticator=authenticator),
+                log_kv_backend=True,
             )
 
     @property

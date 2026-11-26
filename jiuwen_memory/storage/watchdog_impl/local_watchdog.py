@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
@@ -600,8 +601,14 @@ def _build(config):
     ``asyncio.get_running_loop`` 取（装配期无 running loop）。
     """
     storage = StoreManagerProducer.resolve(config)
+    markdown_root = storage.markdown().root if storage.has_markdown() else ""
+    if not markdown_root or not markdown_root.strip():
+        raise ValidationError(
+            "Document watchdog requires markdown_store.default with a non-empty root. "
+            "Configure markdown_store.default.params.root as the watch directory "
+            "or set globals.watch_document: false to disable the watchdog."
+        )
     shadow = storage.shadow_index()
-    markdown_root = storage.markdown().root or "."
     debounce_ms = int(Factory.cfg_get(config, "debounce_ms", _DEFAULT_DEBOUNCE_MS))
     # scope：看门狗跨 scope 诊断——list_units_by_md 不限 scope（见该方法注释），
     # 影子索引其余方法已加 scope 原生隔离；看门狗用空 Scope 占位走不限 scope 的诊断路径。

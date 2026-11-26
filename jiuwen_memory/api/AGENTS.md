@@ -221,6 +221,7 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
    `assemble` / `assemble_runtime` / `assemble_server_runtime`（接受 `dict | Config | None`），Access composition
    root 不 import `jiuwen_memory.config`。`Kernel` / `build_kernel` / `LocalMemoryAPI`
    不是公开包导出；`assemble_runtime` 不带 `kv` / `storage` / `space`。
+   本地 CLI 通过 `assemble_server_runtime(log_kv_backend=True)` 记录 KV 后端和可用的本地路径。
 9. `LocalMemoryAPI` 类体内禁止同名方法重复定义（后定义会静默覆盖先定义）。
    `add` / `add_async`（以及 `batch_add` / `batch_add_async`）是不同方法名的同步/异步入口，
    不属重复。静态检查见 `tests/unit/api/test_local_memory_api_methods.py`。

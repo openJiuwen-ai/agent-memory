@@ -47,9 +47,10 @@ md 与影子索引的关系是**单向分工**而非互为镜像：召回走影�
 | 开关 | key | 未配置默认 | 语义 |
 |---|---|---|---|
 | 文档写入 | `globals.write_document` | `False` | true = 真源写影子索引 + md，不写 KV |
-| 文档看门狗 | `globals.watch_document` | `True`（随文档） | 仅 `write_document=true` 下有意义 |
+| 文档看门狗 | `globals.watch_document` | `True` | 开启时，若 StoreManager 提供默认影子索引端口，则装配看门狗 |
 
-两个开关的归一函数（`should_write_document` / `resolve_watch_document`）共用字符串/数值归一逻辑，**唯独 None 语义不同**：写入开关未配 = 关（默认不写文档），看门狗未配 = 开（开了文档就该监听）。不识别的值（如 `write_document: yes` 拼写错误）抛 `ValidationError` **fail-closed**，不静默回退——避免拼写错误整体吞掉文档路径。
+两个开关支持相同的字符串和数值写法。未配置时，`write_document` 默认为 `false`，
+`watch_document` 默认为 `true`。无法识别的值会触发 `ValidationError`。
 
 归一结果在各消费方 `_build` 装配期**固化进实例属性**（如 `CompositeDomainStore._write_document`、`PipelineRetriever._doc_mode`），运行期方法直接读属性、不再持 config 句柄——与 `_preferred_pipeline` 等现有开关同范式。
 
@@ -210,7 +211,12 @@ FTS5 细节：tokenize 用 `unicode61`——写入前已用注入 tokenizer（ji
 
 content 重复类三者的共同后果：md 与影子索引漂移，但看门狗的 content_hash 集合 diff 算法对这类漂移「天然失明」。根因与「写失败补偿的残留风险」（补偿按 content 首次匹配误删）同源——均源于 md 块无稳定 unit_id 锚点、按 content_hash/content 隐式身份标识。彻底闭环需引入 `<!-- id:{unit_id} -->` 锚点，让看门狗对账从「content_hash 集合 diff」改为「按 unit_id reconcile」（见后续演进），消除重复 content 的失真与版本链断裂。
 
-装配（`WatchdogProducer.register("watchdog")`）：shadow 与 markdown 一律从注入的 StoreManager 取端口（不自行 build_named，保证与 CompositeStorage 读写同源）；markdown root 从 `MarkdownStore.root` 契约读（ConfigSource 晚绑定解析后的值，不跨 namespace 摸 params 字面量）；scope 用空 `Scope()` 占位（影子索引不按 scope 隔离）。
+默认看门狗通过 StoreManager 获取默认影子索引和 Markdown 端口，使用晚绑定后的
+`MarkdownStore.root` 作为监听目录。即使影子索引显式指定了 `db_path`，缺少默认 Markdown
+端口或解析后的根目录为空时，仍会在装配中报错，避免意外监听当前工作目录。在 KV 写入模式下，
+只需要影子索引时可设置 `globals.watch_document: false`。按文件名对账使用空 `Scope()`
+调用跨范围诊断接口。
+JiuwenSwarm 的内置文档配置将 `root` 显式设为 `.`，保留其原有的当前工作目录存储位置。
 
 ### 八、端口与生命周期
 
