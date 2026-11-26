@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from jiuwen_memory.common.errors import RelocationInProgressError
 from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment
 from jiuwen_memory.common.type_def.continuity import (
     ContinuityEvent,
@@ -70,6 +71,39 @@ def test_record_batch_writes_bodies_once_and_bumps_task_once(tmp_path):
         # create → 0, bind → 2, and the whole 3-event batch bumps exactly once → 3.
         assert task["revision"] == 3
         assert len(task["background"]) == 3
+    finally:
+        service.close()
+        kv.close()
+
+
+def test_record_batch_propagates_relocation_in_progress(tmp_path, monkeypatch):
+    """事件校验遇到搬迁中必须向上抛，不能写进 rejected 回执让调用方当成单条数据问题。"""
+    service, kv = _service(tmp_path)
+    try:
+        task_id, binding = _bind(service)
+        events = [ContinuityEvent(task_id, binding, "e1", "body 1")]
+
+        def boom(*args, **kwargs):
+            raise RelocationInProgressError("u-1")
+
+        monkeypatch.setattr(service, "_classify_event", boom)
+        with pytest.raises(RelocationInProgressError):
+            service.record_batch(
+                _SCOPE,
+                events,
+                ["wb"],
+                _read,
+                lambda writes: [
+                    [
+                        MemoryUnit(
+                            id=f"u-{index}",
+                            scope=_SCOPE,
+                            segments=[Segment(content=write.content)],
+                        )
+                    ]
+                    for index, write in enumerate(writes)
+                ],
+            )
     finally:
         service.close()
         kv.close()

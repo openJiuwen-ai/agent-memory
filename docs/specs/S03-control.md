@@ -5,7 +5,11 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
+<<<<<<< HEAD
 | 最近一次修订日期 | 2026-11-25 |
+=======
+| 最近一次修订日期 | 2026-11-26 |
+>>>>>>> ffe1055d (fix(memory): 拒绝更新非 active 记忆防止版本链分叉)
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F10-batch-update-api.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/construction/F13-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md，docs/features/control/F10-async-write-orchestration.md |
@@ -870,6 +874,12 @@ MemoryAPI 返回用户终端；不把原文附加到 MemoryUnit、普通 get/rec
 - `IndexBuilder.build_grouped` 的 `UNKNOWN`/缺失回执映射为领域异常 `WriteIncompleteError`
   （`status="unknown"`、`retry_action="recover_then_retry"`）：批量结果的 `error_type` 与
   单条入口重新抛出的异常类型一致，`units` 只含已确认提交的条目。
+- 批量回执按「位置 + `(scope, unit_id)`」对齐（`align_unit_receipts`），不得按裸
+  `unit_id` 折叠；跨 scope 同名 id 是合法记录，漏回/多回/矛盾回执一律 `UNKNOWN`。
+  schema/privacy 包装器与引擎的 outcome 分配、摄入记账都使用对齐后的位置。
+- `build_grouped` 抛错（取消除外）时整段按 `UNKNOWN` 返回，不自动重放；派生索引维护失败
+  保持 `COMMITTED` 并附错误（原异常挂 `__cause__`），隐私修订刷新失败同样保留
+  `COMMITTED` + 复合错误，后续条目继续。
 - 失败隔离按条目而非按段：prepare、逐项 `build`、middle 子路径都各自捕获单条异常，
   同段其他条目的回执与副作用不受影响。
 - 降级计数是**装配实例状态**（`WriteSignals`），不是进程单例：一个 Runtime 内引擎与

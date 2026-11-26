@@ -238,10 +238,14 @@ class ConflictConsolidator:
         return list(groups.values())
 
     def _entity_property_units(self, scope, entity_key: str) -> list[MemoryUnit]:
-        """取该实体的全部属性记忆：反向索引优先，缺失则回退全表扫（legacy scope）。"""
+        """取该实体的全部属性记忆：反向索引优先，缺失或为空则回退全表扫。
+
+        空成员也可能是旧版本坏数据（watermark=complete 但成员被错误排除），不能仅凭
+        ``indexed=True`` 断言实体没有属性；此时回退真源扫描，靠 ``fallback_limit`` 兜底。
+        """
 
         lookup = self._property_index.lookup(scope, entity_key)
-        if lookup.indexed:
+        if lookup.indexed and lookup.unit_ids:
             return load_units(self._kv, scope, lookup.unit_ids)
         result: list[MemoryUnit] = []
         for _key, raw in self._kv.scan(scope, MEMORY_KEY_PREFIX):

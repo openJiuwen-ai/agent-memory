@@ -13,17 +13,20 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from jiuwen_memory.common._support import as_bool
 from jiuwen_memory.common.errors import UnsupportedCapabilityError
 from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import MemoryUnit, Scope
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 
 from .base import ConstructionOperator, OperatorType
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from jiuwen_memory.storage._schema_property_index import SchemaPropertyIndex
@@ -51,6 +54,111 @@ class UnitCommitStatus:
     unit_id: str
     state: UnitCommitState
     error: Exception | None = None
+
+
+def align_unit_receipts(
+    units: list[MemoryUnit], statuses: list[UnitCommitStatus]
+) -> list[UnitCommitStatus]:
+    """把 delegate 回执对齐给输入，返回与输入等长、顺序一致的列表。
+
+    S05 规定 unit id 只在 scope 内唯一，跨 scope 同名 id 是两条合法记录。规则：
+
+    - **回执数量与输入一致**：按位置使用（delegate 的逐条顺序契约）；位置上的 id
+      不一致时不猜，退回唯一 id 匹配。
+    - **数量不一致**（漏回/多回）：只按 id 唯一匹配；同一 id 在多个位置出现时无法
+      判断回执属于谁，这些位置一律 ``UNKNOWN``，绝不把一份 ``COMMITTED`` 挪给别的项。
+    """
+    if len(statuses) == len(units) and all(
+        status.unit_id == unit.id for status, unit in zip(statuses, units)
+    ):
+        return list(statuses)
+
+    positions_by_id: dict[str, list[int]] = {}
+    for position, unit in enumerate(units):
+        positions_by_id.setdefault(unit.id, []).append(position)
+    receipt_counts: dict[str, int] = {}
+    for status in statuses:
+        receipt_counts[status.unit_id] = receipt_counts.get(status.unit_id, 0) + 1
+
+    assigned: dict[int, UnitCommitStatus] = {}
+    ambiguous: set[int] = set()
+    for status in statuses:
+        candidates = positions_by_id.get(status.unit_id, [])
+        if receipt_counts[status.unit_id] > 1:
+            # 同一 id 返回了多份回执且彼此矛盾：无法判断哪份可信，全部按 UNKNOWN。
+            ambiguous.update(candidates)
+            continue
+        candidates = [position for position in candidates if position not in assigned]
+        if len(candidates) == 1:
+            assigned[candidates[0]] = status
+        elif len(candidates) > 1:
+            ambiguous.update(candidates)
+
+    if len(assigned) != len(units) or len(statuses) != len(units):
+        logger.warning(
+            "align_unit_receipts: receipt mismatch "
+            "(units=%d matched=%d receipts=%d ambiguous=%d)",
+            len(units),
+            len(assigned),
+            len(statuses),
+            len(ambiguous),
+        )
+    aligned: list[UnitCommitStatus] = []
+    for position, unit in enumerate(units):
+        status = assigned.get(position)
+        if status is not None:
+            aligned.append(status)
+        elif position in ambiguous:
+            aligned.append(
+                UnitCommitStatus(
+                    unit_id=unit.id,
+                    state=UnitCommitState.UNKNOWN,
+                    error=RuntimeError("ambiguous unit id in receipt alignment"),
+                )
+            )
+        else:
+            aligned.append(
+                UnitCommitStatus(
+                    unit_id=unit.id,
+                    state=UnitCommitState.UNKNOWN,
+                    error=RuntimeError("index builder returned no receipt for unit"),
+                )
+            )
+    return aligned
+
+
+def _group_positions_by_scope(
+    units: list[MemoryUnit], positions: list[int]
+) -> dict[tuple, list[int]]:
+    """按 unit 所在 scope 分组，但保留原始输入位置。"""
+    groups: dict[tuple, list[int]] = {}
+    for position in positions:
+        scope = units[position].scope
+        key = (scope.org, scope.space, scope.user, scope.agent, scope.session)
+        groups.setdefault(key, []).append(position)
+    return groups
+
+
+def _record_index_error(
+    positions: list[int],
+    statuses: list[UnitCommitStatus],
+    exc: Exception,
+) -> None:
+    """把索引维护错误附到回执：已确认的正排保持 COMMITTED，但不再是完整成功。"""
+
+    for position in positions:
+        current = statuses[position]
+        # 每条回执单独包装：delegate 可能把同一个异常实例放进多条回执，直接挂载会让
+        # 后处理（add_note 等）串到别的 unit 上。已有错误时生成复合错误，保留原链。
+        if current.error is None:
+            wrapped = RuntimeError(f"{type(exc).__name__}: {exc}")
+            wrapped.__cause__ = exc
+        else:
+            wrapped = RuntimeError(
+                f"{current.error}；{type(exc).__name__}: {exc}"
+            )
+            wrapped.__cause__ = current.error
+        statuses[position] = replace(current, error=wrapped)
 
 
 class IndexBuilderProducer(Factory):
@@ -267,18 +375,66 @@ class SchemaPropertyIndexingBuilder(IndexBuilder):
             # 保持「不支持」原始异常语义，不把能力缺失当成写入失败去失效反向索引。
             return self._delegate.build_grouped(units)
         try:
-            statuses = self._delegate.build_grouped(units)
+            raw_statuses = self._delegate.build_grouped(units)
         except Exception as exc:
             self._invalidate_after_failure(units, exc)
             raise
-        committed = [
-            unit
-            for unit, status in zip(units, statuses)
+        statuses = align_unit_receipts(units, raw_statuses)
+        committed_positions = [
+            position
+            for position, status in enumerate(statuses)
             if status.state is UnitCommitState.COMMITTED
         ]
-        if committed:
-            self._property_index.mark_forward_only(committed)
+        unknown_positions = [
+            position
+            for position, status in enumerate(statuses)
+            if status.state is UnitCommitState.UNKNOWN
+        ]
+        if committed_positions:
+            # 批量路径的 COMMITTED 表示「已确认正排提交」（检索索引仍可能附带 error），
+            # 与逐条 build(mode=ALL) 的成员语义一致：反向索引记录的是真源成员关系，
+            # 因此必须 upsert（加成员）而不是 mark_forward_only（排除出反向索引）。
+            # 反向索引是派生数据：维护失败不能吞掉 delegate 已经给出的提交回执，
+            # 否则调用方重试会把已写入的条目再提交一次。失败时把索引维护错误附到回执上
+            # （保持 COMMITTED，表示部分成功），并按 scope 独立失效让读侧回退真源。
+            for positions in _group_positions_by_scope(units, committed_positions).values():
+                scoped = [units[position] for position in positions]
+                try:
+                    self._property_index.upsert(scoped)
+                except Exception as exc:  # noqa: BLE001 —— 派生索引失败不得改写正排状态
+                    logger.exception(
+                        "SchemaPropertyIndexingBuilder: reverse index upsert failed "
+                        "for %d committed units",
+                        len(scoped),
+                    )
+                    _record_index_error(positions, statuses, exc)
+                    self._invalidate_scope_quietly(
+                        scoped[0].scope, positions, statuses
+                    )
+        if unknown_positions:
+            # UNKNOWN 的正排可能已经落盘，但这次没有进入反向索引：让相关 scope 失效，
+            # 查询回退到真源核对，避免把缺成员的旧索引当成完整结果。
+            for positions in _group_positions_by_scope(units, unknown_positions).values():
+                self._invalidate_scope_quietly(
+                    units[positions[0]].scope, positions, statuses
+                )
         return statuses
+
+    def _invalidate_scope_quietly(
+        self,
+        scope: Scope,
+        positions: list[int],
+        statuses: list[UnitCommitStatus],
+    ) -> None:
+        """按 scope 独立失效；失败只记日志并附到回执，不影响其他 scope 与写入结论。"""
+
+        try:
+            self._property_index.invalidate_scope(scope)
+        except Exception as exc:  # noqa: BLE001 —— 失效本身失败只能降级为可观测日志/回执
+            logger.exception(
+                "SchemaPropertyIndexingBuilder: scope invalidation failed"
+            )
+            _record_index_error(positions, statuses, exc)
 
     def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         try:

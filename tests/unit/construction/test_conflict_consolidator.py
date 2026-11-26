@@ -102,6 +102,27 @@ def _consolidator(kv: MemoryKVStore, llm: _FakeLLM | None = None) -> ConflictCon
 # ---------------------------------------------------------------------------
 
 
+def test_cluster_falls_back_when_indexed_view_is_empty() -> None:
+    """旧版本坏数据（watermark 完整、成员被排除）不能让簇永远聚不出来。"""
+    kv = MemoryKVStore()
+    units = [
+        _property("m1", "E-jon", "occupation", "Jon is a banker"),
+        _property("m2", "E-jon", "occupation", "Jon runs a shop"),
+    ]
+    for unit in units:
+        kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
+    index = SchemaPropertyIndex(kv)
+    # 复现旧实现：成功写入被错误 mark_forward_only，留下完整 watermark + 空成员 + exclusion。
+    index.mark_forward_only(units)
+    lookup = index.lookup(_SCOPE, "E-jon")
+    assert lookup.indexed is True and lookup.unit_ids == []
+
+    clusters = _consolidator(kv).cluster([units[0]])
+
+    assert len(clusters) == 1
+    assert {unit.id for unit in clusters[0].memories} == {"m1", "m2"}
+
+
 def test_cluster_groups_by_entity_and_property_without_overlap() -> None:
     kv = MemoryKVStore()
     units = [
