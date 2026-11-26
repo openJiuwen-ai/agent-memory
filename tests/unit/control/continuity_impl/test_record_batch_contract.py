@@ -2,7 +2,11 @@
 
 import pytest
 
-from jiuwen_memory.common.errors import ConflictError, NotFoundError
+from jiuwen_memory.common.errors import (
+    ConflictError,
+    NotFoundError,
+    RelocationInProgressError,
+)
 from jiuwen_memory.common.type_def import MemoryUnit, Scope, Segment
 from jiuwen_memory.common.type_def.continuity import ContinuityEvent
 from jiuwen_memory.control.continuity import Continuity
@@ -130,6 +134,19 @@ def test_fallback_strict_mode_skips_everything_after_the_failure():
     )
     assert [result["status"] for result in results] == ["rejected", "skipped", "skipped"]
     assert "error" not in results[1]
+
+
+def test_fallback_propagates_relocation_in_progress() -> None:
+    """搬迁中是可原样重试的故障，不能降级成逐项 rejected 后继续写同批其他项。"""
+
+    class _RelocatingPlugin(_RecordOnlyPlugin):
+        def record(self, scope, event, connector, read, write, **kwargs):
+            if event.event_id == "e-1":
+                raise RelocationInProgressError("u-1")
+            return super().record(scope, event, connector, read, write, **kwargs)
+
+    with pytest.raises(RelocationInProgressError):
+        _run(_RelocatingPlugin(failing=set()), continue_on_error=True)
 
 
 def test_fallback_treats_missing_reference_as_item_failure():

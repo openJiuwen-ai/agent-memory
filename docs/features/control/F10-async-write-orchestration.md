@@ -4,7 +4,7 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-11-18 |
+| 日期 | 2026-11-26 |
 | 影响范围 | `jiuwen_memory/api/memory_api_impl/{write_ops,assembly}.py`、`jiuwen_memory/control/application/command.py`、`jiuwen_memory/control/`（新增写入编排算子与阻塞执行器端口）、`jiuwen_memory/control/engine.py`、`jiuwen_memory/control/engine_impl/{in_memory,cloud,agent}_engine.py`、`jiuwen_memory/common/lock/{lock.py,lock_impl/}`、`jiuwen_memory/construction/evolver.py`、`jiuwen_memory/construction/evolver_impl/orchestrating_evolver.py`、`jiuwen_memory/config/defaults.py`；`docs/specs/S02-memory-api.md`、`docs/specs/S03-control.md`、`docs/specs/S05-construction.md`、`docs/specs/S07-common.md`、`docs/specs/S08-config.md`；`docs/features/api/F01`、`docs/features/api/F03`、`docs/features/common/F06-distributed-lock.md`；`docs/{zh/安装指导,en/Installation Guide}/` 下的部署概览与容器化部署文档；`jiuwen_memory/{api,control,common,construction}/AGENTS.md` |
 | 测试基线 | 见「验证 / 实现后的测试基线」 |
 | Refs | 无（用户确认本次提交不关联 issue） |
@@ -240,6 +240,46 @@
   是否已提交的逐条结果；部分失败时，已提交的条目回执为成功，未提交的回执为失败。实现没有
   声明这个能力时，直写段在执行前就改为逐条 build（仍在组内执行，仍可组间并发），不合并。
   内置 IndexBuilder 需要补齐这项能力。
+- **批量路径的 Schema 反向索引按“已确认正排提交”维护**：`build_grouped` 返回的
+  `COMMITTED` 只表示正排（真源）已确认提交，检索索引仍可能附带 `error`；它与逐条
+  `build(mode=ALL)` 的成员语义一致。`SchemaPropertyIndexingBuilder` 必须对已提交单元
+  `upsert`，不能调用 `mark_forward_only`（后者会把单元排除出反向索引，
+  `CONFLICT_CONSOLIDATE` 的实体展开就拿不到成员）。
+  - 反向索引是派生数据：`upsert` 失败（例如首次全量扫描遇到无法解码的旧记录）**不得**
+    抛给调用方、也不得改写 delegate 已给出的正排状态。但也不能把部分成功报成完整成功：
+    受影响的 unit 保持 `COMMITTED`、同时附上索引维护错误（S09 §12），并按 scope
+    **独立**尝试失效；失效本身失败时同样附错误、继续处理其余 scope。错误按**每条回执**
+    单独包装（原异常挂在 `__cause__` 上），不共享异常实例，避免后处理串到别的 unit。
+  - **失效先写修复标记再删 watermark**：`invalidate_scope` 先写 `needs-repair`，读侧见到
+    该标记一律按未建索引回退真源；随后才删 watermark。这样即使 watermark 删除失败（双
+    故障），读取方也不会信任缺成员的旧视图。前缀扫除与 `_commit_scope` 都不得提前删
+    `needs-repair`：扫除跳过该键，新 watermark 写成功后才清标记。恢复入口分两类：后端
+    故障恢复后重跑 `invalidate_scope`（或下一次成功写入重建），也可走 `rebuild`；旧版本
+    bug 写坏的数据（watermark=complete、成员为空、exclusion 残留）不会被运行时失效触发，
+    需对受影响 scope 执行 `python -m deploy.migration.backfill repair-schema-index --org ...`
+    （维护窗口内执行；内部 `SchemaPropertyIndex.repair_scope()` 清除该 scope 的**全部**
+    exclusion，写 needs-repair 失效后立即按真源重建，重建失败则保留标记并报告）。不按
+    生命周期筛选：正常的归档/取代走 `update(FORWARD_ONLY)`，不写 exclusion，且已归档成员
+    本就应留在反向索引里供历史回看；只恢复 ACTIVE 会让「被误排除、后又归档」的成员永久
+    缺席。冲突巩固在索引为空时也会回退真源扫描；恢复前读取方始终走真源核对。
+  - 同批若有 `UNKNOWN` 条目，其正排可能已经落盘但没有进入反向索引：处理完已确认成员后
+    让相关 scope 逐个失效，避免查询把缺成员的旧索引当成完整结果。
+  - **回执对齐由消费方统一执行**：`align_unit_receipts` 在校验后返回与输入等长、顺序
+    一致的列表，schema 包装器、隐私包装器、引擎的 outcome 分配与摄入记账都必须使用
+    对齐后的**位置**，不能再按裸 `unit_id` 建表——同名 id 折叠会把一个 scope 的成功
+    套给另一个 scope。
+  - 对齐规则：数量一致且位置 id 匹配时按位置使用；数量不符时只采信**一一对应**的 ID：
+    同一 id 出现多个候选、或同一 id 返回多份回执（无论顺序）都全部 `UNKNOWN` 并告警，
+    绝不猜归属，也绝不让回执顺序决定结果。
+  - 隐私包装器的 `refresh_revision` 失败同样按派生数据故障处理：该 unit 保持
+    `COMMITTED`，后续 unit 继续处理；若回执已有索引错误（例如检索索引部分失败），
+    为该条生成**单条复合错误**（原错误挂在 `__cause__` 上），不能原地 `add_note`——
+    内置 Hybrid 会把同一异常实例放进多条回执，原地修改会串到别的 unit。
+  - **`build_grouped` 抛错一律按 `UNKNOWN`**（取消/`_raise_if_cancelled` 除外）：调用方
+    无法确认哪些 unit 已落盘，全部按 `WriteIncompleteError` + `recover_then_retry` 返回，
+    不得当普通失败、不得自动重放；这与「正常返回但缺某项回执」的恢复语义一致。代价是
+    原始异常类型只保留在消息与 `__cause__` 上（`outcome.error_obj` 是 `WriteIncompleteError`），
+    调用方按「未知」而非原类型分支。
 - **从 unit 到输入条目的错误契约**：一条输入可能产出多个 unit，builder 按 unit 报告状态，
   但 API 按输入条目给回执，所以需要在两层分别约定：
   - **S05（IndexBuilder 部分失败时的回传）**：每个 unit 的状态取 `committed` / `failed` /

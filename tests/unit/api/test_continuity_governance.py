@@ -23,7 +23,7 @@ from jiuwen_memory.api import (
     TaskRequest,
     assemble_runtime,
 )
-from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.errors import RelocationInProgressError, ValidationError
 from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.security.types import Role
 from tests.support.scoped_authenticator import ScopedAuthenticator
@@ -900,6 +900,48 @@ def test_continuity_mode_search_restores_task_background(tmp_path):
             task_id=task["task_id"], duty="diagnosis",
         )
         assert any(g["code"] == "relation_expansion_disabled" for g in styled.gaps)
+    finally:
+        runtime.close()
+
+
+def test_batch_continuity_propagates_relocation_in_progress(tmp_path, monkeypatch):
+    """搬迁中是可重试故障，batch_add 必须上抛，不能按单条 rejected 吞掉。"""
+    from jiuwen_memory.api import BatchWriteItem
+
+    runtime, api, project, owner, ops, config = _runtime(tmp_path)
+    actors = {
+        name: Scope(**value["actor"])
+        for name, value in config["globals"]["continuity_connectors"].items()
+    }
+    try:
+        task = api.continuity_task(
+            project, TaskRequest("create", "create"), security=_security(owner)
+        )
+        bound = api.continuity_task(
+            project,
+            TaskRequest("bind", "workbuddy", task["task_id"], task["revision"],
+                        connector_id="workbuddy", context_id="s"),
+            security=_security(owner),
+        )
+        binding = bound["task"]["bindings"][-1]["binding_id"]
+        wb = _security(actors["workbuddy"])
+
+        def boom(*args, **kwargs):
+            raise RelocationInProgressError("u-1")
+
+        monkeypatch.setattr(api._continuity, "record_batch", boom)
+        with pytest.raises(RelocationInProgressError):
+            api.batch_add(
+                [
+                    BatchWriteItem(
+                        "body",
+                        project,
+                        continuity=ContinuityWrite(task["task_id"], binding, "b-1"),
+                    )
+                ],
+                project,
+                security=wb,
+            )
     finally:
         runtime.close()
 

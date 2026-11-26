@@ -165,6 +165,14 @@ TLS, access control, and traffic protection at a gateway.
 
 ## Write orchestration and multi-instance deployments
 
+> Environments deployed before "true async writes and batch orchestration" may see Schema
+> properties never form conflict-consolidation clusters. Repair the reverse index once with
+> `python -m deploy.migration.backfill repair-schema-index --org <org> [--space <space>] [--dry-run]`
+> (only scopes that still carry exclusions). Run it in a maintenance window or with writes stopped
+> (the tool does not coordinate with the running service). It clears all mistaken exclusions of each
+> affected scope and rebuilds from the truth store immediately; failed scopes are listed and the
+> command exits non-zero, so it can be re-run after fixing them.
+
 The write path now uses a per-user lock plus batch orchestration; the lock backend follows the
 deployment shape:
 

@@ -41,14 +41,23 @@ from jiuwen_memory.construction.abstractor import Abstractor
 from jiuwen_memory.construction.associator import Associator
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.evolver import EvolveMode, EvolveResult
-from jiuwen_memory.construction.evolver_impl.conflict_consolidator import ConsolidatePlan
+from jiuwen_memory.construction.evolver_impl.conflict_consolidator import (
+    ConflictConsolidator,
+    ConsolidatePlan,
+)
 from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
     _DEDUP_BATCH_SYSTEM_PROMPT,
     _DEDUP_SYSTEM_PROMPT,
     OrchestratingEvolver,
 )
 from jiuwen_memory.construction.extractor import Extractor
-from jiuwen_memory.construction.index_builder import IndexBuilder
+from jiuwen_memory.construction.index_builder import (
+    IndexBuilder,
+    SchemaPropertyIndexingBuilder,
+    UnitCommitState,
+    UnitCommitStatus,
+)
+from jiuwen_memory.storage._schema_property_index import SchemaPropertyIndex
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.graph import GraphStore
 from jiuwen_memory.storage.kv import KVStore, load_units
@@ -488,6 +497,90 @@ def _index_unit(
 # ---------------------------------------------------------------------------
 # CONFLICT_CONSOLIDATE 落盘层（R1 / R2 / R3）
 # ---------------------------------------------------------------------------
+
+
+class _GroupedForwardBuilder(IndexBuilder):
+    """最小直写构建器：批量路径写真源并逐条返回 COMMITTED（模拟 hybrid 的 forward 段）。"""
+
+    def __init__(self, kv: KVStore) -> None:
+        self._kv = kv
+
+    @staticmethod
+    def operator_type() -> OperatorType:
+        return OperatorType.INDEX_BUILDER
+
+    @staticmethod
+    def health() -> None:
+        return None
+
+    @staticmethod
+    def supports_grouped_build() -> bool:
+        return True
+
+    def build_grouped(self, units: list[MemoryUnit]) -> list[UnitCommitStatus]:
+        for unit in units:
+            self._kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
+        return [
+            UnitCommitStatus(unit_id=unit.id, state=UnitCommitState.COMMITTED)
+            for unit in units
+        ]
+
+    def build(
+        self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL
+    ) -> None:
+        for unit in units:
+            self._kv.insert(unit.scope, memory_key(unit.id), dumps(unit))
+
+    @staticmethod
+    def update(
+        units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL
+    ) -> None:
+        pass
+
+    @staticmethod
+    def remove(
+        units: list[MemoryUnit], *, mode: IndexRemoveMode = IndexRemoveMode.HARD
+    ) -> None:
+        pass
+
+    @staticmethod
+    def rebuild() -> None:
+        pass
+
+
+def test_grouped_property_write_feeds_conflict_clusters() -> None:
+    """add 的 grouped 路径写入两条同实体属性后，CONFLICT_CONSOLIDATE 必须能成簇。"""
+    stores = _create_stores()
+    kv = stores["kv"]
+    writer = SchemaPropertyIndexingBuilder(
+        _GroupedForwardBuilder(kv), SchemaPropertyIndex(kv)
+    )
+    first = _schema_property("b1", "Jon is a banker")
+    second = _schema_property("b2", "Jon is a teacher")
+    writer.build_grouped([first, second])
+
+    clusters_seen = []
+    consolidator = ConflictConsolidator(kv=kv, llm=_MockLLM())
+    original_cluster = consolidator.cluster
+
+    def cluster(units):
+        clusters = original_cluster(units)
+        clusters_seen.extend(clusters)
+        return clusters
+
+    consolidator.cluster = cluster  # type: ignore[method-assign]
+    evolver = _make_evolver(
+        kv,
+        stores["vector"],
+        _HashEmbedder(),
+        _MockLLM(),
+        conflict_consolidator=consolidator,
+    )
+
+    evolver.evolve([first], EvolveMode.CONFLICT_CONSOLIDATE)
+
+    assert clusters_seen, "grouped 写入的 property 必须能被反向索引展开成簇"
+    assert {unit.id for unit in clusters_seen[0].memories} == {"b1", "b2"}
 
 
 class _FakeConsolidator:

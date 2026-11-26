@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-11-24 |
+| 最近一次修订日期 | 2026-11-26 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/construction/F12-importance-and-source-attribution.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
@@ -958,7 +958,18 @@ memory_scene 选择业务策略，调用方通过 profile 选择实例。通用 
 
 `UnitCommitState` 三态：`COMMITTED` / `FAILED` / `UNKNOWN`。`UNKNOWN` 表示
 「写入已发出但结果未知」，调用方不得假定未提交；后续条目在首个失败后为 `FAILED`。
-隐私索引构建器只为 `COMMITTED` 条目刷新修订号，薄编排层原样委托状态。
+`COMMITTED` 只表示正排（真源）已确认提交，检索索引仍可能附带 `error`——即
+`COMMITTED + error` 表示部分成功，不能当完整成功。
+
+回执对齐：unit id 只在 Scope 内唯一，消费方不得按裸 `unit_id` 建表。必须使用
+`align_unit_receipts` 的「位置 + `(scope, unit_id)`」结果：数量一致且位置 id 匹配时按位置；
+数量不符时只采信一一对应的 id；同一 id 多候选或返回多份回执（无论顺序）一律 `UNKNOWN`。
+索引维护、错误归属、隐私修订刷新与入库记账都按对齐后的位置执行。
+
+`build_grouped` 抛错（取消除外）时，调用方无法确认哪些 unit 已落盘：一律按 `UNKNOWN`
+返回（`WriteIncompleteError` + `recover_then_retry`），不得当普通失败或自动重放；原始异常
+经消息与 `__cause__` 保留供诊断。隐私包装器只为 `COMMITTED` 条目刷新修订号；刷新失败
+保留该条 `COMMITTED`、生成单条复合错误（原错误挂 `__cause__`），后续条目继续。
 
 
 ## Team 来源抽取

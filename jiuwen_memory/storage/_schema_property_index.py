@@ -15,13 +15,20 @@ from jiuwen_memory.common.schema_property import (
     SchemaPropertyIdentity,
     schema_property_identity,
 )
-from jiuwen_memory.common.type_def import MEMORY_KEY_PREFIX, MemoryUnit, Scope
+from jiuwen_memory.common.type_def import (
+    MEMORY_KEY_PREFIX,
+    MemoryUnit,
+    Scope,
+)
 from jiuwen_memory.common.type_def.memory_codec import loads
 
 from .kv import KVStore
 
 _PREFIX = "/schema/entity-properties/v1"
 _SCOPE_WATERMARK_KEY = f"{_PREFIX}/scope-watermark"
+# 修复标记：先于删除 watermark 写入。若 watermark 删除失败（后端故障），读侧仍能据此
+# 判定索引不可信并回退真源，避免把缺成员的旧视图当成完整结果。
+_SCOPE_REPAIR_KEY = f"{_PREFIX}/needs-repair"
 
 
 @dataclass
@@ -208,21 +215,61 @@ class SchemaPropertyIndex:
         }
 
     def invalidate(self, units: list[MemoryUnit]) -> None:
-        """Make affected scopes fall back after a partially failed owner write."""
+        """Make affected scopes fall back after a partially failed owner write.
+
+        每个 scope 独立尝试：一个 scope 删除标记失败不能跳过其余 scope。全部尝试完后
+        再抛第一个错误，调用方仍能看到清理失败。
+        """
 
         scopes: dict[tuple[str, str, str, str, str], Scope] = {}
         for unit in units:
             scopes.setdefault(_scope_key(unit.scope), unit.scope)
+        errors: list[Exception] = []
         for key in sorted(scopes):
             scope = scopes.get(key)
-            if scope is not None:
+            if scope is None:
+                continue
+            try:
                 self.invalidate_scope(scope)
+            except Exception as exc:  # noqa: BLE001 —— 单个 scope 失败不阻断其余 scope
+                errors.append(exc)
+        if errors:
+            first = errors[0]
+            for extra in errors[1:]:
+                first.add_note(
+                    "additional scope invalidation failure: "
+                    f"{type(extra).__name__}: {extra}"
+                )
+            raise first
 
     def invalidate_scope(self, scope: Scope) -> None:
-        """Remove only the derived commit marker; memberships remain rebuildable."""
+        """Make the scope fall back to the truth store; memberships remain rebuildable.
+
+        先写修复标记再删 watermark：删除失败时标记仍在，读侧不会信任旧索引。
+        """
 
         with self._scope_lock(scope):
+            self._put(scope, _SCOPE_REPAIR_KEY, b"1")
             self._begin_mutation(scope)
+
+    def repair_scope(self, scope: Scope) -> None:
+        """一次性修复旧版本坏数据：清全部 exclusion，失效后立即按真源重建。
+
+        旧实现把批量写入的成功属性错误地 ``mark_forward_only``，留下
+        watermark=complete、成员为空、exclusion 残留。清除**全部** exclusion：
+        正常路径不会给 Property 写排除——归档/取代/退役走 ``update(FORWARD_ONLY)``，
+        不调用 ``mark_forward_only``，且已归档成员必须留在索引里供历史回看；按生命周期
+        筛选会让「被误排除、后又归档」的成员永久缺席。
+
+        先失效（写 needs-repair）再重建：重建抛错时标记仍在，读侧继续回退真源，
+        异常原样抛给调用方（维护工具据此报告失败）；成功则由 ``_commit_scope`` 清标记。
+        """
+
+        with self._scope_lock(scope):
+            for key, _ in self._kv.scan(scope, f"{_PREFIX}/excluded/"):
+                self._kv.delete(scope, key)
+            self.invalidate_scope(scope)
+            self._bootstrap_scope(scope, [])
 
     def _bootstrap_scope(self, scope: Scope, current_units: list[MemoryUnit]) -> None:
         """Rebuild every Entity membership with one truth scan, then commit."""
@@ -250,8 +297,10 @@ class SchemaPropertyIndex:
             self._kv.delete(scope, _exclusion_key(unit_id))
         exclusion_prefix = f"{_PREFIX}/excluded/"
         for key, _ in self._kv.scan(scope, f"{_PREFIX}/"):
-            if not key.startswith(exclusion_prefix):
-                self._kv.delete(scope, key)
+            # needs-repair 必须活到新 watermark 落盘之后，扫除不能提前删它。
+            if key == _SCOPE_REPAIR_KEY or key.startswith(exclusion_prefix):
+                continue
+            self._kv.delete(scope, key)
 
         for unit in discovered.values():
             identity = schema_property_identity(unit)
@@ -330,6 +379,8 @@ class SchemaPropertyIndex:
     def _scope_indexed(self, scope: Scope) -> bool:
         # 不缓存：SchemaPropertyIndex 跨检索/构建/演进多实例，缓存会让
         # invalidate 失效后读者仍信任派生索引（见 F07 已知遗留）。
+        if self._kv.exists(scope, _SCOPE_REPAIR_KEY):
+            return False
         try:
             raw = self._kv.get(scope, _SCOPE_WATERMARK_KEY)
         except NotFoundError:
@@ -354,11 +405,14 @@ class SchemaPropertyIndex:
         self._kv.delete(scope, _SCOPE_WATERMARK_KEY)
 
     def _commit_scope(self, scope: Scope) -> None:
+        # 先提交新 watermark，再清 needs-repair：反序会在中途留下「无标记 + 旧
+        # watermark=complete」的窗口，读侧会把半成品视图当成完整结果。
         self._put(
             scope,
             _SCOPE_WATERMARK_KEY,
             _encode({"state": "complete", "version": "1"}),
         )
+        self._kv.delete(scope, _SCOPE_REPAIR_KEY)
 
     def _delete_membership(
         self,

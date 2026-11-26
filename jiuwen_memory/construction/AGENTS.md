@@ -233,7 +233,12 @@ prompt_guard 对受保护 unit 的内容分批保留原子引用，过小的正�
     membership。Property canonical identity
     依次取 `schema_entity_id`、`schema_entity_key`、`type::name`，并要求非空
     `schema_property_name`。首次启用时按整个 Scope 一次性回填，再以 Scope watermark
-    提交完整状态；失败必须使 watermark 失效并让读侧回退。软删保留 membership 以支持
+    提交完整状态；失败必须使 watermark 失效并让读侧回退——失效先写 `needs-repair` 标记
+    再删 watermark，双故障（删除失败）下读侧仍按未建索引回退真源；恢复依赖下一次成功
+    写入（`_commit_scope` 清标记）或 `rebuild`，失效失败会把错误附到写入回执；旧版本
+    坏数据（成员被错误排除）用 `repair_scope()` 清该 scope 全部 exclusion 后立即重建（维护命令
+    `deploy.migration.backfill repair-schema-index`）。
+    软删保留 membership 以支持
     属性版本历史，携带 MemoryUnit 的硬删和 `remove_with_scope()`
     均同步维护 membership/pointer。manager 没有 KV 端口时不包装，读取侧使用
     DomainStore Scope fallback。

@@ -2,13 +2,16 @@
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 
+from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.security.privacy.base import PrivacyProtection, privacy_operation
 from jiuwen_memory.common.type_def import MemoryUnit, Scope
 from jiuwen_memory.construction.index_builder import (
     IndexBuilder,
     UnitCommitState,
     UnitCommitStatus,
+    align_unit_receipts,
 )
 from jiuwen_memory.storage.domain_store import DomainStore
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
@@ -16,6 +19,8 @@ from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
 _ACTIVE: ContextVar[frozenset[tuple[int, int]]] = ContextVar(
     "privacy_index_operation", default=frozenset()
 )
+
+logger = get_logger(__name__)
 
 
 class PrivacyIndexBuilder(IndexBuilder):
@@ -52,9 +57,28 @@ class PrivacyIndexBuilder(IndexBuilder):
             for unit in owned:
                 self._privacy.prepare(unit)
             statuses = self._delegate.build_grouped(units)
-            for unit, status in zip(units, statuses):
-                if status.state is UnitCommitState.COMMITTED and id(unit) in owned_ids:
+            # 与引擎/其它包装器同一口径：先按 (scope, id) 校验回执，再刷新修订号。
+            statuses = align_unit_receipts(units, statuses)
+            for position, (unit, status) in enumerate(zip(units, statuses)):
+                if status.state is not UnitCommitState.COMMITTED or id(unit) not in owned_ids:
+                    continue
+                try:
                     self._privacy.refresh_revision(unit)
+                except Exception as exc:  # noqa: BLE001 —— 派生修订失败不得改写已确认回执
+                    logger.exception(
+                        "PrivacyIndexBuilder: refresh_revision failed for unit %d", position
+                    )
+                    if status.error is None:
+                        statuses[position] = replace(status, error=exc)
+                    else:
+                        # 已有索引错误必须保留（例如检索索引部分失败）。不能原地 add_note：
+                        # 内置 Hybrid 会把同一个异常实例放进多条回执，修改会串到别的 unit。
+                        combined = RuntimeError(
+                            f"{status.error}；privacy revision refresh also failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                        combined.__cause__ = status.error
+                        statuses[position] = replace(status, error=combined)
             return statuses
         finally:
             _ACTIVE.reset(token)

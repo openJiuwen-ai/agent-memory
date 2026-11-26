@@ -30,7 +30,9 @@ from jiuwen_memory.construction import (
     ExtractNotCommittedError,
     IndexBuilder,
     UnitCommitState,
+    UnitCommitStatus,
 )
+from jiuwen_memory.construction.index_builder import align_unit_receipts
 from jiuwen_memory.control.ingest_job import (
     begin_ingest_write,
     record_ingest_ids,
@@ -370,9 +372,31 @@ class GroupedWriteMixin:
                 reason="index_builder.supports_grouped_build() is False",
             )
         if index_builder is not None and supports_grouped_build(index_builder):
-            statuses = await self._run_blocking(
-                _io_lane(), index_builder.build_grouped, units
-            )
+            try:
+                statuses = await self._run_blocking(
+                    _io_lane(), index_builder.build_grouped, units
+                )
+            except Exception as exc:  # noqa: BLE001 —— 写入可能已发生，拿不到回执即未知
+                _raise_if_cancelled(exc)
+                # builder 已经进入写入才抛错：无法确认哪些 unit 落盘，必须按「提交状态
+                # 未知」返回，要求调用方先核对再重试；不能当成普通失败，否则重试会重复写入。
+                logger.warning(
+                    "build_grouped raised without per-unit receipts for %d units (%s)",
+                    len(units),
+                    type(exc).__name__,
+                )
+                statuses = [
+                    UnitCommitStatus(
+                        unit_id=unit.id,
+                        state=UnitCommitState.UNKNOWN,
+                        error=exc,
+                    )
+                    for unit in units
+                ]
+            else:
+                # 所有消费方在产生索引/记账副作用前统一校验回执：漏项、跨 scope 同名 id
+                # 都不能让位置 zip 把别的 unit 的 COMMITTED 套到本条上。
+                statuses = align_unit_receipts(units, statuses)
             _apply_commit_statuses(segment, outcomes, indices, statuses)
             record_ingest_units(
                 [unit for unit, status in zip(units, statuses)
@@ -522,6 +546,21 @@ def _distribute(
         outcomes[index].units = per_item[position]
 
 
+def _error_message(error: Exception) -> str:
+    """回执错误消息：附上次级原因（``add_note`` 或 ``__cause__`` 链）。"""
+    parts = [str(error)]
+    parts.extend(str(note) for note in getattr(error, "__notes__", ()))
+    cause = error.__cause__
+    depth = 0
+    while cause is not None and depth < 4:
+        text = str(cause)
+        if text and text not in parts[0]:
+            parts.append(f"{type(cause).__name__}: {text}")
+        cause = cause.__cause__
+        depth += 1
+    return "；".join(part for part in parts if part)
+
+
 def _apply_commit_statuses(
     segment: list[PreparedWrite],
     outcomes: list[BatchWriteOutcome],
@@ -533,14 +572,17 @@ def _apply_commit_statuses(
     一个条目可能产出多条 unit：任一未提交即让该条带错误；已提交的 unit 仍出现在
     ``units`` 里，表示部分提交（F10 决策 4）。
     """
-    by_unit = {status.unit_id: status for status in statuses}
+    # 按位置消费已对齐的回执：不能按裸 unit_id 建表，否则跨 scope 同名 id 会互相覆盖，
+    # 与按位置执行的摄入记账产生分歧。
+    cursor = 0
     for index, entry in zip(indices, segment):
         committed: list[MemoryUnit] = []
         errors: list[Exception] = []
         unknown_ids: list[str] = []
         failed_ids: list[str] = []
         for unit in entry.units:
-            status = by_unit.get(unit.id)
+            status = statuses[cursor] if cursor < len(statuses) else None
+            cursor += 1
             if status is None:
                 # 插件没给回执：不能假定已提交——按「无法确认」处理。
                 unknown_ids.append(unit.id)
@@ -567,7 +609,7 @@ def _apply_commit_statuses(
         elif failed_ids:
             detail = f"提交失败的 unit: {', '.join(sorted(failed_ids))}"
         first = errors[0] if errors else None
-        message = str(first) if first is not None else "index builder reported no status"
+        message = _error_message(first) if first is not None else "index builder reported no status"
         outcome.error = f"{message}（{detail}）" if detail else message
         if unknown_ids:
             # 单条与批量入口必须给出同一个领域异常：调用方按「先核实落盘再重试」处理。
@@ -577,6 +619,9 @@ def _apply_commit_statuses(
                 retry_action="recover_then_retry",
                 message=outcome.error,
             )
+            if first is not None:
+                # 原始异常类型只保留在链上：回执对调用方是「未知」，诊断仍能追到根因。
+                error.__cause__ = first
         elif first is not None:
             error = first
         else:

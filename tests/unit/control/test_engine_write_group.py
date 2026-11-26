@@ -7,7 +7,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwen_memory.common.type_def import MemoryUnit, Modality, Scope, Segment, Temporal
+from jiuwen_memory.common.errors import WriteIncompleteError
+from jiuwen_memory.common.type_def import (
+    MemoryUnit,
+    Modality,
+    Scope,
+    Segment,
+    Temporal,
+    memory_key,
+)
+from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.construction.evolver import EvolveResult, GroupedExtractResult
 from jiuwen_memory.construction.index_builder import UnitCommitState, UnitCommitStatus
 from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
@@ -261,6 +270,84 @@ def test_merge_failure_with_unknown_commit_records_no_replay() -> None:
     )
     assert outcomes[0].error_type == "InternalError"
     assert evolver.single_calls == [], "提交状态未知时不得逐条重放"
+
+
+def test_grouped_builder_raising_after_write_reports_unknown() -> None:
+    """builder 写入后抛错：拿不到回执即按提交状态未知处理，要求核对后重试。"""
+
+    class _WriteThenRaise:
+        def __init__(self, kv: InMemoryKVStore) -> None:
+            self._kv = kv
+            self.calls = 0
+
+        @staticmethod
+        def supports_grouped_build() -> bool:
+            return True
+
+        def build_grouped(self, units):
+            self.calls += 1
+            self._kv.insert(units[0].scope, memory_key(units[0].id), dumps(units[0]))
+            raise RuntimeError("raised after writing first unit")
+
+        @staticmethod
+        def build(units, *, mode=None) -> None:
+            return None
+
+        @staticmethod
+        def update(units, *, mode=None) -> None:
+            return None
+
+        @staticmethod
+        def remove(units, *, mode=None) -> None:
+            return None
+
+        @staticmethod
+        def rebuild() -> None:
+            return None
+
+    kv = InMemoryKVStore()
+    builder = _WriteThenRaise(kv)
+    engine = InMemoryEngine(
+        ingestor=_Ingestor(),
+        index_builder=builder,
+        retriever=None,
+        kv=kv,
+        scheduler=None,
+        evolver=_Evolver(),
+        lifecycle=None,
+    )
+
+    outcomes = _run(engine.write_group(_items(2, infer=False), merge_extract=False))
+
+    assert builder.calls == 1, "提交状态未知时不得自动重放"
+    assert kv.exists(_SCOPE, memory_key("src-1")), "第一项确实已经落盘"
+    for outcome in outcomes:
+        assert outcome.units == []
+        assert outcome.error_type == "WriteIncompleteError"
+        assert isinstance(outcome.error_obj, WriteIncompleteError)
+        assert outcome.error_obj.retry_action == "recover_then_retry"
+
+
+def test_grouped_receipts_alignment_controls_ingest_and_units() -> None:
+    """builder 漏回第一项时：摄入只记第二项，第一项按 UNKNOWN 回执。"""
+    import threading
+
+    from jiuwen_memory.control.ingest_job import IngestCancellation, ingest_cancellation
+
+    builder = _Builder(
+        statuses=[UnitCommitStatus(unit_id="src-2", state=UnitCommitState.COMMITTED)]
+    )
+    engine = _engine(builder=builder)
+    state = IngestCancellation(requested=threading.Event())
+    token = ingest_cancellation.set(state)
+    try:
+        outcomes = _run(engine.write_group(_items(2, infer=False), merge_extract=False))
+    finally:
+        ingest_cancellation.reset(token)
+
+    assert state.unit_ids == ("src-2",), "摄入记账只能包含真正有回执的 unit"
+    assert outcomes[0].units == [] and outcomes[0].error_type == "WriteIncompleteError"
+    assert [unit.id for unit in outcomes[1].units] == ["src-2"]
 
 
 def test_one_item_two_units_partial() -> None:

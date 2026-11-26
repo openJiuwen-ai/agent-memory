@@ -11,6 +11,7 @@ from deploy.migration.backfill import (
     provision_main_spaces,
     rebuild_index,
     rebuild_registry,
+    repair_schema_property_index,
 )
 from jiuwen_memory.common.security.principal import AUTHOR_AGENT, AUTHOR_PRINCIPAL
 from jiuwen_memory.common.type_def import MemoryUnit, Scope, memory_key
@@ -246,3 +247,74 @@ def test_an_empty_tag_key_set_skips_the_fifth_action() -> None:
     migrated = loads(kv.get(_scope("acme", "team"), memory_key("u1")))
     assert migrated is not None
     assert set(migrated.system_metadata) == {AUTHOR_PRINCIPAL, AUTHOR_AGENT}
+
+
+def _schema_property(unit_id: str, scope: Scope) -> MemoryUnit:
+    return MemoryUnit(
+        id=unit_id,
+        scope=scope,
+        segments=[Segment(content=f"c-{unit_id}")],
+        system_metadata={
+            "extraction_mode": "schema",
+            "schema_entity_key": "person:alice",
+            "schema_property_name": "hobby",
+        },
+    )
+
+
+def _seed_broken_schema_index(kv: InMemoryKVStore, scope: Scope, unit_id: str) -> None:
+    """复刻旧 bug 的落盘形态：真源在，反向索引 watermark=complete 但成员被排除。"""
+    from jiuwen_memory.storage._schema_property_index import SchemaPropertyIndex
+
+    unit = _schema_property(unit_id, scope)
+    kv.insert(scope, memory_key(unit_id), dumps(unit))
+    SchemaPropertyIndex(kv).mark_forward_only([unit])
+
+
+def test_repair_schema_index_only_touches_broken_scopes_and_respects_space() -> None:
+    from jiuwen_memory.storage._schema_property_index import SchemaPropertyIndex
+
+    kv = InMemoryKVStore()
+    broken = Scope(org="acme", space="team", user="alice")
+    other_space = Scope(org="acme", space="other", user="alice")
+    healthy = Scope(org="acme", space="team", user="bob")
+    _seed_broken_schema_index(kv, broken, "p-1")
+    _seed_broken_schema_index(kv, other_space, "p-2")
+    SchemaPropertyIndex(kv).upsert([_schema_property("p-3", healthy)])
+
+    report = repair_schema_property_index(kv, "acme", space="team")
+
+    assert report.repaired == [broken], "只处理指定空间内仍有 exclusion 的 scope"
+    assert report.failed == []
+    index = SchemaPropertyIndex(kv)
+    assert index.lookup(broken, "person:alice").unit_ids == ["p-1"]
+    assert index.lookup(other_space, "person:alice").unit_ids == [], "空间外的不动"
+
+
+def test_repair_schema_index_dry_run_does_not_write() -> None:
+    from jiuwen_memory.storage._schema_property_index import SchemaPropertyIndex
+
+    kv = InMemoryKVStore()
+    scope = Scope(org="acme", space="team", user="alice")
+    _seed_broken_schema_index(kv, scope, "p-1")
+
+    report = repair_schema_property_index(kv, "acme", dry_run=True)
+
+    assert report.repaired == [scope]
+    assert SchemaPropertyIndex(kv).lookup(scope, "person:alice").unit_ids == []
+    assert kv.scan(scope, "/schema/entity-properties/v1/excluded/"), "dry-run 不得清排除"
+
+
+def test_repair_schema_index_reports_failed_scope() -> None:
+    kv = InMemoryKVStore()
+    scope = Scope(org="acme", space="team", user="alice")
+    _seed_broken_schema_index(kv, scope, "p-1")
+    kv.insert(scope, memory_key("corrupted"), b"not-a-memory-unit")
+
+    report = repair_schema_property_index(kv, "acme")
+
+    assert report.repaired == []
+    assert [failed for failed, _ in report.failed] == [scope], "重建失败必须报告，不能静默"
+    assert kv.exists(scope, "/schema/entity-properties/v1/needs-repair"), (
+        "失败的 scope 保留 needs-repair，读侧继续回退真源"
+    )

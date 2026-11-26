@@ -36,6 +36,7 @@
     python -m deploy.migration.backfill provision-main-space --org acme --principals p.txt
     python -m deploy.migration.backfill rebuild-registry --org acme
     python -m deploy.migration.backfill rebuild-index --org acme
+    python -m deploy.migration.backfill repair-schema-index --org acme [--space coding] [--dry-run]
     python -m deploy.migration.backfill audit-shape --org acme
 
 全部子命令接受 ``--config <yaml>`` 指定与服务同一份装配配置；不传即用内置默认
@@ -439,6 +440,57 @@ def rebuild_index(kv: KVStore, org: str, *, dry_run: bool = False) -> dict[str, 
     return counts
 
 
+@dataclass
+class SchemaIndexRepairReport:
+    """``repair-schema-index`` 的结果：已修复与失败的 scope 分开报告，失败不静默。"""
+
+    repaired: list[Scope] = field(default_factory=list)
+    failed: list[tuple[Scope, str]] = field(default_factory=list)
+
+
+def repair_schema_property_index(
+    kv: KVStore,
+    org: str,
+    *,
+    space: str | None = None,
+    user: str | None = None,
+    dry_run: bool = False,
+) -> SchemaIndexRepairReport:
+    """修复旧版本 Schema 反向索引坏数据（F10）：只处理仍有 exclusion 的 scope。
+
+    旧实现把批量写入的成功属性错误地 ``mark_forward_only``，留下
+    watermark=complete、成员为空、exclusion 残留。``repair_scope`` 清除该 scope 的全部
+    exclusion（正常路径不给 Property 写排除，归档成员本就应留在索引里），失效后立即按
+    真源重建。
+
+    **须在维护窗口执行或先停写**：scope 锁只在进程内有效，本工具与在线服务不互斥。
+    单个 scope 读取或重建失败不阻断其余 scope，但会记入 ``failed``（该 scope 保留
+    needs-repair，读侧继续回退真源），CLI 据此返回非零退出码。可重复执行。
+    """
+    from jiuwen_memory.storage._schema_property_index import SchemaPropertyIndex
+
+    index = SchemaPropertyIndex(kv)
+    report = SchemaIndexRepairReport()
+    excluded_prefix = "/schema/entity-properties/v1/excluded/"
+    for scope in kv.scopes():
+        if scope.org != org:
+            continue
+        if space is not None and scope.space != space:
+            continue
+        if user is not None and scope.user != user:
+            continue
+        try:
+            if not kv.scan(scope, excluded_prefix):
+                continue
+            if not dry_run:
+                index.repair_scope(scope)
+        except Exception as exc:  # noqa: BLE001 —— 单个 scope 失败逐项报告，不阻断其余
+            report.failed.append((scope, f"{type(exc).__name__}: {exc}"))
+            continue
+        report.repaired.append(scope)
+    return report
+
+
 def audit_shape(kv: KVStore, org: str) -> dict[str, list[str]]:
     """形态审查：列出需要人工处置的存量形态。
 
@@ -569,6 +621,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     p_index.add_argument("--org", required=True)
     p_index.add_argument("--dry-run", action="store_true")
 
+    p_repair = sub.add_parser(
+        "repair-schema-index", help="修复旧版本 Schema 反向索引坏数据（维护窗口内执行）"
+    )
+    p_repair.add_argument("--org", required=True)
+    p_repair.add_argument("--space", default=None)
+    p_repair.add_argument("--user", default=None)
+    p_repair.add_argument("--dry-run", action="store_true")
+
     p_audit = sub.add_parser("audit-shape", help="形态审查")
     p_audit.add_argument("--org", required=True)
 
@@ -604,6 +664,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         counts = rebuild_index(kv, args.org, dry_run=args.dry_run)
         _echo(f"重建反查索引：{counts}")
         return 0
+
+    if args.command == "repair-schema-index":
+        report = repair_schema_property_index(
+            kv,
+            args.org,
+            space=args.space,
+            user=args.user,
+            dry_run=args.dry_run,
+        )
+        verb = "待修复" if args.dry_run else "已修复"
+        _echo(f"Schema 反向索引{verb} scope {len(report.repaired)} 个：{report.repaired}")
+        for scope, reason in report.failed:
+            _echo(f"失败 scope {scope}：{reason}")
+        return 1 if report.failed else 0
 
     findings = audit_shape(kv, args.org)
     for name, items in findings.items():
