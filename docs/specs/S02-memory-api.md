@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-25 |
+| 最近一次修订日期 | 2026-11-26 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/F05-personal-memory-portal.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/api/F10-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F09-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/construction/F13-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md，docs/features/control/F10-async-write-orchestration.md |
 
@@ -227,7 +227,9 @@ SDK 接续模式下，共用一个 Runtime 的 Provider 使用同一个 ID，实
 `wait=True` 等待上述流程完成；`wait=False` 安排后台收尾，已进入的同步调用和必要的归档
 收尾仍可能继续执行，后续可再次调用 `close(wait=True)` 等待全部完成。关闭后不允许重新
 启动 Runtime。不得在 Runtime 自有循环线程或调度器所属循环内阻塞等待自身关闭。
-异步调度器的详细关闭契约见 S03；直接使用 MemoryAPI 的业务方法不代替 Runtime 生命周期管理。
+异步调度器的详细关闭契约见 S03。Runtime 持有者在宿主退出前调用 `close(wait=True)`，包括
+启动或传输失败的路径。通过 `assemble()` 取得的 API 也可调用 `close()`，委托其所属 Runtime
+完成同样的收尾。
 
 关闭前先校验是否会等待所属工作线程自身；校验失败不启动收尾。资源清理按步骤隔离异常：
 一个步骤失败不跳过其他安全的停止动作。无法确认看门狗、摄入或调度任务停止时，保留
@@ -257,7 +259,8 @@ def assemble_runtime(
 ```
 
 `log_handler` 接收业务提供的标准日志处理器（`logging.Handler`）。处理器由业务创建和关闭，
-SDK 负责把脱敏后的日志记录交给它。`globals.log_output` 决定日志输出到哪里：
+SDK 负责把脱敏后的日志记录交给它。业务先等待使用该处理器的 Runtime 全部关闭，再关闭处理器
+及其日志流。`globals.log_output` 决定日志输出到哪里：
 
 | 配置值 | 输出方式 |
 |---|---|

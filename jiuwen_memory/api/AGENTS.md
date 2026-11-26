@@ -272,6 +272,7 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
 15. 成员/Grant 授予上界接收完整可信上下文，只有 ROOT 免除普通成员上界；不得从 actor
     的 Scope 形状推导特权。路由写入和跨空间查询必须区分后端故障与正常权限拒绝。
 16. 创建 SDK 时，`assemble()` / `assemble_runtime()` 接收的业务日志处理器由调用方负责关闭。
+    宿主退出前等待其持有的 Runtime 关闭，业务日志处理器用到的最后一个 Runtime 关闭后再释放它。
     同一进程共用首次成功初始化的日志设置；即使后续组件初始化失败，这套设置也会保留。
     后续实例可以不再传处理器，继续使用已有对象。关闭某个实例不会重置日志设置或关闭
     处理器。输出选项和配置冲突的处理规则见 S02、F09；本功能不自动接管 Server、CLI、HTTP、
