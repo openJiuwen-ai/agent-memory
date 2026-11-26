@@ -76,7 +76,8 @@ from jiuwen_memory.common.security.types import (
 )
 from jiuwen_memory.common.trace import TraceCollector, configure_default
 from jiuwen_memory.common.trace.runtime import TraceRuntime, bind_trace, build_trace_runtime
-from jiuwen_memory.common.type_def import Scope
+from jiuwen_memory.common.type_def import MD_FILENAME_KEY, LifecycleState, Scope
+from jiuwen_memory.common.type_def.memory_codec import loads
 from jiuwen_memory.config import Config
 from jiuwen_memory.config.config_source import ConfigSource, ConfigSourceProducer
 from jiuwen_memory.config.config_source_impl import register_config_sources
@@ -1083,10 +1084,10 @@ def _assemble_kernel(
     _reject_routing_without_space_authorization(api)
     watchdog: Watchdog | None = None
     has_shadow = storage.has_shadow_index()
-    watch_doc = resolve_watch_document(root.get(WATCH_DOCUMENT_KEY, True))
+    watch_doc = resolve_watch_document(root.get(WATCH_DOCUMENT_KEY, True)) and privacy is None
     if has_shadow and watch_doc:
         watchdog = WatchdogProducer.dep(root, default="watchdog")
-    # "文档看门狗是否启用"的唯一决策点：shadow 端口缺失或 watch_document 关闭
+    # 隐私模式禁止导入外部编辑；普通模式仍由 shadow 端口与 watch_document 决定。
     # 都会让 assembled=False，此时 md 手改不会被增量同步——出问题时据本日志定位。
     logger.info(
         "watchdog assembled=%s (shadow=%s, watch_doc=%s)",
@@ -1202,10 +1203,17 @@ def _merge_extract_default(ctx) -> bool:
 
 def _validate_privacy_namespace(storage, root, privacy) -> None:
     """Enabling protection must not silently expose a pre-existing plaintext corpus."""
-    from jiuwen_memory.common.type_def.memory_codec import loads
-
-    if storage.has_shadow_index() or as_bool(root.get("document_enabled"), default=False):
-        raise ValidationError("privacy does not yet support document mode or filesystem watchers")
+    document_mode = should_write_document(root.get(WRITE_DOCUMENT_KEY))
+    if document_mode:
+        domain = storage.domain_store(resolve_name(root, "domain_store"))
+        if not getattr(domain, "protects_document_writes", False):
+            raise ValidationError("Privacy requires a protected document domain")
+        names = {"default", *root.ctx.namespaces.get("shadow_index", {})}
+        for name in names:
+            if storage.has_shadow_index(name):
+                _validate_protected_shadow(storage.shadow_index(name), privacy)
+    elif storage.has_shadow_index() or as_bool(root.get("document_enabled"), default=False):
+        raise ValidationError("Privacy requires protected document mode when shadow is configured")
     names = {resolve_name(root, "kv_store"), *root.ctx.namespaces.get("kv_store", {})}
     for name in names:
         if not storage.has_kv(name):
@@ -1224,6 +1232,28 @@ def _validate_privacy_namespace(storage, root, privacy) -> None:
                         if unit.scope != scope:
                             raise ValidationError("privacy memory scope mismatch")
                         privacy.validate_existing(unit, channel=channel)
+
+
+def _validate_protected_shadow(shadow, privacy) -> None:
+    if not shadow.supports_protected_documents:
+        raise ValidationError("Privacy requires a protected shadow port")
+    snapshots = {}
+    for scope in shadow.scopes():
+        for uid, raw in shadow.list_units(scope):
+            unit = loads(raw)
+            if unit is None or unit.scope != scope or unit.id != uid:
+                raise ValidationError("Invalid protected shadow record")
+            path = unit.system_metadata.get(MD_FILENAME_KEY)
+            if not isinstance(path, str) or not path:
+                raise ValidationError("Privacy requires migration of existing Markdown memories")
+            if path not in snapshots:
+                snapshot = shadow.protected_document(path)
+                if snapshot is None:
+                    raise ValidationError("Existing Markdown memory requires privacy migration")
+                snapshots[path] = frozenset(snapshot.unit_ids)
+            if unit.lifecycle == LifecycleState.ACTIVE and uid not in snapshots[path]:
+                raise ValidationError("Active Markdown memory is missing from its snapshot")
+            privacy.validate_existing(unit)
 
 
 def _reject_test_only_authorizer(authorizer: Authorizer, config: Config | None) -> None:

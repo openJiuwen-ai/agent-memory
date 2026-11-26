@@ -56,6 +56,8 @@ class AdminOpsMixin:
     def prepare_video_ingest(
         self, uri: str, scope: Scope, *, security: RequestSecurityContext, project: str,
     ) -> str:
+        if getattr(self, "_document_mode", False) and self._privacy is not None:
+            raise ValidationError("Video ingest is unavailable for protected documents")
         metadata = {"infer": True, "pipeline": "video", "project": project}
         self.check_write(scope, security, system_metadata=metadata)
         preflight = self._engine.video_ingest_preflight()
@@ -79,6 +81,8 @@ class AdminOpsMixin:
         occurred_at: datetime | None = None,
         event_time: datetime | None = None,
     ) -> IngestSubmission:
+        if getattr(self, "_document_mode", False) and self._privacy is not None:
+            raise ValidationError("Ingest jobs are unavailable for protected documents")
         _reject_invalid_event_time(event_time)
         self.check_write(
             scope,

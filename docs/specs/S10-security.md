@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/`、`jiuwen_memory_adapter/agent_security/` |
-| 最近一次修订日期 | 2026-11-24 |
+| 最近一次修订日期 | 2026-11-25 |
 | 关联特性文档 | [F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 显式明文记忆维护
@@ -675,6 +675,11 @@ reference/清单检索不解密片段，get_fragment 必须位于二次认证、
 失败时保留新快照。回读也失败时持久保留候选版本和引用，后续成功写入或硬删再清理；
 这些恢复记录不作为普通历史记忆开放，用户访问仍须从当前真源取得匹配的版本。
 删除必须在真源删除成功后回收；仅移除检索投影不得撤销私有状态。各后端不提供全局事务。
+
+个人 Markdown 的受控 `add` 与 `edit_md_file` 复用上述策略、清单和加密片段。
+完整受影响块在第一次发布前完成保护。编辑只从已提交快照继承引用，并为新单位
+建立独立清单和 revision。首次文件发布及其失败补偿均只写已保护的内容。受保护模式
+不导入外部改动，用户访问仍以引擎查得的当前 shadow 条目与版本为准。
 
 ### 独立人机认证与 Runtime 能力
 

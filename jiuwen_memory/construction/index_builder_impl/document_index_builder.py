@@ -38,8 +38,9 @@
 
 from __future__ import annotations
 
-from jiuwen_memory.common.errors import UnsupportedStorageCapabilityError
+from jiuwen_memory.common.errors import UnsupportedStorageCapabilityError, ValidationError
 from jiuwen_memory.common.log import get_logger
+from jiuwen_memory.common.security.privacy.base import privacy_enabled
 from jiuwen_memory.common.type_def import MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder, IndexBuilderProducer
@@ -76,6 +77,13 @@ class DocumentIndexBuilder(IndexBuilder):
         self._domain = domain_store
         self._skill_index_builder = skill_index_builder
         self._skill_files = skill_files
+        self._protected_documents = getattr(domain_store, "protects_document_writes", False)
+
+    def _reject_protected_skills(self, units: list[MemoryUnit]) -> None:
+        if self._protected_documents and any(
+            unit.system_metadata.get("memory_type") == "skill" for unit in units
+        ):
+            raise ValidationError("Skill writes are unavailable in protected document mode")
 
     def read_domain_store(self) -> DomainStore:
         """Expose the same domain used by build/update for pre-write rechecks."""
@@ -90,6 +98,7 @@ class DocumentIndexBuilder(IndexBuilder):
     def build(self, units: list[MemoryUnit], *, mode: IndexWriteMode = IndexWriteMode.ALL) -> None:
         if mode is IndexWriteMode.RETRIEVAL_ONLY:
             return
+        self._reject_protected_skills(units)
         logger.info("DocumentIndexBuilder: building document memory for %d units", len(units))
         for unit in units:
             is_skill = unit.system_metadata.get("memory_type") == "skill"
@@ -105,6 +114,7 @@ class DocumentIndexBuilder(IndexBuilder):
     ) -> None:
         if mode is IndexWriteMode.RETRIEVAL_ONLY:
             return
+        self._reject_protected_skills(units)
         logger.info("DocumentIndexBuilder: updating document memory for %d units", len(units))
         for unit in units:
             is_skill = unit.system_metadata.get("memory_type") == "skill"
@@ -118,6 +128,7 @@ class DocumentIndexBuilder(IndexBuilder):
     def remove(
         self, units: list[MemoryUnit], *, mode: IndexRemoveMode = IndexRemoveMode.HARD
     ) -> None:
+        self._reject_protected_skills(units)
         logger.info("DocumentIndexBuilder: removing %d units (mode=%s)", len(units), mode)
         for unit in units:
             is_skill = unit.system_metadata.get("memory_type") == "skill"
@@ -139,10 +150,11 @@ class DocumentIndexBuilder(IndexBuilder):
 @IndexBuilderProducer.register("document")
 def _build(config):
     skill_files = config.params.get("skill_files")
+    domain = StoreManagerProducer.resolve(config).domain_store(resolve_name(config, "domain_store"))
+    if privacy_enabled(config) and not getattr(domain, "protects_document_writes", False):
+        raise ValidationError("Every document write pipeline must support privacy")
     return DocumentIndexBuilder(
-        StoreManagerProducer.resolve(config).domain_store(
-            resolve_name(config, "domain_store")
-        ),
+        domain,
         skill_index_builder=(
             IndexBuilderProducer.dep(config, "skill_index_builder", default="hybrid")
             if skill_files is None and "skill_index_builder" in config.params else None

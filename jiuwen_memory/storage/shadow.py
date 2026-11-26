@@ -15,6 +15,9 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from collections.abc import Callable
+from contextlib import AbstractContextManager
+from dataclasses import dataclass
 
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.type_def import MemoryUnit, Scope
@@ -34,6 +37,14 @@ class ShadowIndexProducer(Factory):
     TOP_NAME = "shadow_index"
 
 
+@dataclass(frozen=True)
+class ProtectedDocument:
+    """Committed protected Markdown and its ordered shadow block identities."""
+
+    text: str
+    unit_ids: tuple[str, ...]
+
+
 class DocumentShadowIndex(BaseStore):
     """文档场景影子索引契约。"""
 
@@ -44,6 +55,23 @@ class DocumentShadowIndex(BaseStore):
         默认按实例隔离，兼容独立内存后端；不得编码 Scope 或调用方身份。
         """
         return f"shadow-instance:{id(self)}"
+
+    @property
+    def supports_protected_documents(self) -> bool:
+        return False
+
+    def protected_document(self, path: str) -> ProtectedDocument | None:
+        raise NotImplementedError
+
+    def commit_protected_documents(
+        self,
+        changes: dict[str, tuple[ProtectedDocument | None, ProtectedDocument]],
+        inserted: list[MemoryUnit],
+        superseded: list[MemoryUnit],
+        publish: Callable[[], AbstractContextManager[None]],
+    ) -> None:
+        """Publish file views and commit protected snapshots with their shadow rows."""
+        raise NotImplementedError
 
     @abstractmethod
     def insert_units(self, scope: Scope, units: list[MemoryUnit]) -> None:

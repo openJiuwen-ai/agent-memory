@@ -1052,6 +1052,8 @@ class QueryOpsMixin:
         *,
         security: RequestSecurityContext,
     ) -> MemoryUnit:
+        if self._privacy is not None and self._document_mode:
+            raise ValidationError("Protected document updates require edit_md_file")
         identity = security.auth.actor
         _reject_kernel_system_metadata(patch.system_metadata)
         # 判定标签键在改写入口同样不可由调用方赋值：只挂写入入口时，改写即绕过通道——
@@ -1157,6 +1159,8 @@ class QueryOpsMixin:
         limit: int | None = None,
         continue_on_error: bool = True,
     ) -> BatchUpdateResult:
+        if self._privacy is not None and self._document_mode:
+            raise ValidationError("Protected document updates require edit_md_file")
         identity = security.auth.actor
         selector_is_empty = (
             not selector.unit_ids
@@ -1361,6 +1365,8 @@ class QueryOpsMixin:
         return BatchUpdateResult(outcomes=outcomes)
 
     def delete(self, selector: DeleteSelector, *, security: RequestSecurityContext) -> list[str]:
+        if self._privacy is not None and self._document_mode:
+            raise ValidationError("Deletion is unavailable for protected document memories")
         identity = security.auth.actor
         selector_is_empty = (
             not selector.unit_ids
@@ -1516,6 +1522,8 @@ class QueryOpsMixin:
         hierarchy_options: HierarchyComposeOptions | None = None,
         reuse_existing: bool = False,
     ) -> str | None:
+        if self._privacy is not None and self._document_mode:
+            raise ValidationError("Evolution is unavailable for protected document memories")
         if mode is EvolveMode.HIERARCHY:
             return self._evolve_hierarchy(
                 scope, EvolveTaskOptions(

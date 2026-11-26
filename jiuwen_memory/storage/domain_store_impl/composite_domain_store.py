@@ -34,6 +34,7 @@ from jiuwen_memory.common.errors import (
 )
 from jiuwen_memory.common.log import get_logger, scope_for_log
 from jiuwen_memory.common.plaintext import PlaintextDataError
+from jiuwen_memory.common.security.privacy.base import optional_privacy
 from jiuwen_memory.common.type_def import (
     MD_FILENAME_KEY,
     MD_TITLE_KEY,
@@ -95,6 +96,7 @@ from jiuwen_memory.storage.types import (
     ShardedGetResult,
 )
 
+from .protected_documents import ProtectedDocuments
 from .recaller import RecallerProducer
 
 
@@ -148,6 +150,11 @@ class CompositeDomainStore(DomainStore):
         # markdown/shadow 端口是否装配与它绑定（manager 扫命名空间决定）。
         self._write_document = write_document
         self._experience_partition = experience_partition
+        self._protected_documents: ProtectedDocuments | None = None
+
+    @property
+    def protects_document_writes(self) -> bool:
+        return self._protected_documents is not None
 
     @classmethod
     def for_manager(cls, manager: StoreManager, config: Any = None) -> CompositeDomainStore:
@@ -174,6 +181,12 @@ class CompositeDomainStore(DomainStore):
             write_document=should_write_document(config.get(WRITE_DOCUMENT_KEY, False)),
             experience_partition=config.get("experience_partition", ""),
         )
+        if domain_store.should_write_document():
+            privacy = optional_privacy(config)
+            if privacy is not None:
+                domain_store._protected_documents = ProtectedDocuments(
+                    manager.markdown(), manager.shadow_index(), privacy,
+                )
         domain_store.bind_recallers(_assemble_recallers(config, storage=manager))
         return domain_store
 
@@ -258,6 +271,9 @@ class CompositeDomainStore(DomainStore):
         if mode is IndexWriteMode.RETRIEVAL_ONLY:
             return
         self._validate_units(scope, units)
+        if self._protected_documents is not None:
+            self._protected_documents.add(units)
+            return
         if self.should_write_document():
             # 文档路径：写 md + 建影子索引，不碰 KV（F07 §3.1 互斥路径）。
             # md.write 内部按文件分组批量写、回填 unit.system_metadata["md_filename"]
@@ -316,6 +332,8 @@ class CompositeDomainStore(DomainStore):
         if mode is IndexWriteMode.RETRIEVAL_ONLY:
             return
         self._validate_units(scope, units)
+        if self._protected_documents is not None:
+            raise ValidationError("Protected document updates require edit_md_file")
         if self.should_write_document():
             # 文档路径：影子索引 update_units 覆写 unit_json（content_hash 判定自动处理——
             # OVERWRITE content 变 → 重建 FTS5/vec0；SUPERSEDE 状态变 → 只覆写 unit_json），
@@ -479,6 +497,8 @@ class CompositeDomainStore(DomainStore):
         # 不在 delete(SOFT) 里删投影（避免 content 变更重建投影使 unit 重回检索）。
         if mode is IndexRemoveMode.SOFT:
             return
+        if self._protected_documents is not None:
+            raise ValidationError("Deletion is unavailable for protected document memories")
         if self.should_write_document():
             # 文档路径：影子索引 delete_units 同事务删三表 + md.remove_content 删对应块
             # （F07 §5.4）。先 get_units 拿旧 unit（md_filename + content 定位 md 块）——
@@ -697,6 +717,9 @@ class CompositeDomainStore(DomainStore):
             raise ValidationError(
                 "read_md_file requires document mode (write_document=true)"
             )
+        if self._protected_documents is not None:
+            path = collective_path or MarkdownStore.resolve_md_path(md_basename, project, team=team)
+            return self._protected_documents.read(scope, path, line_range)
         md = self._raw_markdown()
         shadow = self._raw_shadow_index()
         text = md.read_content(
@@ -735,6 +758,11 @@ class CompositeDomainStore(DomainStore):
             raise ValidationError(
                 "edit_md_file requires document mode (write_document=true)"
             )
+        if self._protected_documents is not None:
+            if collective_path not in ("", "USER.md") or team:
+                raise ValidationError("Protected document edits require personal memories")
+            path = collective_path or MarkdownStore.resolve_md_path(md_basename, project)
+            return self._protected_documents.edit(scope, path, old_text, new_text)
         md = self._raw_markdown()
         shadow = self._raw_shadow_index()
         rel_path = collective_path or MarkdownStore.resolve_md_path(md_basename, project, team=team)

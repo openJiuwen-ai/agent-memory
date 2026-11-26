@@ -136,6 +136,68 @@ def collect_md_blocks(abs_path: str) -> list[tuple[str, str, int]]:
     return collect_blocks_from_text(text)
 
 
+def edited_document_text(text: str, md_basename: str, old_text: str, new_text: str) -> str:
+    """Build the candidate after the caller has verified one exact occurrence."""
+    out = text.replace(old_text, new_text, 1)
+    # 文件工具通常只传正文；沿用旧事实标题会让 USER.md 显示相互矛盾的内容。
+    # 仅处理块结构未变、正文单行且标题未被显式编辑的情形；daily 标题是团队名。
+    if md_basename not in ("USER.md", "MEMORY.md") or "\n" in old_text:
+        return out
+    old_blocks = text.split("\n\n")
+    new_blocks = out.split("\n\n")
+    if len(old_blocks) != len(new_blocks):
+        return out
+    return "\n\n".join(
+        _sync_edited_title(before, after) for before, after in zip(old_blocks, new_blocks)
+    )
+
+
+def _sync_edited_title(before: str, after: str) -> str:
+    old_parts = before.split("\n")
+    new_parts = after.split("\n")
+    if len(old_parts) != 2 or len(new_parts) != 2:
+        return after
+    old_heading, old_body = old_parts
+    new_heading, new_body = new_parts
+    if old_heading != new_heading or not old_heading.startswith("# "):
+        return after
+    title = old_heading[2:].strip()
+    if not title or not new_body.strip() or old_body == new_body:
+        return after
+    return f"# {_replace_title_fact(title, old_body, new_body)}\n{new_body}"
+
+
+def _replace_title_fact(title: str, old_body: str, new_body: str) -> str:
+    prefix_len = 0
+    while prefix_len < min(len(old_body), len(new_body)):
+        if old_body[prefix_len] != new_body[prefix_len]:
+            break
+        prefix_len += 1
+    suffix_len = 0
+    while suffix_len < min(len(old_body), len(new_body)) - prefix_len:
+        if old_body[-suffix_len - 1] != new_body[-suffix_len - 1]:
+            break
+        suffix_len += 1
+    old_end = len(old_body) - suffix_len
+    new_end = len(new_body) - suffix_len
+    context_budget = len(title) - (old_end - prefix_len)
+    candidates: list[tuple[int, str, str]] = []
+    for left_len in range(min(prefix_len, max(context_budget, 0)) + 1):
+        max_right = min(suffix_len, max(context_budget - left_len, 0))
+        for right_len in range(max_right + 1):
+            start = prefix_len - left_len
+            original = old_body[start:old_end + right_len]
+            if not original or title.count(original) != 1:
+                continue
+            replacement = new_body[start:new_end + right_len]
+            candidates.append((len(original), original, replacement))
+    if candidates:
+        _, original, replacement = max(candidates)
+        return title.replace(original, replacement, 1)
+    # “居住地”等概括性标题不含旧事实，无需随正文改写。
+    return title
+
+
 def build_block_units(  # noqa: ARG001  — 保留 kwargs 供未来扩展，当前签名稳定即可
     md_filename: str,
     blocks: list[tuple[str, str, int]],

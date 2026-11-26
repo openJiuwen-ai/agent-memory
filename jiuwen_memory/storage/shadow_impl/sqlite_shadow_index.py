@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sqlite3
 import threading
@@ -55,7 +56,7 @@ from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.common.type_def.memory_filter import COLLECTIVE_DOCUMENT_PREFIXES
 from jiuwen_memory.config.encryption import AtRestLocation
 from jiuwen_memory.storage.base import StoreType
-from jiuwen_memory.storage.shadow import DocumentShadowIndex, ShadowIndexProducer
+from jiuwen_memory.storage.shadow import DocumentShadowIndex, ProtectedDocument, ShadowIndexProducer
 from jiuwen_memory.storage.sync_gate import resource_path_key
 from jiuwen_memory.storage.types import ScoredID, TextQuery, VectorQuery
 
@@ -181,6 +182,11 @@ CREATE TABLE IF NOT EXISTS memory_unit (
     unit_json    BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_content_hash ON memory_unit(content_hash);
+CREATE TABLE IF NOT EXISTS protected_document (
+    path TEXT PRIMARY KEY,
+    snapshot TEXT NOT NULL,
+    unit_ids TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_md_filename ON memory_unit(md_filename);
 CREATE INDEX IF NOT EXISTS idx_project_category ON memory_unit(project, category);
 CREATE INDEX IF NOT EXISTS idx_scope ON memory_unit(org, space, "user", agent, session);
@@ -671,6 +677,46 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         return (unit.system_metadata or {}).get(MD_FILENAME_KEY) or ""
 
     # -- DocumentShadowIndex 契约 ------------------------------------------- #
+
+    @property
+    def supports_protected_documents(self) -> bool:
+        return True
+
+    def protected_document(self, path: str) -> ProtectedDocument | None:
+        with self._lock:
+            return self._protected_document(self._ensure_conn(), path)
+
+    @staticmethod
+    def _protected_document(conn: sqlite3.Connection, path: str) -> ProtectedDocument | None:
+        row = conn.execute(
+            "SELECT snapshot, unit_ids FROM protected_document WHERE path=?", (path,)
+        ).fetchone()
+        return ProtectedDocument(row[0], tuple(json.loads(row[1]))) if row else None
+
+    def commit_protected_documents(self, changes, inserted, superseded, publish) -> None:
+        with self._lock:
+            conn = self._ensure_conn()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                for path, (expected, current) in changes.items():
+                    if self._protected_document(conn, path) != expected:
+                        raise ConflictError("protected document", path)
+                    conn.execute(
+                        "INSERT INTO protected_document(path, snapshot, unit_ids) VALUES (?, ?, ?) "
+                        "ON CONFLICT(path) DO UPDATE SET snapshot=excluded.snapshot, "
+                        "unit_ids=excluded.unit_ids",
+                        (path, current.text, json.dumps(current.unit_ids)),
+                    )
+                for unit in inserted:
+                    self._insert_one(conn, unit)
+                for unit in superseded:
+                    self._update_one(conn, unit)
+                with publish():
+                    conn.execute("COMMIT")
+            except BaseException:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
 
     def insert_units(self, scope: Scope, units: list[MemoryUnit]) -> None:
         with self._lock:
@@ -1372,6 +1418,7 @@ logger = get_logger(__name__)
     },
 )
 def _build(config):
+    from jiuwen_memory.common.security.privacy.base import privacy_enabled
     from jiuwen_memory.config.config_source import ConfigSourceProducer
 
     # 跨 namespace 读 markdown_store.default 的 root，供 db_path 派生（F07 §6.6）。
@@ -1395,10 +1442,18 @@ def _build(config):
     embedder = None
     if "embedder" in config.params:
         embedder = EmbedderProducer.dep(config)
+    db_path = Factory.cfg_get(config, "db_path", None)
+    config_source = ConfigSourceProducer.get_cached("default")
+    if privacy_enabled(config):
+        config_source = None
+        if db_path and db_path != ":memory:":
+            db_path = os.path.abspath(db_path)
+        if markdown_root:
+            markdown_root = os.path.abspath(markdown_root)
     return SqliteDocumentShadowIndex(
-        Factory.cfg_get(config, "db_path", None),
+        db_path,
         embedder=embedder,
         tokenizer=TokenizerProducer.dep(config, default="jieba"),
-        config_source=ConfigSourceProducer.get_cached("default"),
+        config_source=config_source,
         markdown_root=markdown_root,
     )

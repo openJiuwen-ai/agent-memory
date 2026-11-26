@@ -71,6 +71,8 @@ class CollectiveOpsMixin:
         self, sources, scope, *, security, system_metadata, user_metadata, tags,
         occurred_at, event_time,
     ) -> list[MemoryUnit]:
+        if self._privacy is not None and self._document_mode:
+            raise ValidationError("Collective writes are unavailable for protected documents")
         coordinates = self._require_collective_subject(scope, security, Action.WRITE, "add")
         options = dict(system_metadata or {})
         coordinates = select_collective_coordinates(coordinates, options.pop("coords", None))

@@ -54,6 +54,22 @@ class MarkdownStore(BaseStore):
         ——后者在 root 经 ConfigSource 晚绑定时读到的是过期的配置字面量。
         """
 
+    @property
+    def supports_protected_documents(self) -> bool:
+        return False
+
+    def locate_protected_unit(self, unit: MemoryUnit) -> str:
+        """Resolve the normal document route and set filename/class metadata without I/O."""
+        raise NotImplementedError
+
+    def matches_protected_text(self, path: str, expected: str | None) -> bool:
+        """Compare exact contents; absence differs from an empty file."""
+        raise NotImplementedError
+
+    def replace_protected_text(self, path: str, expected: str | None, text: str | None) -> None:
+        """Publish protected text atomically after checking the currently observed file."""
+        raise NotImplementedError
+
     @abstractmethod
     def write(self, scope: Scope, units: list[MemoryUnit]) -> None:
         """把一批 unit 的 ``segments[0].content`` 正文写进按 F08 §3 映射算出的 md 文件。
