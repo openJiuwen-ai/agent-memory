@@ -13,11 +13,11 @@ from jiuwen_memory_adapter.jiuwenswarm.base_document_scene import BaseDocumentSc
 from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemorySceneContext
 from jiuwen_memory_adapter.jiuwenswarm.memory_tools import parse_line_range
 
-_TARGET = {"type": "string", "enum": ["profile", "project", "team", "group", "personal"]}
+_TARGET = {"type": "string", "enum": ["profile", "project", "team", "group", "agent"]}
 _TEAM_SCHEMAS = [
     {
         "name": "team_memory_search",
-        "description": "Search accessible memories across the current collaboration and personal experience.",
+        "description": "Search accessible collaboration memories and agent-specific experience.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -78,8 +78,8 @@ class TeamMemoryScene(BaseDocumentScene):
         dimensions = context.collective or {}
         targets = ["profile"]
         targets.extend(kind for kind in ("project", "team", "group") if kind in dimensions)
-        if "personal" in dimensions or context.scope.agent not in ("", "main_agent"):
-            targets.append("personal")
+        if context.scope.agent not in ("", "main_agent"):
+            targets.append("agent")
         for schema in schemas:
             fields = schema["parameters"]["properties"]
             if "target" in fields:
@@ -107,6 +107,8 @@ class TeamMemoryScene(BaseDocumentScene):
             if not isinstance(query, str) or not query.strip():
                 raise ValueError("A non-empty query is required")
             target = args.get("target")
+            if target and target not in _TARGET["enum"]:
+                raise ValueError("Invalid collective memory target")
             limit = max(1, min(int(args.get("top_k") or 5), 5))
             hits = await context.client.search(
                 context.prepare(query), context.scope, top_k=limit,
@@ -177,7 +179,7 @@ class TeamMemoryScene(BaseDocumentScene):
             ]
             recalls.append(self._bounded(context.client.search(
                 query, context.scope, top_k=5,
-                filters={"system_metadata.collective_destination": {"in": ["group", "personal"]}},
+                filters={"system_metadata.collective_destination": {"in": ["group", "agent"]}},
             )))
         profile_units, *sections = await self.prefetch_with_profile(context.client, context.scope, *recalls)
         profile_text = "\n".join(unit["content"] for unit in profile_units[:20])[:2000]

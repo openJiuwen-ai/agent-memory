@@ -654,9 +654,10 @@ h3kWg/nfQTyTeADxXMx/P8T/TeJFYv5F5jmJF4H4VzD/8yGuuupfxj8CtFjfY8cIfsYAAAAASUVORK5C
   </div>
   <div class="memory-topics" role="group" aria-label="记忆分类导航" data-i18n-label="memoryTopics">
     <button id="topic-all" type="button" aria-pressed="true" data-i18n="allMemories">全部记忆</button>
+    <button id="topic-team" type="button" aria-pressed="false" data-i18n="teamMemory">团队记忆</button>
     <button id="topic-profile" type="button" aria-pressed="false" data-i18n="userProfile">用户画像</button>
     <button id="topic-knowledge" type="button" aria-pressed="false" data-i18n="projectKnowledge">项目知识</button>
-    <button id="topic-procedure" type="button" aria-pressed="false" data-i18n="procedures">过程与方法</button>
+    <button id="topic-experience" type="button" aria-pressed="false" data-i18n="experienceMemory">经验记忆</button>
   </div>
   <form id="search-form">
     <div class="memory-search-row">
@@ -775,7 +776,7 @@ h3kWg/nfQTyTeADxXMx/P8T/TeJFYv5F5jmJF4H4VzD/8yGuuupfxj8CtFjfY8cIfsYAAAAASUVORK5C
     <tr><td data-i18n="overview">记忆概览</td><td><code>POST /v1/list</code></td><td><code>overview</code> · <code>lifecycle_counts</code><br><span data-i18n="sourcesOverview">来源应用数统计所有可见记录中已标注的应用。来源分布统计有效记忆，日期按浏览器时区统计全部状态的写入。</span></td></tr><tr><td data-i18n="sourcesBatchActions">复制 / 导出 / 批量遗忘</td><td><code>/v1/get, /v1/delete</code></td><td data-i18n="sourcesBatchActionsHint">只处理本页所选记录；复制和导出前重新读取详情，导出 JSON 不含页面内部记录标识。遗忘逐条调用接口并报告部分失败。</td></tr><tr><td data-i18n="sourcesListAndFilters">记忆列表与筛选</td><td><code>POST /v1/list</code></td><td><code>items / count / snapshot</code><span data-i18n="sourcesListPagination">；筛选后计数、再分页；</span><code>sources / agents / projects / memory_classes</code><span data-i18n="sourcesListFacets"> 来自完整授权集合。</span></td></tr>
     <tr><td data-i18n="sourceApps">来源应用</td><td><code>/v1/list, /v1/get</code></td><td><code>source</code> ← <code>system_metadata.source_app</code><span data-i18n="sourcesMissingSource">；缺失显示“未标注来源”。</span></td></tr>
     <tr><td data-i18n="sourcesAgentAndProject">Agent / 项目</td><td><code>/v1/list, /v1/get</code></td><td><code>agent</code> ← <code>scope.agent</code><span data-i18n="sourcesNextField">；</span><code>agent_label</code><span data-i18n="sourcesAgentLabel"> 是显示名称。</span><code>project</code><span data-i18n="sourcesProjectFrom"> ← 文档记忆的 </span><code>system_metadata.project</code><span data-i18n="sourcesProjectDirect">（直传）或 </span><code>coords.project</code><span data-i18n="sourcesProjectFromRouter">（router 回写），空值显示“跨项目 / 未标注”。</span></td></tr>
-    <tr><td data-i18n="sourcesQuickFilters">内容快捷筛选</td><td><code>POST /v1/list</code></td><td><span data-i18n="sourcesProfileFilter">用户画像：</span><code>memory_class=user_profile</code><span data-i18n="sourcesKnowledgeFilter">；项目知识：</span><code>memory_class=long_term_memory + tier=semantic</code><span data-i18n="sourcesProcedureFilter">；过程与方法：</span><code>tier=procedural</code><span data-i18n="sourcesShortcutScope">。保留其他筛选，不新增分类或自动识别。</span></td></tr><tr><td data-i18n="sourcesTierAndClass">层级 / 记忆分类</td><td><code>/v1/list, /v1/get</code></td><td><code>tier</code> ← <code>MemoryTier.value</code><span data-i18n="sourcesTierCount">；筛选项对应六个认知层级。</span><code>memory_class</code> ← <code>system_metadata.memory_class</code><span data-i18n="sourcesNextField">；</span><code>memory_classes</code><span data-i18n="sourcesCustomClasses"> 来自授权集合，支持自定义分类。层级 archival 与生命周期 archived 是不同维度。</span></td></tr>
+    <tr><td data-i18n="sourcesQuickFilters">内容快捷筛选</td><td><code>POST /v1/list</code></td><td><span data-i18n="sourcesTeamFilter">团队记忆使用 </span><code>memory_class=team_memory</code><span data-i18n="sourcesProfileFilter">。用户画像使用 </span><code>memory_class=user_profile</code><span data-i18n="sourcesKnowledgeFilter">。项目知识使用 </span><code>memory_class ∈ {long_term_memory, project_memory}, tier=semantic</code><span data-i18n="sourcesExperienceFilter">。经验记忆使用 </span><code>memory_type=experience</code><span data-i18n="sourcesShortcutScope">。其他筛选条件继续生效。</span></td></tr><tr><td data-i18n="sourcesTierAndClass">层级 / 记忆分类</td><td><code>/v1/list, /v1/get</code></td><td><code>tier</code> ← <code>MemoryTier.value</code><span data-i18n="sourcesTierCount">；筛选项对应六个认知层级。</span><code>memory_class</code> ← <code>system_metadata.memory_class</code><span data-i18n="sourcesNextField">；</span><code>memory_classes</code><span data-i18n="sourcesCustomClasses"> 来自授权集合，支持自定义分类。层级 archival 与生命周期 archived 是不同维度。</span></td></tr>
     <tr><td data-i18n="sourcesDetailAndTime">完整详情与时间</td><td><code>POST /v1/get</code></td><td><span data-i18n="sourcesFreshDetails">每次重读 </span><code>segments / lifecycle / tags / source_ref / supersedes / temporal.t_ingest</code><span data-i18n="sourcesIngestTime">；时间来自 </span><code>temporal.t_ingest</code><span data-i18n="sourcesIngestTimeExplanation">，不是文件修改时间。</span></td></tr>
     <tr><td data-i18n="sourcesMutations">新增 / 纠正 / 遗忘</td><td><code>/v1/add, /v1/update, /v1/delete</code></td><td><span data-i18n="sourcesMutationScope">新增提交正文、Agent 和可选项目；宿主可绑定实际 Agent 范围。纠正与遗忘通过 </span><code>scope</code><span data-i18n="sourcesAnd"> 和 </span><code>unit_id</code><span data-i18n="sourcesMutationPermission"> 定位，服务端再次检查归属和权限。纠正创建 SUPERSEDE 新版；遗忘使用 FORGET。</span></td></tr>
     <tr><td data-i18n="sourcesSearchResults">检索结果</td><td><code>POST /v1/search</code></td><td><code>items / scores_comparable</code><span data-i18n="sourcesSearchOrdering">；来源先筛选再 top_k。按记忆范围轮转合并。</span></td></tr>
@@ -807,7 +808,7 @@ const messages = {
   memoryLibrary: ["记忆仓库", "Memory Library"],
   userProfile: ["用户画像", "User Profile"],
   projectKnowledge: ["项目知识", "Project Knowledge"],
-  procedures: ["过程与方法", "Procedures"],
+  experienceMemory: ["经验记忆", "Experience Memory"],
   modelSettings: ["模型设置", "Model Settings"],
   overviewIntro: ["了解当前实例的记忆情况，让每一条记忆都有迹可循。", "Review the memories and sources in this instance."],
   refreshOverview: ["刷新", "Refresh"],
@@ -837,6 +838,20 @@ const messages = {
   allMemories: ["全部记忆", "All Memories"],
   memoryTopics: ["记忆分类导航", "Memory categories"],
   allMyMemoriesHint: ["汇总所有记忆来源，按需筛选与管理。", "Browse, filter, and manage memories from all sources."],
+  teamMemoryHint: ["查看团队的约定、分工和可复用经验。", "Browse team agreements, responsibilities, and reusable lessons."],
+  collectiveTeam: ["团队", "Team"],
+  collectiveGroup: ["协作组", "Group"],
+  collectiveAgent: ["智能体", "Agent"],
+  decisionLabel: ["已确认决策", "Decision"],
+  lessonLabel: ["经验教训", "Lesson"],
+  memberLabel: ["成员分工", "Member Role"],
+  contextLabel: ["协作背景", "Context"],
+  shareStatus: ["共享状态", "Sharing"],
+  memoryShared: ["已共享", "Shared"],
+  memoryUnshared: ["未共享", "Unshared"],
+  noTeamMemories: ["暂无符合条件的团队记忆", "No matching team memories"],
+  noExperienceMemories: ["暂无符合条件的经验记忆", "No matching experience memories"],
+  noTopicMatchesHint: ["试试调整搜索条件或记忆状态。", "Try a different search term or memory status."],
   addMemory: ["新增记忆", "Add Memory"],
   searchMethod: ["查找方式", "Search method"],
   textSearch: ["文字搜索", "Search by Text"],
@@ -932,10 +947,11 @@ const messages = {
   sourcesProjectDirect: ["（直传）或 ", " (supplied directly) or "],
   sourcesProjectFromRouter: ["（router 回写），空值显示“跨项目 / 未标注”。", " (set by the router). An empty project is shown as Cross-project / Unspecified."],
   sourcesQuickFilters: ["内容快捷筛选", "Content Shortcuts"],
-  sourcesProfileFilter: ["用户画像：", "User Profile uses "],
-  sourcesKnowledgeFilter: ["；项目知识：", "; Project Knowledge uses "],
-  sourcesProcedureFilter: ["；过程与方法：", "; Procedures uses "],
-  sourcesShortcutScope: ["。保留其他筛选，不新增分类或自动识别。", ". The other filters still apply. These shortcuts use the existing classifications."],
+  sourcesTeamFilter: ["团队记忆使用 ", "Team Memory uses "],
+  sourcesProfileFilter: ["。用户画像使用 ", ". User Profile uses "],
+  sourcesKnowledgeFilter: ["。项目知识使用 ", ". Project Knowledge uses "],
+  sourcesExperienceFilter: ["。经验记忆使用 ", ". Experience Memory uses "],
+  sourcesShortcutScope: ["。其他筛选条件继续生效。", ". The other filters still apply."],
   sourcesTierAndClass: ["层级 / 记忆分类", "Tier / Memory Class"],
   sourcesTierCount: ["；筛选项对应六个认知层级。", ". The filter covers six cognitive tiers. "],
   sourcesCustomClasses: [" 来自授权集合，支持自定义分类。层级 archival 与生命周期 archived 是不同维度。", " come from the authorized records and may include custom classes. The archival tier and the archived status track separate properties."],
@@ -977,9 +993,13 @@ const messages = {
   archivalMemory: ["归档记忆", "Archival Memory"],
   longTermMemory: ["长期记忆", "Long-term Memory"],
   dailyMemory: ["日常记忆", "Daily Memory"],
+  projectMemory: ["项目记忆", "Project Memory"],
+  teamMemory: ["团队记忆", "Team Memory"],
+  groupMemory: ["群聊记忆", "Group Memory"],
+  agentMemory: ["智能体记忆", "Agent Memory"],
   profileDescription: ["关于用户的身份、偏好、习惯等稳定信息。", "Lasting information about the user, such as identity, preferences, and habits."],
-  knowledgeDescription: ["长期语义记忆，包含项目事实、决定等长期知识，也可能包含其他长期事实；可继续按项目筛选。", "Long-term semantic memories can include project facts, decisions, and other lasting knowledge. Use the project filter to narrow the list."],
-  procedureDescription: ["执行过程与做事方法，展示程序性记忆。", "Procedural memories describe how to carry out tasks."],
+  knowledgeDescription: ["查看长期记忆和群体项目记忆中的语义知识。", "Browse semantic knowledge from long-term and collective project memories."],
+  experienceDescription: ["查看从执行和反馈中沉淀的可复用经验。", "Browse reusable lessons distilled from execution and feedback."],
   filteredMemoryHint: ["按当前分类与层级筛选全部来源的记忆。", "Memories from all sources matching the selected class and tier."],
   selectedCount: [n => `已选 ${n} 条`, n => `${n} selected`],
   noSearchMatches: ["没有找到相关记忆", "No relevant memories found"],
@@ -1265,14 +1285,26 @@ const tierLabels=new Map([
 ]);
 const topicPresets={
   all:{memoryClass:'*',tier:'*'},
+  team:{memoryClass:'team_memory',tier:'*',description:msg('teamMemoryHint')},
   profile:{memoryClass:'user_profile',tier:'*',description:msg('profileDescription')},
-  knowledge:{memoryClass:'long_term_memory',tier:'semantic',description:msg('knowledgeDescription')},
-  procedure:{memoryClass:'*',tier:'procedural',description:msg('procedureDescription')},
+  knowledge:{memoryClass:'*',memoryClasses:['long_term_memory','project_memory'],tier:'semantic',description:msg('knowledgeDescription')},
+  experience:{memoryClass:'*',memoryType:'experience',tier:'*',description:msg('experienceDescription')},
 };
 const classLabels=new Map([
   ['user_profile',msg('userProfile')], ['long_term_memory',msg('longTermMemory')],
-  ['daily_memory',msg('dailyMemory')],
+  ['daily_memory',msg('dailyMemory')], ['project_memory',msg('projectMemory')],
+  ['team_memory',msg('teamMemory')], ['group_memory',msg('groupMemory')],
+  ['agent_memory',msg('agentMemory')],
 ]);
+const destinationLabels=new Map([
+  ['project',msg('project')], ['team',msg('collectiveTeam')], ['group',msg('collectiveGroup')],
+  ['agent',msg('collectiveAgent')], ['user_profile',msg('userProfile')],
+]);
+const contentLabels=new Map([
+  ['decision',msg('decisionLabel')], ['lesson',msg('lessonLabel')],
+  ['member',msg('memberLabel')], ['context',msg('contextLabel')],
+]);
+const directoryDestinations={projects:'project',teams:'team',groups:'group',agents:'agent'};
 let portalSession, addContext, sessionExpired=false, addContextReady=false, addAgentLocked=false, addContextRequest=0;
 const sessionExpiredMessage=msg('sessionExpired');
 function expireSession(){
@@ -1331,11 +1363,19 @@ function memoryViewOf(unit){
   const metadata=unit.system_metadata||{},scope=unit.scope;
   const project=typeof metadata.project==='string'&&metadata.project.trim()
     ||(typeof metadata.coords?.project==='string'?metadata.coords.project:'');
+  const documentPath=/^memory\/team_memory\/(projects|teams|groups|agents)\/([^/]+)\//
+    .exec(String(metadata.md_filename||'').replaceAll('\\','/'));
+  const destination=typeof metadata.collective_destination==='string'&&metadata.collective_destination
+    ||directoryDestinations[documentPath?.[1]]||'';
+  const dimension=destination==='agent'?(metadata.agent_label||scope.agent)
+    :destinationLabels.has(destination)&&destination!=='user_profile'?metadata[destination]||documentPath?.[2]:'';
   return {
     ref:recordKey(scope,unit.id),content:unit.segments.map(segment=>segment.content).join('\n'),
     source:metadata.source_app||'',agent_label:metadata.agent_label||'',agent:scope.agent,
     project,session:scope.session,tier:unit.tier,lifecycle:unit.lifecycle,tags:unit.tags,
     source_ref:unit.source_ref,supersedes:unit.supersedes,memory_class:metadata.memory_class||'',
+    destination,dimension,team_label:metadata.team_label||'',shareable:metadata.shareable===true,
+    title:destination&&typeof metadata.md_title==='string'?metadata.md_title.trim():'',
     created_at:unit.temporal.t_ingest,
   };
 }
@@ -1350,7 +1390,7 @@ function forgetRecord(ref){
 }
 function node(tag,text,cls){const el=document.createElement(tag);if(text!==undefined)setText(el,text);if(cls)el.className=cls;return el;}
 function button(text,handler,cls=''){const el=node('button',text,cls);el.type='button';el.onclick=handler;return el;}
-function titleOf(item){let first=(item.content||'').trim().split(/\n/).find(line=>line.trim());if(!first)return msg('emptyMemoryTitle');const space=first.indexOf(' ');if(space>3&&space<32&&/[\u3400-\u9fff]/.test(first.slice(0,space)))first=first.slice(0,space);return first.length>32?first.slice(0,32)+'…':first;}
+function titleOf(item){if(item.title)return item.title;let first=(item.content||'').trim().split(/\n/).find(line=>line.trim());if(!first)return msg('emptyMemoryTitle');const space=first.indexOf(' ');if(space>3&&space<32&&/[\u3400-\u9fff]/.test(first.slice(0,space)))first=first.slice(0,space);return first.length>32?first.slice(0,32)+'…':first;}
 function summaryOf(item){const text=(item.content||'').trim();if(!text)return '';const title=titleOf(item);return text.startsWith(title+' ')||text.startsWith(title+'\n')?text.slice(title.length).trim():text;}
 const dateFormats=Object.fromEntries(['zh-CN','en'].map(locale=>[
   locale,new Intl.DateTimeFormat(locale,{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}),
@@ -1370,7 +1410,7 @@ function fillOptions(id,options,label){
   el.value=previous;
 }
 function setFilterValue(id,value,label){const el=$(id);if(![...el.options].some(o=>o.value===value))el.add(option(label||value,value));el.value=value;}
-const memoryTopics={memories:'all',profile:'profile',knowledge:'knowledge',procedure:'procedure'};
+const memoryTopics={memories:'all',team:'team',profile:'profile',knowledge:'knowledge',experience:'experience'};
 function isMemoryView(name){return Object.hasOwn(memoryTopics,name);}
 function renderNavigation(name){
   activeTab=name;
@@ -1390,7 +1430,8 @@ function renderNavigation(name){
   setMemoryFiltersOpen(false);
 }
 function syncTopicShortcut(){
-  const fixed=memoryView!=='memories',preset=topicPresets[fixed?memoryView:'all'];
+  const fixed=memoryView!=='memories',preset=topicPresets[memoryTopics[memoryView]];
+  $('open-add').hidden=memoryView==='team'||memoryView==='experience';
   if(fixed){setFilterValue('memory-class',preset.memoryClass,classLabels.get(preset.memoryClass));setFilterValue('tier',preset.tier,tierLabels.get(preset.tier));}
   for(const [id,wrapper]of [['tier','tier-filter'],['memory-class','class-filter']]){$(id).disabled=fixed;$(wrapper).hidden=fixed;}
   const filtered=$('memory-class').value!=='*'||$('tier').value!=='*';
@@ -1473,6 +1514,10 @@ const emptyMemoryArtwork='data:image/svg+xml;base64,'+[
 ].join('');
 
 function renderEmptyMemories(root){
+  if(memoryView==='team'||memoryView==='experience'){
+    emptyState(root,msg(memoryView==='team'?'noTeamMemories':'noExperienceMemories'),msg('noTopicMatchesHint'));
+    return;
+  }
   const state=node('div',undefined,'empty memory-empty');
   const image=node('img');
   image.src=emptyMemoryArtwork;
@@ -1486,6 +1531,12 @@ function memoryStatusBadge(item,fallback,compact=false){
   const color=item.lifecycle==='active'?'green':item.lifecycle==='superseded'?'blue':'';
   const label=compact&&item.lifecycle==='superseded'?msg('correctedBadge'):lifecycleLabels.get(item.lifecycle)||msg(fallback);
   return node('span',label,'badge '+color);
+}
+function appendCollectiveBadges(root,item){
+  if(!item.destination)return;
+  const destination=destinationLabels.get(item.destination)||item.destination;
+  root.append(node('span',item.dimension?joinText([destination,item.dimension],' · '):destination,'badge'));
+  if(item.team_label)root.append(node('span',contentLabels.get(item.team_label)||item.team_label,'badge blue'));
 }
 function cards(target,items){
   const kind=target==='search-list'?'search':'memories';rows[kind]=items;
@@ -1502,9 +1553,10 @@ function cards(target,items){
     const heading=node('span',undefined,'row');heading.append(node('span',title,'memory-title'),memoryStatusBadge(item,'memory',true));
     open.append(heading,node('span',summaryOf(item),'memory-preview'));
     const meta=node('div',undefined,'memory-meta');
-    meta.append(node('span',msg('memoryMetadata',msg('app'),item.source||msg('sourceUnknown'))));
-    if(item.agent_label||item.agent)meta.append(node('span',msg('memoryMetadata','Agent',item.agent_label||item.agent)));
-    if(item.project)meta.append(node('span',msg('memoryMetadata',msg('project'),item.project)));
+    appendCollectiveBadges(meta,item);
+    if(item.source||!item.destination)meta.append(node('span',msg('memoryMetadata',msg('app'),item.source||msg('sourceUnknown'))));
+    if((item.agent_label||item.agent)&&item.destination!=='agent')meta.append(node('span',msg('memoryMetadata','Agent',item.agent_label||item.agent)));
+    if(item.project&&item.destination!=='project')meta.append(node('span',msg('memoryMetadata',msg('project'),item.project)));
     if(item.tier)meta.append(node('span',msg('tierBadge',tierLabels.get(item.tier)||item.tier)));
     if(item.memory_class)meta.append(node('span',msg('classBadge',classLabels.get(item.memory_class)||item.memory_class)));
     if(item.score!==undefined)meta.append(node('span',msg('scoreWithinScope',Number(item.score).toFixed(3))));
@@ -1529,6 +1581,7 @@ function renderDetail(item,kind){
     node('span',msg('classBadge',classLabels.get(item.memory_class)||item.memory_class||msg('uncategorized')),'badge'),
     memoryStatusBadge(item,'statusUnknown'),
   );
+  appendCollectiveBadges(badges,item);
   root.append(node('h3',titleOf(item),'detail-heading'),badges,node('p',item.content||'','detail-body'),
     node('hr',undefined,'detail-divider'),node('h3',msg('sourceAndRecord')));
   const actions=node('div',undefined,'row');
@@ -1537,6 +1590,7 @@ function renderDetail(item,kind){
   const meta=node('dl',undefined,'detail-source');addPair(meta,msg('app'),item.source||msg('sourceUnknown'));addPair(meta,'Agent',item.agent_label||item.agent||msg('noAgent'));
   if(item.agent)addPair(meta,'Agent ID',item.agent);
   addPair(meta,msg('project'),item.project||msg('projectUnspecified'));
+  if(item.destination)addPair(meta,msg('shareStatus'),msg(item.shareable?'memoryShared':'memoryUnshared'));
   addPair(meta,msg('session'),item.session||msg('notLinked'));addPair(meta,msg('recordedAt'),timeLabel(item.created_at));addPair(meta,msg('sourceReference'),item.source_ref||msg('notProvided'));
   const tags=()=> (item.tags||[]).join(language==='en'?', ':'、')||textOf(msg('none'));
   addPair(meta,msg('tags'),tags);
@@ -1569,7 +1623,13 @@ async function loadMemories(reset=false){
   syncTopicShortcut();if(reset){offset=0;snapshot=null;}
   setText($('memory-count'),msg('loadingMemories'));$('previous').disabled=true;$('next').disabled=true;
   try{
-    const data=await listMemories({offset,limit:pageSize,lifecycle:selectionValue('lifecycle'),source:selectionValue('source'),agent:selectionValue('agent'),project:selectionValue('project'),tier:selectionValue('tier'),memory_class:selectionValue('memory-class'),query:$('memory-filter').value.trim(),snapshot});
+    const {memoryClasses,memoryType}=topicPresets[memoryTopics[memoryView]];
+    const data=await listMemories({
+      offset,limit:pageSize,lifecycle:selectionValue('lifecycle'),source:selectionValue('source'),
+      agent:selectionValue('agent'),project:selectionValue('project'),tier:selectionValue('tier'),
+      memory_class:memoryClasses??selectionValue('memory-class'),query:$('memory-filter').value.trim(),snapshot,
+      ...(memoryType?{memory_type:memoryType}:{}),
+    });
     if(sequence!==memoryRequest)return;
     total=data.count;snapshot=data.snapshot;checked.clear();cards('memory-list',data.items);
     const sourceOptions=(data.sources||[]).map(v=>[sourceOptionValue(v),v||msg('sourceUnknown')]);
@@ -1586,7 +1646,9 @@ async function loadMemories(reset=false){
     }),msg('allClasses'));
     setText($('memory-count'),msg('memoryCount',total));$('memory-pager').hidden=!total;$('page-info').textContent=`${total?offset+1:0}–${Math.min(offset+pageSize,total)} / ${total}`;
     $('previous').disabled=offset===0;$('next').disabled=offset+pageSize>=total;
-    const activeFilters=(memoryView==='memories'?['source','agent','project','tier','memory-class']:['source','agent','project']).filter(id=>selectionValue(id)!==null).length+($('lifecycle').value!=='*'?1:0);
+    const filterIds=['source','agent','project'];
+    if(memoryView==='memories')filterIds.push('tier','memory-class');
+    const activeFilters=filterIds.filter(id=>selectionValue(id)!==null).length+($('lifecycle').value!=='*'?1:0);
     setText($('filter-count'),activeFilters?msg('filterCount',activeFilters):'');
     syncTopicShortcut();updateSelection();
     return true;
@@ -1906,7 +1968,7 @@ function changes(){const result={};for(const [key,value]of drafts){if(key.endsWi
 async function switchTab(name,load=true){
   if(name==='search'){await switchTab('memories');setSearchMode('semantic');$('memory-filter').focus();return;}
   notice('');closeDetail();clearTimeout(filterTimer);renderNavigation(name);
-  if(isMemoryView(name)&&load){const preset=topicPresets[name==='memories'?'all':name];setFilterValue('memory-class',preset.memoryClass,classLabels.get(preset.memoryClass)||msg('allClasses'));setFilterValue('tier',preset.tier,tierLabels.get(preset.tier)||msg('allTiers'));return loadMemories(true);}
+  if(isMemoryView(name)&&load){const preset=topicPresets[memoryTopics[name]];setFilterValue('memory-class',preset.memoryClass,classLabels.get(preset.memoryClass)||msg('allClasses'));setFilterValue('tier',preset.tier,tierLabels.get(preset.tier)||msg('allTiers'));return loadMemories(true);}
   if(name==='overview')return loadOverview();
   if(name==='settings'&&!saving)return loadSettings();
 }

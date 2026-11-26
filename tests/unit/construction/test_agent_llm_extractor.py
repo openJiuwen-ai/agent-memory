@@ -444,33 +444,64 @@ def test_generic_extractor_does_not_select_policy_from_app_metadata():
     assert len(extractor.extract([source])) == 1
 
 
+@pytest.mark.unit
 def test_team_extractor_uses_authorized_destinations_in_one_model_request():
-    team_rule = "Our team reviews schema changes before merging."
+    team_responsibility = "Ada is responsible for reviewing this team's schema changes."
     user_preference = "I prefer written handoffs."
-    source = create_test_unit("source", f"{team_rule} {user_preference}")
+    agent_method = "Validate column defaults before applying a migration."
+    source = create_test_unit("source", f"{team_responsibility} {user_preference}")
     source.system_metadata["source_role"] = "user"
     assistant_guess = "The user prefers voice handoffs."
-    assistant = create_test_unit("assistant", assistant_guess)
+    assistant = create_test_unit("assistant", f"{assistant_guess} {agent_method}")
     assistant.system_metadata["source_role"] = "assistant"
     payload = [
-        {"content": team_rule, "source_id": "source", "evidence": team_rule,
-         "kind": "user_fact", "destination": "team"},
+        {"content": team_responsibility, "source_id": "source", "evidence": team_responsibility,
+         "kind": "user_fact", "destination": "team", "label": "member"},
         {"content": "Generated preference", "source_id": "source", "evidence": user_preference,
          "kind": "user_fact", "destination": "user_profile"},
         {"content": assistant_guess, "source_id": "assistant", "evidence": assistant_guess,
          "kind": "user_fact", "destination": "user_profile"},
+        {"content": agent_method, "source_id": "assistant", "evidence": agent_method,
+         "kind": "experience", "destination": "agent", "label": "lesson"},
+        {"content": agent_method, "source_id": "assistant", "evidence": agent_method,
+         "kind": "experience", "destination": "personal", "label": "lesson"},
     ]
     extractor, model = _make([json.dumps(payload)], extractor_type=TeamLlmExtractor)
     units = extractor.extract([source, assistant], context=ExtractContext(collective_destinations={
-        "team": "team-id", "user_profile": "owner",
+        "team": "team-id", "user_profile": "owner", "agent": "agent-id",
     }))
-    assert [(unit.content, unit.system_metadata["collective_destination"]) for unit in units] == [
-        (team_rule, "team"),
-        (user_preference, "user_profile"),
+    assert [
+        (unit.content, unit.system_metadata["collective_destination"],
+         unit.system_metadata.get("team_label"))
+        for unit in units
+    ] == [
+        (team_responsibility, "team", "member"),
+        (user_preference, "user_profile", None),
+        (agent_method, "agent", "lesson"),
     ]
     assert len(model.calls) == 1
     instructions = model.calls[0][0].content
     assert "one candidate per independent item" in instructions
     assert "exclude unrelated claims from the quote" in instructions
+    assert "Select at most one label" in instructions
+    for label in ("decision", "lesson", "member", "context"):
+        assert f"Use {label} for" in instructions
     request = json.loads(model.calls[0][-1].content)
-    assert set(request["destination_descriptions"]) == {"team", "user_profile"}
+    assert set(request["destinations"]) == {"team", "user_profile", "agent"}
+    assert set(request["destination_descriptions"]) == {"team", "user_profile", "agent"}
+
+
+@pytest.mark.unit
+def test_team_extractor_rejects_agent_destination_without_agent_landing():
+    content = "Validate column defaults before applying a migration."
+    source = create_test_unit("source", content)
+    source.system_metadata["source_role"] = "assistant"
+    payload = [{
+        "content": content, "source_id": "source", "evidence": content,
+        "kind": "experience", "destination": "agent",
+    }]
+    extractor, model = _make([json.dumps(payload)], extractor_type=TeamLlmExtractor)
+    context = ExtractContext(collective_destinations={"team": "team-id"})
+
+    assert extractor.extract([source], context=context) == []
+    assert json.loads(model.calls[0][-1].content)["destinations"] == ["team"]

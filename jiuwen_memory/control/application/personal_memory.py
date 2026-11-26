@@ -27,6 +27,7 @@ from jiuwen_memory.common.type_def import (
     Scope,
     matches_memory_unit,
 )
+from jiuwen_memory.common.type_def.memory_filter import collective_destination_of
 from jiuwen_memory.control.types import MemoryListResult
 from jiuwen_memory.retrieval.types import RetrievalResult, RetrievedItem
 
@@ -125,7 +126,9 @@ def list_personal(
     project: str | None = None,
     query: str | None = None,
     tier: str | None = None,
-    memory_class: str | None = None,
+    memory_class: str | list[str] | None = None,
+    collective_destination: str | None = None,
+    team_label: str | None = None,
     include_lifecycle_counts: bool = False,
     overview_timezone: str | None = None,
 ) -> PersonalPage:
@@ -138,12 +141,24 @@ def list_personal(
         raise ValidationError("source must be a string")
     for name, value in (
         ("agent", agent), ("project", project), ("query", query),
-        ("tier", tier), ("memory_class", memory_class),
+        ("tier", tier), ("team_label", team_label),
     ):
         if value is not None and not isinstance(value, str):
             raise ValidationError(f"{name} must be a string")
+    class_values = [memory_class] if isinstance(memory_class, str) else memory_class
+    valid_class_list = (
+        isinstance(class_values, list)
+        and bool(class_values)
+        and all(isinstance(value, str) for value in class_values)
+    )
+    if class_values is not None and not valid_class_list:
+        raise ValidationError("memory_class must be a string or a non-empty list of strings")
     if tier is not None and tier not in {item.value for item in MemoryTier}:
         raise ValidationError("invalid memory tier")
+    if collective_destination is not None and collective_destination not in (
+        "all", "project", "team", "group", "agent", "user_profile",
+    ):
+        raise ValidationError("invalid collective destination")
     if snapshot is not None and not isinstance(snapshot, str):
         raise ValidationError("snapshot must be a string")
     if offset and not snapshot:
@@ -196,8 +211,21 @@ def list_personal(
     if tier is not None:
         tier_filter = FilterClause("tier", value=tier)
         units = [unit for unit in units if matches_memory_unit(unit, tier_filter)]
-    if memory_class is not None:
-        units = [unit for unit in units if _memory_class(unit) == memory_class]
+    if class_values is not None:
+        selected_classes = set(class_values)
+        units = [unit for unit in units if _memory_class(unit) in selected_classes]
+    if collective_destination == "all":
+        units = [unit for unit in units if collective_destination_of(unit.system_metadata)]
+    elif collective_destination is not None:
+        units = [
+            unit for unit in units
+            if collective_destination_of(unit.system_metadata) == collective_destination
+        ]
+    if team_label is not None:
+        units = [
+            unit for unit in units
+            if (unit.system_metadata.get("team_label") or "") == team_label
+        ]
     if query and query.strip():
         needle = query.strip().casefold()
         units = [

@@ -568,11 +568,26 @@ def test_team_http_write_search_read_edit_isolation(memory_http_url, monkeypatch
             diary = {"target": "project", "name": "2026-11-20.md"}
             assert json.loads(await member.handle_tool_call("team_memory_read", diary))["count"] == 0
             assert "error" in json.loads(await other.handle_tool_call("team_memory_read", diary))
+            lesson = "Verify rollback snapshots"
             written = await leader.sync_turn("", "", sources=[
                 {"id": "team", "role": "assistant", "text": "ocean architecture"},
                 {"id": "project", "role": "assistant", "text": "ocean project uses sqlite"},
+                {"id": "agent", "role": "assistant", "text": lesson},
             ])
             assert written and written["stored"]
+            agent_target = {"target": "agent", "name": "MEMORY.md"}
+            agent_read = json.loads(await leader.handle_tool_call("team_memory_read", agent_target))
+            assert [unit["content"] for unit in agent_read["units"]] == [lesson]
+            member_read = json.loads(await member.handle_tool_call(
+                "team_memory_read", agent_target,
+            ))
+            assert member_read["units"] == []
+            agent_edit = json.loads(await leader.handle_tool_call("team_memory_edit", {
+                **agent_target, "old_text": "snapshots", "new_text": "checkpoints",
+            }))
+            assert [unit["content"] for unit in agent_edit["units"]] == [
+                "Verify rollback checkpoints",
+            ]
             result = json.loads(await member.handle_tool_call(
                 "team_memory_search", {"query": "ocean", "target": "team"},
             ))

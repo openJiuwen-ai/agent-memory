@@ -787,17 +787,27 @@ class QueryOpsMixin:
             personal_only = scope is None and set(normalized_extensions) == {"personal"}
             has_scoped_filters = memory_types is not None or filters is not None
             valid_selection = isinstance(selection, dict) and selection.keys() <= {
-                "source", "agent", "project", "query", "tier", "memory_class", "lifecycle",
+                "source", "agent", "project", "query", "tier", "memory_class", "memory_type",
+                "lifecycle",
                 "snapshot", "include_lifecycle_counts", "overview_timezone",
+                "collective_destination", "team_label",
             }
             if not personal_only or has_scoped_filters or not valid_selection:
                 raise ValidationError("invalid personal list options; omit scope")
+            selection = dict(selection)
+            memory_type = selection.pop("memory_type", None)
+            if memory_type is not None and (
+                not isinstance(memory_type, str) or not memory_type.strip()
+            ):
+                raise ValidationError("memory_type must be a non-empty string")
+            selected_types = [memory_type] if memory_type is not None else None
             candidates = self._personal_candidates(security)
             bindings = {scope_key(binding.scope): binding for binding in candidates}
 
             def read_scope(target, start, size):
                 return self._list_scope(
                     target, security=security, offset=start, limit=size,
+                    memory_types=selected_types,
                     filters=bindings[scope_key(target)].author_filter(),
                     skip_unavailable_scope=True,
                 )

@@ -136,7 +136,7 @@ class CollectiveOpsMixin:
         destinations = {dimension.kind: dimension.id for dimension in active}
         if shareable is not False:
             if scope.agent and scope.agent != "main_agent":
-                destinations["personal"] = scope.agent
+                destinations["agent"] = scope.agent
             if scope.user and any(s.system_metadata["source_role"] == "user" for s in segments):
                 destinations["user_profile"] = scope.user
         if not destinations or not segments:

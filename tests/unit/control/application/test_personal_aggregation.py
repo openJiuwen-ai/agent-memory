@@ -100,6 +100,71 @@ def test_list_memory_class_and_all_tiers_are_independent_filters():
         list_personal([scope], read, tier="not-a-tier")
 
 
+def test_list_matches_any_requested_memory_class_before_paging():
+    scope = Scope(org="local", user="owner")
+    class_tiers = (
+        ("long_term_memory", MemoryTier.SEMANTIC),
+        ("project_memory", MemoryTier.SEMANTIC),
+        ("project_memory", MemoryTier.PROCEDURAL),
+        ("team_memory", MemoryTier.SEMANTIC),
+    )
+    units = [
+        MemoryUnit(id=str(i), scope=scope, tier=tier, system_metadata={"memory_class": name})
+        for i, (name, tier) in enumerate(class_tiers)
+    ]
+
+    def read(_scope, offset, limit):
+        return MemoryListResult(units[offset:offset + limit], len(units))
+
+    selection = {"memory_class": ["long_term_memory", "project_memory"], "tier": "semantic"}
+    first = list_personal([scope], read, limit=1, **selection)
+    assert first.count == 2 and first.items == [units[0]]
+    following = list_personal([scope], read, offset=1, snapshot=first.snapshot, **selection)
+    assert following.count == 2 and following.items == [units[1]]
+    with pytest.raises(ValidationError, match="memory_class"):
+        list_personal([scope], read, memory_class=[])
+
+
+def test_list_filters_collective_destination_and_label_before_paging():
+    scope = Scope(org="local", user="owner")
+    units = [
+        MemoryUnit(id="a", scope=scope, system_metadata={"memory_class": "daily_memory"}),
+        MemoryUnit(id="b", scope=scope, system_metadata={
+            "memory_class": "daily_memory", "collective_destination": "project",
+        }),
+        MemoryUnit(id="c", scope=scope, system_metadata={
+            "collective_destination": "team", "team_label": "member",
+        }),
+        MemoryUnit(id="d", scope=scope, system_metadata={
+            "md_filename": r"memory\team_memory\groups\reviews\MEMORY.md", "team_label": "decision",
+        }),
+        MemoryUnit(id="e", scope=scope, system_metadata={
+            "collective_destination": "agent", "team_label": "lesson",
+        }),
+    ]
+
+    def read(scope, offset, limit):
+        return MemoryListResult(units[offset:offset + limit], len(units))
+
+    first = list_personal([scope], read, collective_destination="all", limit=1)
+    assert first.count == 4 and first.items == [units[1]]
+    second = list_personal([scope], read, collective_destination="all", limit=1,
+                           offset=1, snapshot=first.snapshot)
+    assert second.items == [units[2]]
+    assert list_personal([scope], read, collective_destination="group",
+                         team_label="decision").items == [units[3]]
+    assert list_personal([scope], read, collective_destination="agent",
+                         team_label="lesson").items == [units[4]]
+    assert list_personal([scope], read, collective_destination="agent",
+                         team_label="member").count == 0
+    unlabeled = list_personal([scope], read, collective_destination="all", team_label="")
+    assert unlabeled.items == [units[1]]
+    with pytest.raises(ValidationError, match="collective destination"):
+        list_personal([scope], read, collective_destination="all_organizations")
+    with pytest.raises(ValidationError, match="collective destination"):
+        list_personal([scope], read, collective_destination="personal")
+
+
 def test_search_distinguishes_equal_ids_and_checks_authorized_location():
     a, b = Scope(org="a"), Scope(org="b")
     units = {

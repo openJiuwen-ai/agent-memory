@@ -183,6 +183,69 @@ async function languageSwitchKeepsFiltersAndResults() {
   assert.equal(page.get('notice').textContent, 'Search failed: 原始服务错误');
 }
 
+async function collectiveClassLabelsUseRawFilterValues() {
+  const classes = ['project_memory', 'team_memory', 'group_memory', 'agent_memory'];
+  const requests = [];
+  const page = setup(async action => { throw Error(action); }, async body => {
+    requests.push(body);
+    return response({items:[], count:0, snapshot:'s', memory_classes:classes});
+  });
+  await page.run("switchTab('memories')");
+  const filter = page.get('memory-class');
+  const labels = () => filter.options.slice(1).map(option => option.textContent);
+  assert.deepEqual(labels(), ['项目记忆 · project_memory', '团队记忆 · team_memory',
+    '群聊记忆 · group_memory', '智能体记忆 · agent_memory']);
+  page.get('language-toggle').onclick();
+  assert.deepEqual(labels(), ['Project Memory · project_memory', 'Team Memory · team_memory',
+    'Group Memory · group_memory', 'Agent Memory · agent_memory']);
+  filter.value = 'agent_memory';
+  await page.run('loadMemories(true)');
+  assert.equal(requests.at(-1).memory_class, 'agent_memory');
+}
+
+async function teamTopicShowsLandingAndLabelWithoutExtraFilters() {
+  assert.match(html, /id="topic-team"[^>]*>团队记忆<\/button>/);
+  assert.equal(/id="collective-(?:destination|label)"/.test(html), false);
+  const team = {...unit('数据库变更由林舟负责评审'), lifecycle:'active', system_metadata:{
+    collective_destination:'team', team:'db-review', memory_class:'team_memory',
+    team_label:'member', shareable:true, md_title:'数据库评审分工',
+  }};
+  const agent = {...unit('先验证回滚快照'), id:'agent', lifecycle:'active', system_metadata:{
+    collective_destination:'agent', agent_label:'发布专家', memory_class:'agent_memory',
+  }};
+  const recovered = {...unit('记录发布前检查结果'), id:'recovered', lifecycle:'active', system_metadata:{
+    md_filename:'memory/team_memory/agents/agent/MEMORY.md', memory_class:'agent_memory',
+  }};
+  const calls = [];
+  const page = setup(async action => {
+    assert.equal(action, 'get');
+    return response(team);
+  }, async body => {
+    calls.push(body);
+    const items = body.memory_class==='team_memory' ? [team] : [agent, recovered];
+    return response({items, count:items.length, snapshot:'s'});
+  });
+  await page.run("switchTab('team')");
+  assert.equal(page.get('topic-team').getAttribute('aria-pressed'), 'true');
+  assert.equal(calls.at(-1).memory_class, 'team_memory');
+  assert.equal(calls.at(-1).team_label, undefined);
+  const row = page.get('memory-list').children[0];
+  assert.match(row.textContent, /数据库评审分工/);
+  assert.match(row.textContent, /团队 · db-review/);
+  assert.match(row.textContent, /成员分工/);
+  await page.run("selectMemory(rows.memories[0], 'memories')");
+  assert.match(page.get('memory-detail').textContent, /已共享/);
+  page.get('language-toggle').onclick();
+  assert.match(row.textContent, /Team · db-review/);
+  assert.match(row.textContent, /Member Role/);
+  await page.run("switchTab('memories')");
+  assert.equal(calls.at(-1).collective_destination, undefined);
+  assert.equal(calls.at(-1).team_label, undefined);
+  const agentRows = page.get('memory-list').children;
+  assert.match(agentRows[0].textContent, /Agent · 发布专家/);
+  assert.match(agentRows[1].textContent, /Agent · agent/);
+}
+
 async function languageSwitchKeepsDraftAndPreference() {
   let requests = 0;
   const saves = [];
@@ -565,9 +628,12 @@ async function topicShortcutsUseExistingFilters(){
   const page=setup(async action=>{throw Error(action);},async body=>{if(body.limit===20)requests.push(body);return response({items:[],count:0,snapshot:'s',sources:[],agents:[],projects:[],tiers:[],memory_classes:[]});});
   await new Promise(resolve=>setImmediate(resolve));
   page.run("setFilterValue('source','my-app');setFilterValue('agent','my-agent');setFilterValue('project','my-project');$('lifecycle').value='forgotten';$('memory-filter').value='keyword';offset=40;snapshot='old'");
-  for(const [name,memoryClass,tier]of [['profile','user_profile',null],['knowledge','long_term_memory','semantic'],['procedure',null,'procedural'],['all',null,null]]){
+  assert.match(html, /id="topic-experience"[^>]*>经验记忆<\/button>/);
+  const fixedTopics=[['team','team_memory',null,undefined],['profile','user_profile',null,undefined],
+    ['knowledge',['long_term_memory','project_memory'],'semantic',undefined],['experience',null,null,'experience']];
+  for(const [name,memoryClass,tier,memoryType]of [...fixedTopics,['all',null,null,undefined]]){
     await page.get('topic-'+name).onclick();const body=requests.at(-1);
-    assert.equal(body.memory_class,memoryClass);assert.equal(body.tier,tier);assert.equal(body.offset,0);assert.equal(body.snapshot,null);
+    assert.deepEqual(body.memory_class,memoryClass);assert.equal(body.tier,tier);assert.equal(body.memory_type,memoryType);assert.equal(body.offset,0);assert.equal(body.snapshot,null);
     assert.equal(body.source,'my-app');assert.equal(body.agent,'my-agent');assert.equal(body.project,'my-project');assert.equal(body.lifecycle,'forgotten');assert.equal(body.query,'keyword');
     assert.equal(page.get('topic-'+name)['aria-pressed'],'true','empty facets must retain the requested shortcut');
     assert.equal(page.get('tab-memories')['aria-selected'],'true','category selection keeps the memory library selected');
@@ -575,14 +641,14 @@ async function topicShortcutsUseExistingFilters(){
   }
   page.run("setFilterValue('memory-class','custom-class');syncTopicShortcut()");
   assert.equal(page.get('tab-memories')['aria-selected'],'true');assert.match(page.get('memory-page-description').textContent,/按当前分类/);
-  for(const [name,memoryClass,tier]of [['profile','user_profile',null],['knowledge','long_term_memory','semantic'],['procedure',null,'procedural']]){
+  for(const [name,memoryClass,tier,memoryType]of fixedTopics){
     await page.run(`switchTab('${name}')`);
     assert.equal(page.get('tier-filter').hidden,true);assert.equal(page.get('class-filter').hidden,true);
     assert.equal(page.get('tier').disabled,true);assert.equal(page.get('memory-class').disabled,true);
     page.run("setFilterValue('memory-class','wrong');setFilterValue('tier','working')");await page.run('loadMemories(true)');
-    assert.equal(requests.at(-1).memory_class,memoryClass);assert.equal(requests.at(-1).tier,tier);
+    assert.deepEqual(requests.at(-1).memory_class,memoryClass);assert.equal(requests.at(-1).tier,tier);assert.equal(requests.at(-1).memory_type,memoryType);
     await page.run("$('reset-filters').onclick()");
-    const body=requests.at(-1);assert.equal(body.memory_class,memoryClass);assert.equal(body.tier,tier);assert.equal(body.source,null);assert.equal(body.query,'');assert.equal(body.lifecycle,'active');
+    const body=requests.at(-1);assert.deepEqual(body.memory_class,memoryClass);assert.equal(body.tier,tier);assert.equal(body.memory_type,memoryType);assert.equal(body.source,null);assert.equal(body.query,'');assert.equal(body.lifecycle,'active');
     assert.equal(page.run('activeTab'),name,'reset must keep the current category');assert.equal(page.get('topic-'+name)['aria-pressed'],'true');
   }
   await page.run("switchTab('memories')");assert.equal(page.get('tier-filter').hidden,false);assert.equal(page.get('class-filter').hidden,false);
@@ -712,6 +778,8 @@ async function sharedPageManagesBothInstances(){
 }
 (async () => {
   await languageSwitchKeepsFiltersAndResults();
+  await collectiveClassLabelsUseRawFilterValues();
+  await teamTopicShowsLandingAndLabelWithoutExtraFilters();
   await languageSwitchKeepsDraftAndPreference();
   await portalLaunchUsesConfiguredLanguage();
   await filterBadgeCountsAdditionalPanelConditions();
