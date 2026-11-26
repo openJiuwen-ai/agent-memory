@@ -98,20 +98,21 @@ Request a new link each time you mount the iframe.
 
 1. **Memory Overview** shows all records, active memories, correction history, forgotten and archived
    records, and the number of distinct source apps. **Daily additions** covers the last 365 days in
-   your browser’s time zone and includes records in every status. **Source distribution** shows
+   your browser’s time zone and includes records in every status. **Memory sources** shows
    each source’s share of active memories, including records with an unknown source. Select a
    record count or a source in the chart to open its list.
-2. **My Memories** shows active memories by default. Use **Search by Text** to match content or
+2. **Memory Library** shows active memories by default. Use **Search by Text** to match content or
    tags and **Filters** to narrow the list by source app, Agent, project, or memory class. To ask
-   a question, switch to **Search by Meaning**, enter the question, set a source or result limit
-   as needed, and select **Search**. Search by meaning only supports filtering by source app.
-   The sidebar links **User Profile**, **Project Knowledge**, and **Procedures** open their
+   a question in **All Memories**, switch to **Search by Meaning**, enter the question, set a
+   source or result limit as needed, and select **Search**. Search by meaning only supports
+   filtering by source app.
+   The **User Profile**, **Project Knowledge**, and **Procedures** tabs open their
    corresponding views.
 3. Select **Add Memory**, enter the content and an optional project, and select **Save Memory**.
    If the host has bound a memory rail, the new record uses that scope and its Agent is locked.
    If the Agent field is editable, leave it blank to save a personal memory.
-4. Open an active record and select **Correct** to edit the content, preview the change, and
-   confirm. The previous version is available under **Correction History**. To remove a record
+4. Select **Correct** on an active record's row or in its details, edit the content, then preview
+   and confirm the change. The previous version is available under **Correction History**. To remove a record
    from the active list and default search, select **Forget** and confirm. It remains visible
    under **Forgotten**.
 5. Select individual records or use **Select This Page** to copy them or export Markdown or
@@ -129,14 +130,13 @@ and search results stay in place.
    name, and API key for the new service. When staying on the same service, leave the API key
    blank to keep the existing credential.
 3. Select **Preview Changes**, review the changes, and select **Save and Apply**. Once the page
-   shows **Applied**, new model calls use the updated settings. If it shows **Saved, pending
-   application**, select **Retry Applying Saved Settings**.
-4. To remove a saved override, select **Restore Startup Value** for that field, preview the
+   confirms that the settings were saved and applied, new model calls use them. If it shows
+   **Saved, pending application**, select **Retry Applying Saved Settings**.
+4. To remove a saved override, select **Restore Startup Value** next to the field, preview the
    change, and confirm. The instance loads saved changes the next time it starts.
 
 Editable settings depend on the host's permissions and configuration storage. The page marks
-read-only fields and shows a message when configuration is unavailable. The embedding model,
-vector dimension, and storage location are read-only.
+read-only fields and shows a message when configuration is unavailable.
 
 ## Troubleshooting
 
@@ -145,7 +145,7 @@ vector dimension, and storage location are read-only.
 | The page says the session has expired | Reopen it from the app or call the HTTP launch endpoint again. Use a fresh link each time. |
 | The SDK cannot open the Portal | Check `portal_status["reason"]`. If a fixed port is in use, free it and try again, or set `portal.port` to `0` and restart. If shared instances have the same ID, assign a distinct ID to the conflicting instance and restart it. |
 | The HTTP launch endpoint returns `404` or `401` | For `404`, check the loopback address, the service's actual port, and the `Origin` header. For `401`, check the access credentials. |
-| An existing memory is missing from the list | Open **My Memories**, clear the search text and filters, and select the **All** status. Confirm that the record was written to the current memory instance and that the signed-in user has permission to view it. |
+| An existing memory is missing from the list | Open **All Memories** in **Memory Library**, clear the search text and filters, and select the **All** status. Confirm that the record was written to the current memory instance and that the signed-in user has permission to view it. |
 | Memories are visible and model settings are read-only | Have the host check that configuration management is enabled, the configuration store is writable, and the identity has permission to edit settings. HTTP enables configuration management automatically only for a declared fixed personal identity. A host can also configure its own storage and authorization. |
 
 For more integration options, see the [Portal design](../../features/F05-personal-memory-portal.md#6-启动与打开页面).
