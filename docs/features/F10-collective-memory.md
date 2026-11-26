@@ -46,7 +46,7 @@ Core 在含可信真人来源的成功回合，以及子任务验收后提交带
 | 落点 | 归属与默认分享 |
 |---|---|
 | 用户画像 | 归用户，供该用户的 Agent 跨项目使用，shareable=true。 |
-| 专家个人经验 | 归贡献专家，shareable=true。 |
+| 智能体专属记忆 | 归贡献专家，落点为 `agent`，分类为 `agent_memory`，默认 `shareable=true`。 |
 | 项目、团队、Group | 按各自维度归属，默认 shareable=false。 |
 
 ### 检索与文档权限

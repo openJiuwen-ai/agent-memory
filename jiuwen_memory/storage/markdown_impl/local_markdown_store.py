@@ -602,8 +602,8 @@ class LocalMarkdownStore(MarkdownStore):
             return experience_blocks.DOCUMENT_PATH
         metadata = unit.system_metadata or {}
         destination = metadata.get("collective_destination")
-        if destination in ("project", "team", "group", "personal"):
-            key = unit.scope.agent if destination == "personal" else metadata.get(destination)
+        if destination in ("project", "team", "group", "agent"):
+            key = unit.scope.agent if destination == "agent" else metadata.get(destination)
             if not isinstance(key, str) or not key:
                 raise ValidationError("collective document requires a destination key")
             filename = "MEMORY.md"

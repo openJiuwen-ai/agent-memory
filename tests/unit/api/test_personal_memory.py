@@ -22,11 +22,13 @@ from jiuwen_memory.common.errors import (
     UnsupportedCapabilityError,
     ValidationError,
 )
-from jiuwen_memory.common.type_def import LifecycleState, Temporal
+from jiuwen_memory.common.type_def import LifecycleState, MemoryTier, Segment, Temporal, memory_key
+from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.control.application import personal_memory
 from jiuwen_memory.control.application.query import MemoryQueryService
 from jiuwen_memory.control.types import DeleteMode, DeleteSelector, MemoryListResult
 from jiuwen_memory.retrieval.types import ChannelError, RetrievalResult
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 
 pytestmark = pytest.mark.unit
 
@@ -110,6 +112,37 @@ def test_partial_retrieval_failure_is_not_treated_as_complete():
             api, [PersonalScopeBinding(Scope(org="a"))], "query", security=object(),
             read_scope=api.list, skip_candidate=lambda _unit: False, top_k=1, source=None,
         )
+
+
+def test_personal_list_explicitly_reads_experience_independent_of_tier():
+    from jiuwen_memory.api import assemble_runtime, build_dev_authenticator, internal_context
+
+    kv = InMemoryKVStore()
+    runtime = assemble_runtime(kv=kv)
+    try:
+        security = internal_context(build_dev_authenticator())
+        owner = Scope(org="local", user="developer", agent="design")
+        other_user = Scope(org="local", user="someone-else", agent="design")
+        for name, scope, tier, kind in (
+            ("experience", owner, MemoryTier.SEMANTIC, "experience"),
+            ("procedure", owner, MemoryTier.PROCEDURAL, "episodic"),
+            ("skill", owner, MemoryTier.PROCEDURAL, "skill"),
+            ("outside", other_user, MemoryTier.PROCEDURAL, "experience"),
+        ):
+            unit = MemoryUnit(id=name, scope=scope, tier=tier, segments=[Segment(content=name)],
+                              system_metadata={"memory_type": kind})
+            kv.insert(scope, memory_key(unit.id), dumps(unit))
+
+        result = runtime.api.list(
+            security=security, extensions={"personal": {"memory_type": "experience"}},
+        )
+        assert [unit.id for unit in result.items] == ["experience"]
+        ordinary = runtime.api.list(security=security, extensions={"personal": {}})
+        assert [unit.id for unit in ordinary.items] == ["procedure"]
+        with pytest.raises(ValidationError, match="memory_type"):
+            runtime.api.list(security=security, extensions={"personal": {"memory_type": ""}})
+    finally:
+        runtime.close()
 
 
 def test_overview_counts_full_window_and_active_sources_before_pagination(monkeypatch):

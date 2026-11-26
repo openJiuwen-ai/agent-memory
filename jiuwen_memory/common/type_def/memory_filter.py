@@ -12,20 +12,27 @@ from .filter import FilterClause, FilterExpr, FilterOp, evaluate, filter_field_m
 from .hierarchy import HIERARCHY_INDEX_KEYS, hierarchy_index_metadata
 from .memory import T_EVENT_UNKNOWN, T_INVALID_OPEN, MemoryUnit
 
-
 COLLECTIVE_DOCUMENT_ROOT = "memory/team_memory"
-COLLECTIVE_DOCUMENT_PREFIXES = tuple(
-    f"{COLLECTIVE_DOCUMENT_ROOT}/{directory}/"
-    for directory in ("projects", "teams", "groups", "agents")
-)
+_COLLECTIVE_PATH_DESTINATIONS = {
+    f"{COLLECTIVE_DOCUMENT_ROOT}/projects/": "project",
+    f"{COLLECTIVE_DOCUMENT_ROOT}/teams/": "team",
+    f"{COLLECTIVE_DOCUMENT_ROOT}/groups/": "group",
+    f"{COLLECTIVE_DOCUMENT_ROOT}/agents/": "agent",
+}
+COLLECTIVE_DOCUMENT_PREFIXES = tuple(_COLLECTIVE_PATH_DESTINATIONS)
+
+
+def collective_destination_of(metadata: Mapping[str, object]) -> str:
+    destination = metadata.get("collective_destination")
+    if isinstance(destination, str) and destination:
+        return destination
+    path = str(metadata.get("md_filename", "")).replace("\\", "/")
+    return next((kind for prefix, kind in _COLLECTIVE_PATH_DESTINATIONS.items()
+                 if path.startswith(prefix)), "")
 
 
 def is_collective_metadata(metadata: Mapping[str, object]) -> bool:
-    destination = metadata.get("collective_destination")
-    if isinstance(destination, str) and destination:
-        return True
-    path = str(metadata.get("md_filename", "")).replace("\\", "/")
-    return path.startswith(COLLECTIVE_DOCUMENT_PREFIXES)
+    return bool(collective_destination_of(metadata))
 
 
 def _epoch_ms(value: datetime | None) -> int | None:

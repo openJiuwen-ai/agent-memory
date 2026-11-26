@@ -42,10 +42,13 @@ def test_sdk_team_sharing_isolation_edit_and_watchdog(tmp_path, monkeypatch):
             return messages[-1].content
         segment = json.loads(messages[1].content)["source_segments"][-1]
         is_daily = "milestone" in segment["text"]
+        destination = "project" if is_daily else "team"
+        if segment["id"] == "agent-lesson":
+            destination = "agent"
         return json.dumps([{
             "content": segment["text"], "kind": "daily" if is_daily else "experience",
             "source_id": segment["id"], "evidence": segment["text"],
-            "destination": "project" if is_daily else "team",
+            "destination": destination,
         }])
 
     monkeypatch.setattr(EchoLLM, "chat", chat)
@@ -73,6 +76,33 @@ def test_sdk_team_sharing_isolation_edit_and_watchdog(tmp_path, monkeypatch):
             security = bind_collective_context(_security_provider(caller)(), coordinates)
             roster = [Member(authors[0], "manager"), Member(authors[1])]
             await asyncio.to_thread(api.init_collective_dimension, dimension, roster, security=admin)
+            lesson = "Verify rollback snapshots before a release"
+            [agent_unit] = await api.add_async("", authors[1], security=security, system_metadata={
+                "sources": [{"id": "agent-lesson", "role": "assistant", "text": lesson}],
+            })
+            assert agent_unit.system_metadata["collective_destination"] == "agent"
+            assert agent_unit.system_metadata["memory_class"] == "agent_memory"
+            assert agent_unit.system_metadata["shareable"] is True
+            for tool in member.get_tool_schemas():
+                target_schema = tool["parameters"]["properties"].get("target")
+                if target_schema is not None:
+                    assert target_schema["enum"] == ["profile", "project", "team", "agent"]
+            agent_target = {"target": "agent", "name": "MEMORY.md"}
+            read = json.loads(await member.handle_tool_call("team_memory_read", agent_target))
+            assert [unit["content"] for unit in read["units"]] == [lesson]
+            found = json.loads(await member.handle_tool_call(
+                "team_memory_search", {"target": "agent", "query": "rollback snapshots"},
+            ))
+            assert [hit["content"] for hit in found["hits"]] == [lesson]
+            assert lesson in await member.prefetch("rollback snapshots")
+            changed = json.loads(await member.handle_tool_call("team_memory_edit", {
+                **agent_target, "old_text": "snapshots", "new_text": "checkpoints",
+            }))
+            assert changed["units"][0]["content"] == lesson.replace("snapshots", "checkpoints")
+            rejected = json.loads(await member.handle_tool_call(
+                "team_memory_search", {"target": "personal", "query": "rollback checkpoints"},
+            ))
+            assert rejected["error"] == "Invalid collective memory target"
             await leader.sync_turn("", "", sources=[{
                 "id": "accepted", "role": "assistant", "text": "The ocean architecture was approved",
             }])

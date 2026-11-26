@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-25 |
+| 最近一次修订日期 | 2026-11-26 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/F05-personal-memory-portal.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/api/F10-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F09-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/construction/F13-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md，docs/features/control/F10-async-write-orchestration.md |
 
@@ -87,7 +87,10 @@ snapshot 检查成员和来源，不冻结正文，详情仍需重新读取。
 | agent | scope.agent，agent_label 仅作显示名 | 未关联 Agent |
 | project | system_metadata.project 优先，coords.project 兜底 | 跨项目／未标注 |
 | tier | MemoryTier.value | 不接受空串，须使用有效枚举或 None |
-| memory_class | system_metadata.memory_class | 未分类 |
+| memory_class | system_metadata.memory_class，可传单个字符串或非空字符串数组，数组匹配任一分类 | 未分类 |
+| memory_type | 通过原列表接口按类型筛选和鉴权，例如 `experience` | 不接受空串 |
+| collective_destination | `all` 为全部群体记忆，也可指定 `project`、`team`、`group`、`agent` 或 `user_profile` | 不接受空串 |
+| team_label | 群体抽取的 `system_metadata.team_label` | 无内容标签 |
 | lifecycle | active／superseded／forgotten／archived；None 为全部状态 | 不接受空串 |
 | query | 正文或标签的大小写不敏感子串 | 不增加文字条件 |
 
@@ -2064,7 +2067,7 @@ API 返回终端。普通 HTTP `/v1`、CLI 与 MCP 机器工具不注册这些�
 
 可信宿主为群体调用绑定项目、团队和 Group。写入可在 `system_metadata["coords"]` 请求子集，检索可用 `Context.extensions["coords"]` 收窄。显式跨空间检索继续使用 `extensions.spaces`，该键与群体调用互斥。
 
-`read_md_file` 和 `edit_md_file` 可在可信群体请求中使用 `extensions.collective_target`。项目、团队和 Group 共享文档要求当前维度的有效成员权，个人文档按当前专家身份，画像按用户归属。项目可指定 `MEMORY.md` 或合法日历日期 `YYYY-MM-DD.md`，画像使用 `USER.md`，其余目标使用 `MEMORY.md`。Team 的项目日期读取分别应用各文件的行范围，返回普通和群体项目日记条目。修订须在两个文件的可见正文中唯一定位。编辑修订唯一可识别的正文块，保留原条目身份与权限相关元数据，审计记录实际编辑者。
+`read_md_file` 和 `edit_md_file` 可在可信群体请求中使用 `extensions.collective_target`。项目、团队和 Group 共享文档要求当前维度的有效成员权，`agent` 目标按当前智能体身份定位，画像按用户归属。项目可指定 `MEMORY.md` 或合法日历日期 `YYYY-MM-DD.md`，画像使用 `USER.md`，其余目标使用 `MEMORY.md`。Team 的项目日期读取分别应用各文件的行范围，返回普通和群体项目日记条目。修订须在两个文件的可见正文中唯一定位。编辑修订唯一可识别的正文块，保留原条目身份与权限相关元数据，审计记录实际编辑者。
 
 `init_collective_dimension`、`add_collective_members`、`remove_collective_members`、`list_collective_members` 提供成员治理。MCP 以 `memory_<方法名>` 注册这四个工具，沿用 MemoryAPI 的授权规则，不接受调用方自行提交的 `security`。Swarm 专用管理身份可初始化全员为普通成员的名册。初始化幂等，显式添加可恢复成员权。移除保留贡献历史，同时撤销该维度的成员权限。
 

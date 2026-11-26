@@ -63,13 +63,17 @@ def project_from_md_path(md_filename: str) -> str:
     return _DEFAULT_PROJECT
 
 
+def _class_from_collective_destination(destination: str) -> str:
+    return "user_profile" if destination == "user_profile" else f"{destination}_memory"
+
+
 def class_from_md_path(md_filename: str) -> str:
     """从 md 相对路径反推 memory_class（F08 §3 映射，对称 LocalMarkdownStore._PATH_MAP）。"""
     target = collective_document_target(md_filename)
     if target is not None:
         if is_diary_filename(os.path.basename(md_filename.replace("\\", "/"))):
             return "daily_memory"
-        return f"{target[0]}_memory"
+        return _class_from_collective_destination(target[0])
     if team_from_md_path(md_filename):
         return "team_memory"
     normalized = md_filename.replace("\\", "/")
@@ -101,7 +105,7 @@ def team_project(team: str) -> str:
     return project
 
 
-_COLLECTIVE_DIRS = {"project": "projects", "team": "teams", "group": "groups", "personal": "agents"}
+_COLLECTIVE_DIRS = {"project": "projects", "team": "teams", "group": "groups", "agent": "agents"}
 _COLLECTIVE_KINDS = {directory: kind for kind, directory in _COLLECTIVE_DIRS.items()}
 _WINDOWS_DEVICES = re.compile(r"^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(?:\.|$)", re.I)
 
@@ -112,9 +116,9 @@ def collective_landing_metadata(
     """Use the same destination defaults for routed writes and document recovery."""
     metadata: dict[str, MetadataValueType] = {
         "collective_destination": destination,
-        "memory_class": "user_profile" if destination == "user_profile" else f"{destination}_memory",
+        "memory_class": _class_from_collective_destination(destination),
         "project": "", "team": "", "group": "",
-        "shareable": destination in {"personal", "user_profile"} or shareable is True,
+        "shareable": destination in {"agent", "user_profile"} or shareable is True,
     }
     if destination in {"project", "team", "group"}:
         metadata[destination] = key
@@ -141,7 +145,7 @@ def collective_document_path(kind: str, key: str, filename: str = "MEMORY.md") -
             raise ValidationError("Invalid collective diary filename")
         filename = f"daily_memory/{filename}"
     segment = quote(key, safe="._-")
-    if kind == "personal":
+    if kind == "agent":
         # Reserve raw underscores for colons so the path reverses without aliasing agent IDs.
         segment = segment.replace("_", "%5F").replace("%3A", "_")
     if _WINDOWS_DEVICES.match(segment):
@@ -167,7 +171,7 @@ def collective_document_target(md_filename: str) -> tuple[str, str] | None:
     kind = _COLLECTIVE_KINDS.get(directory)
     if kind is None:
         return None
-    key = unquote(segment.replace("_", ":") if kind == "personal" else segment)
+    key = unquote(segment.replace("_", ":") if kind == "agent" else segment)
     try:
         return (kind, key) if collective_document_path(kind, key, filename) == path else None
     except ValidationError:

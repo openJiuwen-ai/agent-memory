@@ -182,11 +182,11 @@ class MdOpsMixin:
         auth = self._authorize(security, scope, action, operation)
         target = context.extensions["collective_target"]
         ordinary_diary = ""
-        personal_agent = scope.agent not in ("", "main_agent")
+        has_stable_agent = scope.agent not in ("", "main_agent")
         if target == "profile" and filename == "USER.md" and scope.user:
             scopes = self._profile_scopes(scope)
             path = "USER.md"
-        elif target == "personal" and filename == "MEMORY.md" and personal_agent:
+        elif target == "agent" and filename == "MEMORY.md" and has_stable_agent:
             scopes = [scope]
             path = collective_document_path(target, scope.agent)
         elif target in ("project", "team", "group"):
