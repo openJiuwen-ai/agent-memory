@@ -104,6 +104,27 @@ def test_stdio_lifespan_starts_and_closes_server(monkeypatch, fail_in_session) -
     server.close.assert_called_once_with()
 
 
+@pytest.mark.parametrize("failed_step", ["restore", "transport"])
+def test_main_closes_server_if_transport_lifespan_is_never_entered(
+    monkeypatch, failed_step
+) -> None:
+    server = Mock()
+    transport = Mock()
+    monkeypatch.setattr(mcp_main, "_SRV", server)
+    monkeypatch.setattr(mcp_main, "_TRANSPORT", "stdio")
+    monkeypatch.setattr(mcp_main.mcp, "run", transport)
+    error = RuntimeError(failed_step)
+    if failed_step == "restore":
+        server.restore_dreaming.side_effect = error
+    else:
+        transport.side_effect = error
+
+    with pytest.raises(RuntimeError) as caught:
+        mcp_main.main()
+    assert caught.value is error, "main() must report the original error"
+    server.close.assert_called_once_with(wait=True)
+
+
 # 工具名 → (MemoryAPI 方法名, 代表性最小合法 payload)。payload 同时锁「形状可过
 # parse_request」——工具转发给 _invoke 的键名集合必须与这里给出的契约一致。
 TOOL_CASES: dict[str, tuple[str, dict[str, Any]]] = {

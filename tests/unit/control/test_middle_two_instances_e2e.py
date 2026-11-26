@@ -27,7 +27,7 @@ import uuid
 
 import pytest
 
-from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
+from jiuwen_memory.api import assemble_runtime
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.config.config import Config
 
@@ -91,7 +91,7 @@ def _build_engine_config(*, instance_name: str, tick_interval: int = 1) -> Confi
 
     **关键设计**：两实例用不同的 lock 具名实例名（``lock_a`` / ``lock_b``），
     避免 ``LockProducer._instances`` 跨线程 race——同进程多线程模拟时，
-    Factory 类变量 ``_instances`` 全局共享，两线程并发 ``build_kernel`` 各自
+    Factory 类变量 ``_instances`` 全局共享，两线程并发 ``assemble_runtime`` 各自
     ``reset_all`` 会清掉对方的具名实例，导致 Job.run 走 ``build_named("default")``
     时拿到对方线程的事件循环上建连的 Redis client，触发
     "Future attached to a different loop"。
@@ -181,9 +181,8 @@ def _run_engine_in_thread(
     """在独立线程 + 独立事件循环里跑一个 engine。
 
     每个线程内：
-    1. ``build_kernel(config)``——装配独立实例（各自 KV/lock client 连同一 Redis）；
-    2. ``await engine.write(...middle=true...)`` 落原文（不 submit Timer，因为 middle_interval
-       故意调成 9999s 让 Timer 永不在 hold_seconds 内触发）；
+    1. ``assemble_runtime(config=config)``——装配独立实例（各自 KV/lock client 连同一 Redis）；
+    2. ``await engine.write(...middle=true...)`` 落原文并提交 Timer，间隔 9999 秒以避开测试窗口；
     3. **手动构造 MiddleToLongJob 实例** 并在 barrier 同步下**同时**调 ``await job.run()``——
        两线程真正同时尝试取锁，触发 LockTimeoutError 路径；
     4. 读 JobInfo 看 ``skipped_due_to_lock``。
@@ -196,17 +195,17 @@ def _run_engine_in_thread(
 
     def _worker() -> None:
         try:
+            config = _build_engine_config(instance_name=instance_name)
+            runtime = assemble_runtime(config=config)
+
             async def _scenario() -> None:
-                config = _build_engine_config(instance_name=instance_name)
-                kernel = build_kernel(config=config)
-                api = kernel.api
-                engine = api._engine  # pylint: disable=protected-access
+                engine = runtime.api._engine  # pylint: disable=protected-access
 
                 # write 落原文——middle_interval=9999 让 Timer 永不在 hold_seconds 内触发
                 units = await engine.write(
                     content,
                     scope,
-                    metadata={
+                    system_metadata={
                         "infer": "true",
                         "middle": "true",
                         "middle_interval": "9999",
@@ -246,18 +245,13 @@ def _run_engine_in_thread(
                     await asyncio.sleep(3.0)
 
                 # 读原文 lifecycle——跨线程共享 KV
-                got = engine._storage.get(scope, [units[0].id])  # pylint: disable=protected-access
-                if got:
-                    out[f"{out_key}_lifecycle"] = got[0].lifecycle
+                stored = await engine.get(units[0].id, scope)
+                out[f"{out_key}_lifecycle"] = stored.lifecycle
 
-                # 清掉 Timer 协程
-                scheduler = api._scheduler  # pylint: disable=protected-access
-                if hasattr(scheduler, "_wheels"):
-                    for wheel in scheduler._wheels.values():  # pylint: disable=protected-access
-                        if wheel.task is not None and not wheel.task.done():
-                            wheel.task.cancel()
-
-            asyncio.run(_scenario())
+            try:
+                asyncio.run(_scenario())
+            finally:
+                runtime.close(wait=True)
         except Exception as exc:  # pragma: no cover
             out[f"{out_key}_error"] = repr(exc)
 
@@ -274,9 +268,8 @@ def test_two_instances_only_one_runs_middle_to_long() -> None:
 
     断言矩阵：
     - 两个 engine 都成功 write（无报错）；
-    - 恰好一个 ``ran_count == 1``（其原文 ARCHIVED）；
-    - 恰好一个 ``skipped_count == 1``（其原文仍 ACTIVE）；
-    - 该 scope 最终原文恰好一条 ARCHIVED + 一条 ACTIVE——证明无重复抽取、无重复归档。
+    - 恰好一个 Job 取得锁并执行转换，另一个返回 ``skipped_due_to_lock``；
+    - 取得锁的 Job 处理同 scope 的两条候选，两条原文最终都为 ARCHIVED。
     """
     _skip_if_redis_unreachable()
     # InMemoryEngine 不支持非空 space——这里用空 space + 唯一 user 做隔离。

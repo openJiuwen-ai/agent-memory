@@ -1,10 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Deterministic Schema update world with real API, engines and index builders."""
+"""Shared test helpers for middle conversion and Schema updates."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from inspect import signature
 from types import SimpleNamespace
@@ -21,12 +23,60 @@ from jiuwen_memory.construction.index_builder_impl.entity_index_builder import E
 from jiuwen_memory.construction.index_builder_impl.hybrid_index_builder import HybridIndexBuilder
 from jiuwen_memory.control.engine_impl.cloud_engine import CloudEngine
 from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
+from jiuwen_memory.control.jobs import Job
+from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJob
 from jiuwen_memory.control.pipeline import PipelineBinding
+from jiuwen_memory.control.scheduler_impl import async_timer_scheduler
+from jiuwen_memory.control.scheduler_impl.async_timer_scheduler import AsyncTimerScheduler
+from jiuwen_memory.control.types import Channel, JobStatus
 from tests.support.scoped_authenticator import ScopedAuthenticator
 from tests.unit.construction.test_entity_linker import InMemoryEntityStore
 
 T0 = datetime(2020, 1, 1, tzinfo=UTC)
 T1 = datetime(2025, 1, 1, tzinfo=UTC)
+
+
+def hold_middle_timer(monkeypatch, *, timeout: float) -> Callable[[int], Awaitable[None]]:
+    """Hold the clock while two writes in the same scope submit to one middle timer.
+
+    Call the returned coroutine after both writes to advance the clock and wait for conversion.
+    """
+    clock = 0
+    submissions: list[tuple[AsyncTimerScheduler, str]] = []
+    submit = AsyncTimerScheduler.submit
+
+    def now() -> int:
+        return clock
+
+    async def record(scheduler: AsyncTimerScheduler, job: Job, channel: Channel) -> str:
+        job_id = await submit(scheduler, job, channel)
+        if isinstance(job, MiddleToLongJob):
+            submissions.append((scheduler, job_id))
+        return job_id
+
+    monkeypatch.setattr(async_timer_scheduler, "time", SimpleNamespace(monotonic=now))
+    monkeypatch.setattr(AsyncTimerScheduler, "submit", record)
+
+    async def advance(interval: int) -> None:
+        nonlocal clock
+        if len(submissions) != 2:
+            raise AssertionError("both writes must submit middle conversion")
+        first, second = submissions
+        if first != second:
+            raise AssertionError("both writes must share one middle conversion timer")
+        scheduler, job_id = first
+        clock += interval
+        async with asyncio.timeout(timeout):
+            while True:
+                info = await asyncio.to_thread(scheduler.status, job_id)
+                status = info.detail.get("last_run_status")
+                if status == JobStatus.SUCCEEDED.value:
+                    return
+                if status:
+                    raise AssertionError(f"middle conversion returned {status}: {info.detail}")
+                await asyncio.sleep(0.1)
+
+    return advance
 
 
 def capture_constructor(monkeypatch, component, **overrides):
