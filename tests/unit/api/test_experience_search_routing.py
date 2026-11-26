@@ -16,8 +16,9 @@ from __future__ import annotations
 import pytest
 
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
-from jiuwen_memory.common.errors import ValidationError
+from jiuwen_memory.common.errors import PermissionDeniedError, ValidationError
 from jiuwen_memory.common.security import internal_context
+from jiuwen_memory.common.security.space_roles import SpaceContentRole
 from jiuwen_memory.common.security.types import Role
 from jiuwen_memory.common.type_def import (
     Context,
@@ -29,7 +30,8 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.common.type_def.memory_codec import dumps
 from jiuwen_memory.config import Config
-from jiuwen_memory.control import SpaceSpec
+from jiuwen_memory.control import SpaceMember, SpaceSpec
+from jiuwen_memory.control.types import MemoryPatch
 from jiuwen_memory.retrieval.base import RetrievalOperatorType
 from jiuwen_memory.retrieval.retriever import Retriever, RetrieverProducer
 from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
@@ -152,17 +154,69 @@ def api():
     return api
 
 
-def _write_experience_unit(api, uid: str, content: str) -> None:
+def _write_experience_unit(api, uid: str, content: str, *, scope: Scope = EXP_SCOPE) -> None:
     """经验条目直落 KV 真源：experience 是不回落取值，写入入口拒绝直写
     （§2.3 类型不可伪造；经验由 extractor 产出），检索隔离要拿真条目验证。"""
     unit = MemoryUnit(
         id=uid,
-        scope=EXP_SCOPE,
+        scope=scope,
         segments=[Segment(content=content)],
         temporal=Temporal(),
-        system_metadata={"memory_type": "experience"},
+        system_metadata={"memory_type": "experience", "author_principal": "system:experience"},
     )
-    api._engine.kv.insert(EXP_SCOPE, memory_key(uid), dumps(unit))
+    api._engine.kv.insert(scope, memory_key(uid), dumps(unit))
+
+
+def test_personal_owner_can_get_listed_system_experience(api) -> None:
+    _write_experience_unit(api, "exp-001", "启动服务")
+    security = internal_context(ScopedAuthenticator(ALICE))
+
+    listed = api.list(EXP_SCOPE, security=security, memory_types=["experience"])
+    assert [item.id for item in listed.items] == ["exp-001"]
+    assert api.get("exp-001", EXP_SCOPE, security=security).content == "启动服务"
+    with pytest.raises(PermissionDeniedError):
+        api.update("exp-001", EXP_SCOPE, MemoryPatch(content="修改正文"), security=security)
+
+
+def test_personal_owner_get_rejects_invalid_delegation(api) -> None:
+    _write_experience_unit(api, "exp-001", "启动服务")
+    security = internal_context(ScopedAuthenticator(ALICE, delegation_id="missing"))
+
+    with pytest.raises(PermissionDeniedError):
+        api.get("exp-001", EXP_SCOPE, security=security)
+
+
+@pytest.mark.parametrize(
+    "actor",
+    [
+        Scope(org=ORG, user="bob"),
+        Scope(org=ORG, agent="agent-a"),
+        Scope(org="another-org", user="alice"),
+    ],
+)
+def test_personal_system_experience_still_denies_other_identities(api, actor: Scope) -> None:
+    _write_experience_unit(api, "exp-001", "启动服务")
+    with pytest.raises(PermissionDeniedError):
+        api.get("exp-001", EXP_SCOPE, security=internal_context(ScopedAuthenticator(actor)))
+
+
+def test_shared_space_system_experience_still_requires_editor(api) -> None:
+    ops = internal_context(ScopedAuthenticator(OPS, role=Role.ROOT))
+    shared = Scope(org=ORG, space="team-notes")
+    api.create_space(SpaceSpec(org=ORG, space=shared.space, owner=Scope()), security=ops)
+    _write_experience_unit(api, "exp-001", "启动服务", scope=shared)
+    security = internal_context(ScopedAuthenticator(ALICE))
+    api.add_space_member(
+        ORG, shared.space, SpaceMember(scope=ALICE, content_role=SpaceContentRole.VIEWER),
+        security=ops,
+    )
+    with pytest.raises(PermissionDeniedError):
+        api.get("exp-001", shared, security=security)
+    api.add_space_member(
+        ORG, shared.space, SpaceMember(scope=ALICE, content_role=SpaceContentRole.EDITOR),
+        security=ops,
+    )
+    assert api.get("exp-001", shared, security=security).content == "启动服务"
 
 
 # ====================================================================== #

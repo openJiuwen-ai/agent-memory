@@ -121,6 +121,9 @@ class SpaceAwarePermissionManager(SQLitePermissionManager):
                 granted_actions=granted,
                 scope_covered=covered,
                 own_actions_apply=self._own_actions_apply(rule, context),
+                memory_type=context.memory_type
+                if context is not None and action is Action.READ
+                else "",
             )
             if outcome.allowed:
                 return outcome

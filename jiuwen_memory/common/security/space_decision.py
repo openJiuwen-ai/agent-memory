@@ -314,6 +314,7 @@ def decide(
     scope_covered: bool = False,
     own_actions_apply: bool = True,
     delegation: DecisionOutcome | None = None,
+    memory_type: str = "",
 ) -> DecisionOutcome:
     """求一条轴的判定结论（事实对象形态，旧宿主薄壳）。
 
@@ -336,6 +337,7 @@ def decide(
         scope_covered=scope_covered,
         own_actions_apply=own_actions_apply,
         delegation=delegation,
+        memory_type=memory_type,
     )
 
 
@@ -353,6 +355,7 @@ def decide_projected(
     scope_covered: bool = False,
     own_actions_apply: bool = True,
     delegation: DecisionOutcome | None = None,
+    memory_type: str = "",
 ) -> DecisionOutcome:
     """求一条轴的判定结论（属性通道投影形态）。
 
@@ -409,6 +412,13 @@ def decide_projected(
     # （安全能力 F04 §Delegation），失效委托不静默改判成员记录/Grant，审计里才看得出委托失效过。
     if delegation is not None and on_behalf_paths_apply(entry, axis):
         return _allow(delegation.rule, axis) if delegation.allowed else delegation
+
+    # 个人空间的系统经验点读例外须在委托终局之后判定。
+    is_content_get = entry == "get" and axis is SpaceAxis.CONTENT
+    is_system_experience = memory_type == "experience" and author_principal == "system:experience"
+    is_personal_owner = bool(actor.user) and projection.is_individual and projection.owner_same_dims
+    if is_content_get and is_system_experience and is_personal_owner:
+        return _allow("owner_system_experience_read", axis)
 
     # 第 10 步第一段 归属主体档。必须排在「主维无记录即拒绝」之前：预建的主空间恒不写
     # 成员记录，排在其后则该档整体不可达，症状是治理入口静默失效而条目读写照常。
