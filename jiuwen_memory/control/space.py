@@ -35,6 +35,9 @@ class SpaceProducer(Factory):
 class SpaceManager(ControlOperator):
     """space 管理面算子。"""
 
+    def release_space_queries(self) -> None:
+        """Release an optional local space query reader."""
+
     @abstractmethod
     def create(self, spec: SpaceSpec) -> SpaceInfo:
         """创建 space。"""

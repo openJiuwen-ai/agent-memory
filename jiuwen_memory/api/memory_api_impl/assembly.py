@@ -822,6 +822,9 @@ def _build_kernel(
         stores = tuple(resource for resource in reversed(lifecycle.created)
                        if isinstance(resource, BaseStore))
         owner.share_with(SecurityResourceOwner(stores))
+        for resource in lifecycle.created:
+            if isinstance(resource, SpaceManager):
+                owner.add_close_callback(resource.release_space_queries)
         if managed_plan is not None:
             owner.add_close_callback(managed_plan.close)
         lifecycle.bind(owner)
@@ -951,8 +954,10 @@ def _assemble_kernel(
             f"{type(ingest_jobs).__name__}"
         )
     space = SpaceProducer.dep(root, default="kv")
-    scheduler = SchedulerProducer.dep(root, default="in_process")
     with _assembly_lifecycle(ctx) as lifecycle:
+        if isinstance(space, SpaceManager) and any(item is space for item in lifecycle.created):
+            lifecycle.failure_cleanup.append(space.release_space_queries)
+        scheduler = SchedulerProducer.dep(root, default="in_process")
         lifecycle.failure_cleanup.append(scheduler.shutdown)
     lock_specs = root.ctx.namespaces.get(LockProducer.TOP_NAME, {})
     dreaming_standby = root.get("dreaming_standby", False)

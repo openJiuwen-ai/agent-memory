@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterator
+from contextlib import nullcontext
 from typing import Any
 
 from jiuwen_memory.common.errors import (
@@ -41,6 +42,7 @@ from ..capability import StoreCapability
 from ..kv import ConditionalKV, KVStore
 from ..types import KVMemoryListResult
 from .memory_list import list_memory_entries
+from .redis_space_cache import RedisSpaceCache, RedisSpaceReader
 
 
 def _decode_scope_segment(segment: str) -> str:
@@ -70,6 +72,8 @@ class RedisKVStore(KVStore, ConditionalKV):
         password: str | None = None,
         config_source=None,
         config_namespace: str = "kv_store",
+        space_query_index: bool = True,
+        space_query_batch_size: int = 1000,
         **options: Any,
     ) -> None:
         # 构造期字段为 ConfigSource 缺失时的回落
@@ -81,6 +85,18 @@ class RedisKVStore(KVStore, ConditionalKV):
         self._config_source = config_source
         self._config_namespace = config_namespace
         # url 分支走 from_url，不读 host 指纹，故 options 需单独留一份透传（见 client）。
+        if not isinstance(space_query_index, bool):
+            raise ValidationError("space_query_index must be a boolean")
+        if (isinstance(space_query_batch_size, bool) or not isinstance(space_query_batch_size, int)
+                or not 1 <= space_query_batch_size <= 10000):
+            raise ValidationError("space_query_batch_size must be between 1 and 10000")
+        self._space_cache = (
+            RedisSpaceCache(lambda: self.client, space_query_batch_size)
+            if space_query_index else None
+        )
+        self._space_reader = RedisSpaceReader(
+            lambda: self.client, space_query_batch_size, self._space_cache
+        )
         self._options = dict(options)
         self._client: Any = None
         self._client_fingerprint: object | None = None
@@ -146,21 +162,32 @@ class RedisKVStore(KVStore, ConditionalKV):
         if not ok:
             raise HealthCheckError("redis ping returned falsy")
 
+    def space_queries(self) -> RedisSpaceReader:
+        return self._space_reader
+
     def close(self) -> None:
         """Release an owned client; assembly stops readers before closing dependencies."""
+        if self._space_cache is not None:
+            self._space_cache.close()
         if self._client is not None:
             with wrap_backend("redis close"):
                 self._client.close()
             self._client = None
             self._client_fingerprint = None
 
+    def _observe(self, scope, key, **known):
+        if self._space_cache is None:
+            return nullcontext()
+        return self._space_cache.mutation(self._namespaced, scope, key, **known)
+
     def insert(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         """在 ``scope`` 下新建 ``key``；已存在时报冲突。"""
         nk = self._namespaced(scope, key)
-        with wrap_backend(f"redis insert {key!r}"):
-            ok = self.client.set(nk, value, nx=True, px=self._px(ttl))
-        if not ok:  # NX 未写入 = 键已存在
-            raise ConflictError(entity="key", key=key)
+        with self._observe(scope, key, create=True, value=value, ttl=ttl):
+            with wrap_backend(f"redis insert {key!r}"):
+                ok = self.client.set(nk, value, nx=True, px=self._px(ttl))
+            if not ok:  # NX 未写入 = 键已存在
+                raise ConflictError(entity="key", key=key)
 
     @staticmethod
     def supports_compare_and_swap() -> bool:
@@ -179,7 +206,7 @@ class RedisKVStore(KVStore, ConditionalKV):
         end
         return 1
         """
-        with wrap_backend("redis conditional update"):
+        with self._observe(scope, key), wrap_backend("redis conditional update"):
             return bool(self.client.eval(
                 script, 1, self._namespaced(scope, key),
                 "absent" if expected is None else "present", expected or b"",
@@ -189,14 +216,15 @@ class RedisKVStore(KVStore, ConditionalKV):
     def update(self, scope: Scope, key: str, value: bytes, ttl: float = 0.0) -> None:
         """覆写 ``scope`` 下已有 ``key``；不存在时报缺失。"""
         nk = self._namespaced(scope, key)
-        with wrap_backend(f"redis update {key!r}"):
-            ok = self.client.set(nk, value, xx=True, px=self._px(ttl))
-        if not ok:  # XX 未写入 = 键不存在
-            raise NotFoundError(entity="key", key=key)
+        with self._observe(scope, key, value=value, ttl=ttl):
+            with wrap_backend(f"redis update {key!r}"):
+                ok = self.client.set(nk, value, xx=True, px=self._px(ttl))
+            if not ok:  # XX 未写入 = 键不存在
+                raise NotFoundError(entity="key", key=key)
 
     def delete(self, scope: Scope, key: str) -> None:
         """删除 ``scope`` 下的 ``key``（幂等）。"""
-        with wrap_backend(f"redis delete {key!r}"):
+        with self._observe(scope, key, delete=True), wrap_backend(f"redis delete {key!r}"):
             self.client.delete(self._namespaced(scope, key))  # 幂等
 
     def migration_scan_supported(self) -> bool:
@@ -262,7 +290,7 @@ class RedisKVStore(KVStore, ConditionalKV):
         if ttl > 0 then redis.call('PEXPIRE', KEYS[1], ttl) end
         return 1
         """
-        with wrap_backend("redis compare_exchange"):
+        with self._observe(scope, key), wrap_backend("redis compare_exchange"):
             return bool(self.client.eval(
                 script, 1, self._namespaced(scope, key), expected,
                 "delete" if replacement is None else "replace", replacement or b"",
@@ -382,23 +410,25 @@ class RedisKVStore(KVStore, ConditionalKV):
 
     def create_if_absent(self, scope: Scope, key: str, value: bytes) -> None:
         name = self._namespaced(scope, key)
-        with wrap_backend(f"redis conditional create {key!r}"):
-            created = self.client.set(name, value, nx=True)
-        if not created:
-            raise ConflictError("key", key)
+        with self._observe(scope, key, create=True, value=value):
+            with wrap_backend(f"redis conditional create {key!r}"):
+                created = self.client.set(name, value, nx=True)
+            if not created:
+                raise ConflictError("key", key)
 
     def replace_if_value(
         self, scope: Scope, key: str, expected: bytes, value: bytes
     ) -> None:
         name = self._namespaced(scope, key)
-        with wrap_backend(f"redis conditional replace {key!r}"):
-            ok = self.client.eval(self._CAS_SCRIPT, 1, name, expected, value)
-        if not ok:
-            raise ConflictError("key", key)
+        with self._observe(scope, key):
+            with wrap_backend(f"redis conditional replace {key!r}"):
+                ok = self.client.eval(self._CAS_SCRIPT, 1, name, expected, value)
+            if not ok:
+                raise ConflictError("key", key)
 
     def delete_if_value(self, scope: Scope, key: str, expected: bytes) -> bool:
         name = self._namespaced(scope, key)
-        with wrap_backend(f"redis conditional delete {key!r}"):
+        with self._observe(scope, key), wrap_backend(f"redis conditional delete {key!r}"):
             return bool(self.client.eval(self._CAD_SCRIPT, 1, name, expected))
 
     def read_many(self, scope: Scope, keys: list[str]) -> dict[str, bytes]:
@@ -543,5 +573,7 @@ def _build(config):
         db=Factory.cfg_get(config, "db", 0),
         password=Factory.cfg_get(config, "password"),
         config_source=kv_config_source(),
+        space_query_index=Factory.cfg_get(config, "space_query_index", True),
+        space_query_batch_size=Factory.cfg_get(config, "space_query_batch_size", 1000),
         **options,
     )
