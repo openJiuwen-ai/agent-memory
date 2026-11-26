@@ -32,7 +32,7 @@ agent-core 侧（openjiuwen 仓库）不做；deploy 配置不含经验 profile�
 2. 选取算法落地：复现要求、排序分（相关性^α × 质量分^β）、探索名额、
    按能力分组；公式与常量单点维护在 `common/experience.py`。
 3. 单空间 search 按请求路由值选择 profile；具名检索流程可固定类型范围，
-   见 [F09](F09-staged-retriever-and-selectable-pipelines.md)。经验查询保持单空间限制，
+   见 [F10](F10-staged-retriever-and-selectable-pipelines.md)。经验查询保持单空间限制，
    默认查询在各空间排除经验与技能类型。
 4. 检索层不 import 构建层（retrieval → construction 严禁），效用部件因此
    下沉 common——两侧共用、依赖方向不破坏。
@@ -54,7 +54,7 @@ agent-core 侧（openjiuwen 仓库）不做；deploy 配置不含经验 profile�
 
 ### 一、效用部件下沉 `common/experience.py`
 
-写入链路（F09）把全部共用部件放在 `construction/experience.py`（F09 决策三）。
+写入链路（F10）把全部共用部件放在 `construction/experience.py`（F10 决策三）。
 本文的
 Selector 也要读效用记录（统计、基线、复现作者）并复用质量分公式，而检索层
 不得 import 构建层（S04 边界；`tests/unit/retrieval/test_experience_layer_boundary.py`
@@ -183,7 +183,7 @@ memory_type / pipeline / 抽取策略 / 作者标记 / 可执行标记等内部�
 - **具名流程**：`extensions.retrieval_pipeline` 在 API 边界转为 typed
   `RetrievalQuery.pipeline`，名称先校验；配置的固定类型范围在鉴权上下文构建前施加。
   显式流程优先于 profile，且有固定范围时不再追加上述默认隔离谓词，防止经验
-  流程被默认排除。完整装配与选择约定见 [F09](F09-staged-retriever-and-selectable-pipelines.md)。
+  流程被默认排除。完整装配与选择约定见 [F10](F10-staged-retriever-and-selectable-pipelines.md)。
 - **跨空间**：经验查询（含固定 `memory_types: [experience]` 的具名流程）
   返回 `ValidationError`，要求一次只查一个空间；Selector 的探索名额与能力分组
   不能在逐空间选取后再被轮转合并和截断。普通查询仍可搜索含经验条目的空间，
