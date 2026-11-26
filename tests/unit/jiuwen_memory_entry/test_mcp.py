@@ -500,6 +500,20 @@ def test_authenticated_runs_with_mcp_surface_and_dev_identity(kernel, monkeypatc
 # --- D. 功能闭环（任务闭环与血缘链是本特性的核心回归）--------------------------- #
 
 
+def test_mcp_rejects_misplaced_kernel_config_before_assembly(monkeypatch) -> None:
+    monkeypatch.setenv(_AUTH_MODE_ENV, "required")
+    monkeypatch.setattr(sys, "argv", ["mcp", "config.yml"])
+    monkeypatch.setattr(
+        mcp_main, "load_layer", lambda _path: {"globals": {"write_document": True}}
+    )
+    monkeypatch.setattr(mcp_main.Server, "build", lambda *_: pytest.fail("must not assemble"))
+
+    with pytest.raises(
+        ValidationError, match=r"unexpected top-level service configuration keys 'globals'"
+    ):
+        _build_server()
+
+
 def test_required_mode_assembles_configured_api_key_runtime(monkeypatch) -> None:
     # 白盒回归需验证私有装配真源/故障注入；不为测试扩充公共接口。
     # pylint: disable=protected-access

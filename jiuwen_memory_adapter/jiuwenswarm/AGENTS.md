@@ -25,6 +25,7 @@
 - 普通 Work/Coding 按场景策略执行；接续预取与回写保持优先，SDK 接续只注册任务/恢复工具，不将文档工具交给接续客户端。
 - Code/Team 分别继承 BaseDocumentScene，仅复用项目绑定、文档配置与超时保护；工具、Pipeline 和召回策略各自定义，Team 不继承 Code。
 - 普通 Coding/Team 在配置来源解析后覆盖 write_document=true；SDK 接续保留独立配置基准，不应用场景覆盖，HTTP 不应用本地 SDK 配置。
+- 内置文档 SDK 配置显式声明 `markdown_store.default.params.root: "."`，供文档存储和看门狗共用。配置片段可以覆盖该目录。
 - 注册表仅保存工厂，每个 Provider 创建独立场景；普通文档可注入宿主持有者共享 Runtime；未注入时各自持有。资源锁与接续共享池保持独立。
 - sdk_runtime.py 中的共享池只适用于 mode=continuity、持久 fixed_path SQLite Registry；HTTP 和普通 SDK 不进入共享池。
 - Pool 按规范 Registry 路径排他，同路径不同配置/主体返回冲突；Provider 不共享请求安全上下文。

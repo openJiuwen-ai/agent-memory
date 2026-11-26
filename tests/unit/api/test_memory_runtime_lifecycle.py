@@ -331,6 +331,41 @@ def test_runtime_close_without_start_is_safe() -> None:
     runtime.close(wait=False)
 
 
+def test_watchdog_explains_missing_markdown_even_with_explicit_shadow_path(tmp_path) -> None:
+    shadow_path = tmp_path / "shadow.db"
+    config = {
+        "shadow_index": {"default": {"target": "sqlite", "params": {"db_path": str(shadow_path)}}},
+    }
+
+    with pytest.raises(ValidationError, match=r"markdown_store\.default\.params\.root") as exc:
+        assemble_runtime(config=config)
+    assert "globals.watch_document: false" in str(exc.value)
+
+    config["globals"] = {"watch_document": False}
+    runtime = assemble_runtime(config=config)
+    try:
+        assert runtime._kernel.watchdog is None
+    finally:
+        runtime.close(wait=True)
+
+    config["globals"]["write_document"] = True
+    with pytest.raises(ValidationError, match=r"globals\.write_document=true requires"):
+        assemble_runtime(config=config)
+
+
+@pytest.mark.parametrize("root", ["", "   "])
+def test_watchdog_rejects_blank_markdown_root(tmp_path, root) -> None:
+    config = {
+        "markdown_store": {"default": {"target": "local", "params": {"root": root}}},
+        "shadow_index": {
+            "default": {"target": "sqlite", "params": {"db_path": str(tmp_path / "shadow.db")}},
+        },
+    }
+
+    with pytest.raises(ValidationError, match=r"markdown_store\.default with a non-empty root"):
+        assemble_runtime(config=config)
+
+
 def test_start_no_watchdog_is_noop_and_idempotent() -> None:
     """默认（非文档模式）无看门狗：start / start_background 均为 no-op，可重复调。"""
     runtime = assemble_runtime(config={})

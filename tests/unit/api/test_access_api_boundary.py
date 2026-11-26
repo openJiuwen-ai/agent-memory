@@ -208,7 +208,12 @@ def test_server_build_consumes_only_public_assembly_result(monkeypatch) -> None:
     assert srv.api is public_runtime.api
     assert srv.audit is public_runtime.audit
     assert srv.security_runtime is entry_security
-    assert captured == {"policies": None, "config": {}, "security_runtime": entry_security}
+    assert captured == {
+        "policies": None,
+        "config": {},
+        "security_runtime": entry_security,
+        "log_kv_backend": False,
+    }
     srv.close(wait=False)
     assert events == [False], "the public assembled handle owns the shutdown path"
 

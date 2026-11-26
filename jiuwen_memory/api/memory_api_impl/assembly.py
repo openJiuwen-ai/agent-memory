@@ -944,6 +944,12 @@ def _assemble_kernel(
     # 同一实例），授权代理默认 AllowAll、行为与裸 KVStore 一致。ROOT_PARAMS 的
     # kv_store 键即端口名（用户可指名其他 kv 端口）。
     kv_store = storage.kv(resolve_name(root, "kv_store"))
+    document_mode = should_write_document(root.get(WRITE_DOCUMENT_KEY))
+    if document_mode and not storage.has_markdown():
+        raise ValidationError(
+            "globals.write_document=true requires markdown_store.default. "
+            "Configure markdown_store.default.params.root for document storage."
+        )
     if privacy is not None:
         _validate_privacy_namespace(storage, root, privacy)
 
@@ -1009,7 +1015,6 @@ def _assemble_kernel(
         connectors = ctx.globals.get("continuity_connectors", {})
         if not isinstance(connectors, dict):
             raise ValidationError("continuity_connectors must be a trusted connection mapping")
-    document_mode = should_write_document(root.get(WRITE_DOCUMENT_KEY))
     collective_members = None
     collective_dedup = None
     collective_extractor = None
@@ -1414,15 +1419,17 @@ def assemble_server_runtime(
     config: Config | Mapping[str, Any] | None = None,
     *,
     security_runtime: Any = AUTO_SECURITY_RUNTIME,
+    log_kv_backend: bool = False,
 ) -> ServerRuntime:
     """装配 Server 门面，Access 无需访问 MemoryRuntime/API 的私有成员。
 
     默认复用配置的安全 Runtime，显式 None 不选择入口认证；显式组合覆盖入口能力，
     若包含 PDP/Authenticator 则在内核回绑并校验。成功返回后统一负责已选择能力的
     生命周期；失败只关闭本次内核，不接管调用方注入对象。
+    ``log_kv_backend`` 在装配成功时记录已解析的 KV 后端和可用的本地路径。
     """
     kernel = _build_kernel(policies=policies, config=config)
-    return _server_runtime_from_kernel(kernel, security_runtime)
+    return _server_runtime_from_kernel(kernel, security_runtime, log_kv_backend=log_kv_backend)
 
 
 def assemble_managed_server_runtime(
@@ -1444,7 +1451,9 @@ def assemble_managed_server_runtime(
     return _server_runtime_from_kernel(kernel, security_runtime)
 
 
-def _server_runtime_from_kernel(kernel: _Kernel, security_runtime: Any) -> ServerRuntime:
+def _server_runtime_from_kernel(
+    kernel: _Kernel, security_runtime: Any, *, log_kv_backend: bool = False
+) -> ServerRuntime:
     runtime = _runtime_from_kernel(kernel)
     try:
         auto_security = security_runtime is AUTO_SECURITY_RUNTIME
@@ -1458,6 +1467,15 @@ def _server_runtime_from_kernel(kernel: _Kernel, security_runtime: Any) -> Serve
             runtime.security_resource_owner().share_with(SecurityResourceOwner((selected,)))
         # 同包 facade 委托统一关闭，不将安全装配接缝交给 Access。
         kernel.api._runtime_close = facade.close  # pylint: disable=protected-access
+        if log_kv_backend and logger.isEnabledFor(logging.INFO):
+            try:
+                # The engine can select a different named KV than the kernel's default port.
+                backend, path = kernel.api._engine.kv.backend_info()  # pylint: disable=protected-access
+            except Exception as exc:
+                logger.warning("KV store backend details unavailable (%s)", type(exc).__name__)
+            else:
+                path_detail = repr(path) if path is not None else "None (no single local path)"
+                logger.info("KV store backend=%s path=%s", backend, path_detail)
         return facade
     except BaseException as assembly_error:
         try:

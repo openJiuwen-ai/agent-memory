@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-25 |
+| 最近一次修订日期 | 2026-11-26 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/F05-personal-memory-portal.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/api/F10-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F09-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/construction/F13-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md，docs/features/control/F10-async-write-orchestration.md |
 
@@ -1767,8 +1767,10 @@ HTTP/MCP 的 peer、限流和协议解析仍由各入口负责。独立安全构
 
 ### 公开 Server 装配入口
 
-`assemble_server_runtime(policies=None, config=None, *, security_runtime=AUTO_SECURITY_RUNTIME)
--> ServerRuntime` 从同一公开 API 包导出；Access 只传普通配置 mapping，不解析内核私有成员。
+`assemble_server_runtime(policies=None, config=None, *, security_runtime=AUTO_SECURITY_RUNTIME,
+log_kv_backend=False) -> ServerRuntime` 从同一公开 API 包导出。Access 只传普通配置 mapping，
+不解析内核私有成员。启用 `log_kv_backend` 且 INFO 日志可用时，记录装配后生效的 KV
+后端和可用的本地路径。查询诊断信息失败时，只记录异常类型并继续返回运行时。
 `MemoryRuntime` 提供 `api`、`authenticate(credentials)`、`start()`、异步
 `start_background()` 和 `close(*, wait=True)`。异步宿主绑定其持续运行的事件循环；同步
 宿主显式启动自有 loop，两者不暴露 Store 或任务控制器。默认无 watcher 时启动为 no-op，

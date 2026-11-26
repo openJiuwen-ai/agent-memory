@@ -1,8 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """公开 Server 装配句柄的选择、失败清理和生命周期契约。"""
 
+import logging
 from copy import deepcopy
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -17,6 +19,7 @@ from jiuwen_memory.api import (
 from jiuwen_memory.api.memory_api_impl import assembly
 from jiuwen_memory.common.security.authentication.base import AuthProducer
 from jiuwen_memory.common.security.runtime import SecurityRuntimeProducer
+from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 
 pytestmark = pytest.mark.unit
 
@@ -50,6 +53,40 @@ def test_server_runtime_auto_uses_configured_runtime() -> None:
     finally:
         runtime.close()
     assert selected.security_resource_owner().is_closed()
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_kv_startup_logging_is_opt_in(enabled, monkeypatch, caplog, tmp_path) -> None:
+    logger = logging.getLogger("tests.server_kv_startup")
+    monkeypatch.setattr(assembly, "logger", logger)
+    path = str(tmp_path / "effective.sqlite")
+    describe = Mock(return_value=("SQLiteKVStore", path))
+    monkeypatch.setattr(InMemoryKVStore, "backend_info", describe)
+
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        assemble_server_runtime(log_kv_backend=enabled).close()
+
+    if enabled:
+        describe.assert_called_once_with()
+        assert f"KV store backend=SQLiteKVStore path={path!r}" in caplog.messages
+    else:
+        describe.assert_not_called()
+        assert "KV store backend=" not in caplog.text
+
+
+def test_kv_startup_logging_warns_when_diagnostics_fail(monkeypatch, caplog) -> None:
+    logger = logging.getLogger("tests.server_kv_startup")
+    monkeypatch.setattr(assembly, "logger", logger)
+    describe = Mock(side_effect=RuntimeError("private backend details"))
+    monkeypatch.setattr(InMemoryKVStore, "backend_info", describe)
+
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        assemble_server_runtime(log_kv_backend=True).close()
+
+    describe.assert_called_once_with()
+    assert ("tests.server_kv_startup", logging.WARNING,
+            "KV store backend details unavailable (RuntimeError)") in caplog.record_tuples
+    assert "private backend details" not in caplog.text
 
 
 def test_fixed_identity_inspection_and_multi_identity_denial() -> None:

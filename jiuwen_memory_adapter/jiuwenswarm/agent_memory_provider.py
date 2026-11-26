@@ -410,12 +410,12 @@ def _agent_default_config(experience_space: str = "") -> dict[str, Any]:
         "kv_store": {"default": "memory"},
         # vector / fulltext / graph 三个 KV 时代索引端口已删除：文档模式召回统一走
         # shadow（FTS5 + vec0），这三路无消费者——回落内核 defaults 的内存版（同样闲置）。
-        # md 真源 root
+        # 内置配置显式指定当前工作目录，供文档存储和看门狗共用。
         "markdown_store": {
             "default": {
                 "target": "local",
                 "params": {
-                    "root": "",
+                    "root": ".",
                 },
             }
         },
