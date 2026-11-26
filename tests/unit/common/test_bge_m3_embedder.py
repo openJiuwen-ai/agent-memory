@@ -6,6 +6,10 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
+import types
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock
 
 import pytest
@@ -181,12 +185,16 @@ def test_health_failure():
 
 
 def test_missing_flagembedding_dependency_reports_backend_error(tmp_path, monkeypatch):
-    """本地模型存在但依赖缺失时，返回稳定的后端错误契约。"""
+    """本地模型存在但依赖缺失时，快速失败且不提前触发 torch CUDA 检测。"""
+    cuda_probe = MagicMock(return_value=False)
+    fake_torch = types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=cuda_probe))
     monkeypatch.setitem(sys.modules, "FlagEmbedding", None)
-    embedder = BGEM3Embedder(model_name_or_path=str(tmp_path))
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    embedder = BGEM3Embedder(model_name_or_path=str(tmp_path), use_fp16=True)
 
     with pytest.raises(BackendError, match="FlagEmbedding"):
         embedder.embed(["test"])
+    cuda_probe.assert_not_called()
 
 
 def test_lazy_load():
@@ -257,19 +265,16 @@ def test_fp16_disabled_on_cpu(monkeypatch, tmp_path):
 
     防止 torch>=2.x meta device 触发 "Cannot copy out of meta tensor" 错误。
     """
-    import types
-    # 注入 fake FlagEmbedding 模块，BGEM3FlagModel 用 MockBGEM3Model
+    # 注入 fake FlagEmbedding 与 torch 模块，无 torch 环境亦可稳定验证降级逻辑
     fake_mod = types.ModuleType("FlagEmbedding")
     fake_mod.BGEM3FlagModel = MockBGEM3Model
+    fake_torch = types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda: False))
     monkeypatch.setitem(sys.modules, "FlagEmbedding", fake_mod)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setattr(
         "jiuwen_memory.common.embedder.embedder_impl.bge_m3_embedder.resolve_model_source",
         lambda *_args, **_kwargs: str(tmp_path),
     )
-    # mock torch.cuda.is_available 返回 False（CPU 环境）
-    pytest.importorskip("torch")
-    import torch
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
 
     embedder = BGEM3Embedder(model_name_or_path="BAAI/bge-m3", use_fp16=True, dimension=1024)
     # 触发 _load_model（mock 模型不走真实加载，但会经过 fp16 降级判断）
@@ -279,21 +284,199 @@ def test_fp16_disabled_on_cpu(monkeypatch, tmp_path):
 
 def test_fp16_kept_on_cuda(monkeypatch, tmp_path):
     """T-BM3-17: CUDA 可用时，use_fp16=true 保持不变。"""
-    import types
     fake_mod = types.ModuleType("FlagEmbedding")
     fake_mod.BGEM3FlagModel = MockBGEM3Model
+    fake_torch = types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda: True))
+    monkeypatch.setitem(sys.modules, "FlagEmbedding", fake_mod)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(
+        "jiuwen_memory.common.embedder.embedder_impl.bge_m3_embedder.resolve_model_source",
+        lambda *_args, **_kwargs: str(tmp_path),
+    )
+
+    embedder = BGEM3Embedder(model_name_or_path="BAAI/bge-m3", use_fp16=True, dimension=1024)
+    getattr(embedder, "_load_model")()
+    assert getattr(embedder, "_model").use_fp16 is True, "CUDA 下 use_fp16 应保持 True"
+
+
+# ---------------------------------------------------------------------------
+# Tests: Thread safety (concurrency)
+# ---------------------------------------------------------------------------
+
+
+class _ConcurrencyDetectingBGEM3Model:
+    """模拟非线程安全的 FlagEmbedding 模型：并发进入 encode 时抛出 meta tensor 错误。"""
+
+    def __init__(self, model_name_or_path: str = "", use_fp16: bool = True) -> None:
+        self.model_name_or_path = model_name_or_path
+        self.use_fp16 = use_fp16
+        self._guard = threading.Lock()
+        self._active = 0
+        self.max_concurrent = 0
+        self.call_count = 0
+
+    def encode(self, sentences, **_kwargs):
+        import numpy as np
+
+        with self._guard:
+            self._active += 1
+            self.call_count += 1
+            if self._active > self.max_concurrent:
+                self.max_concurrent = self._active
+            overlapping = self._active > 1
+        try:
+            time.sleep(0.01)
+            if overlapping:
+                raise NotImplementedError("Cannot copy out of meta tensor; no data!")
+            vectors = np.array([_hash_vector(s, 1024) for s in sentences])
+            return {"dense_vecs": vectors}
+        finally:
+            with self._guard:
+                self._active -= 1
+
+
+def test_concurrent_embed_serializes_model_and_preserves_results():
+    """T-BM3-18: 多线程并发 embed 时底层模型串行执行，且每线程返回结果完整无串位。"""
+    embedder = BGEM3Embedder(dimension=1024, max_batch_size=2)
+    model = _ConcurrencyDetectingBGEM3Model()
+    setattr(embedder, "_model", model)
+
+    worker_count = 8
+    barrier = threading.Barrier(worker_count)
+    inputs = [[f"worker-{idx}-item-{j}" for j in range(3)] for idx in range(worker_count)]
+
+    def _run(idx: int) -> list[list[float]]:
+        barrier.wait()
+        return embedder.embed(inputs[idx])
+
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        results = list(pool.map(_run, range(worker_count)))
+
+    assert model.max_concurrent == 1, f"expected max_concurrent=1, got {model.max_concurrent}"
+    assert model.call_count == worker_count * 2, "each 3-item input with batch_size=2 takes 2 calls"
+    for idx, vectors in enumerate(results):
+        expected = [_hash_vector(text, 1024) for text in inputs[idx]]
+        assert len(vectors) == len(expected), f"worker {idx} vector count mismatch"
+        for actual_vec, expected_vec in zip(vectors, expected):
+            assert actual_vec == pytest.approx(expected_vec), f"worker {idx} vector corrupted"
+
+
+def test_concurrent_lazy_load_initializes_once(monkeypatch, tmp_path):
+    """T-BM3-19: 多线程并发首次调用时，懒加载仅构造一次底层模型。"""
+    init_guard = threading.Lock()
+    init_count = 0
+    created_models: list[_ConcurrencyDetectingBGEM3Model] = []
+
+    def _build_model(model_name_or_path: str, use_fp16: bool = True):
+        nonlocal init_count
+        time.sleep(0.03)
+        with init_guard:
+            init_count += 1
+        instance = _ConcurrencyDetectingBGEM3Model(model_name_or_path, use_fp16=use_fp16)
+        created_models.append(instance)
+        return instance
+
+    fake_mod = types.ModuleType("FlagEmbedding")
+    fake_mod.BGEM3FlagModel = _build_model
     monkeypatch.setitem(sys.modules, "FlagEmbedding", fake_mod)
     monkeypatch.setattr(
         "jiuwen_memory.common.embedder.embedder_impl.bge_m3_embedder.resolve_model_source",
         lambda *_args, **_kwargs: str(tmp_path),
     )
-    pytest.importorskip("torch")
-    import torch
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
 
-    embedder = BGEM3Embedder(model_name_or_path="BAAI/bge-m3", use_fp16=True, dimension=1024)
-    getattr(embedder, "_load_model")()
-    assert getattr(embedder, "_model").use_fp16 is True, "CUDA 下 use_fp16 应保持 True"
+    embedder = BGEM3Embedder(model_name_or_path="BAAI/bge-m3", use_fp16=False, dimension=1024)
+    worker_count = 8
+    barrier = threading.Barrier(worker_count)
+
+    def _run(idx: int) -> list[list[float]]:
+        barrier.wait()
+        return embedder.embed([f"lazy-text-{idx}"])
+
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        results = list(pool.map(_run, range(worker_count)))
+
+    assert init_count == 1, f"lazy load should run once, got {init_count}"
+    assert len(created_models) == 1, "only one model instance should be created"
+    assert created_models[0].max_concurrent == 1, "concurrent encode should be serialized"
+    for idx, vectors in enumerate(results):
+        assert vectors[0] == pytest.approx(_hash_vector(f"lazy-text-{idx}", 1024))
+
+
+def test_concurrent_lazy_load_failure_allows_retry(monkeypatch, tmp_path):
+    """T-BM3-20: 并发首次加载失败后释放锁且不残留半成品，等待线程接力重试成功。"""
+    attempts = 0
+    attempt_guard = threading.Lock()
+    created_models: list[_ConcurrencyDetectingBGEM3Model] = []
+
+    def _flaky_model(model_name_or_path: str, use_fp16: bool = True):
+        nonlocal attempts
+        with attempt_guard:
+            attempts += 1
+            current = attempts
+        if current == 1:
+            time.sleep(0.03)
+            raise RuntimeError("transient load failure")
+        instance = _ConcurrencyDetectingBGEM3Model(model_name_or_path, use_fp16=use_fp16)
+        created_models.append(instance)
+        return instance
+
+    fake_mod = types.ModuleType("FlagEmbedding")
+    fake_mod.BGEM3FlagModel = _flaky_model
+    monkeypatch.setitem(sys.modules, "FlagEmbedding", fake_mod)
+    monkeypatch.setattr(
+        "jiuwen_memory.common.embedder.embedder_impl.bge_m3_embedder.resolve_model_source",
+        lambda *_args, **_kwargs: str(tmp_path),
+    )
+
+    embedder = BGEM3Embedder(model_name_or_path="BAAI/bge-m3", use_fp16=False, dimension=1024)
+    worker_count = 4
+    barrier = threading.Barrier(worker_count)
+
+    def _run(idx: int) -> tuple[int, list[list[float]] | None, Exception | None]:
+        barrier.wait()
+        try:
+            return idx, embedder.embed([f"retry-{idx}"]), None
+        except BackendError as exc:
+            return idx, None, exc
+
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        outcomes = list(pool.map(_run, range(worker_count)))
+
+    errors = [exc for _, _, exc in outcomes if exc is not None]
+    successes = [(idx, vecs) for idx, vecs, exc in outcomes if exc is None and vecs is not None]
+
+    assert len(errors) == 1, f"expected 1 BackendError from initial failure, got {errors}"
+    assert "transient load failure" in str(errors[0]), "initial failure reason should propagate"
+    assert len(successes) == worker_count - 1, "waiting threads should recover and succeed"
+    assert attempts == 2, f"expected 1 failed + 1 successful load, got {attempts}"
+    assert len(created_models) == 1, "only one model should be published after recovery"
+    assert getattr(embedder, "_model") is created_models[0]
+    assert created_models[0].max_concurrent == 1, "post-recovery encode must stay serialized"
+    for idx, vecs in successes:
+        assert vecs[0] == pytest.approx(_hash_vector(f"retry-{idx}", 1024))
+
+
+def test_concurrent_health_and_embed_no_deadlock():
+    """T-BM3-21: health 与 embed 并发交错调用无死锁且保持底层互斥。"""
+    embedder = BGEM3Embedder(dimension=1024)
+    model = _ConcurrencyDetectingBGEM3Model()
+    setattr(embedder, "_model", model)
+
+    worker_count = 6
+    barrier = threading.Barrier(worker_count)
+
+    def _run(idx: int) -> None:
+        barrier.wait()
+        if idx % 2 == 0:
+            embedder.health()
+        else:
+            vectors = embedder.embed([f"mixed-{idx}"])
+            assert len(vectors) == 1, "embed should return one vector"
+
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        list(pool.map(_run, range(worker_count)))
+
+    assert model.max_concurrent == 1, f"expected max_concurrent=1, got {model.max_concurrent}"
 
 
 # ---------------------------------------------------------------------------
@@ -309,10 +492,15 @@ def test_producer_known():
 def test_producer_create():
     """T-BM3-P02: EmbedderProducer.create("bge_m3") 返回 BGEM3Embedder 实例。"""
     from jiuwen_memory.config import AssemblyContext
-    embedder = EmbedderProducer.build("bge_m3", {"embedder_dim": 1024}, AssemblyContext())
+    embedder = EmbedderProducer.build(
+        "bge_m3",
+        {"embedder_dim": 1024, "embedder_bge_m3_fp16": "false"},
+        AssemblyContext(),
+    )
     assert isinstance(embedder, BGEM3Embedder)
     assert embedder.dimension() == 1024
     assert getattr(embedder, "_model_name_or_path") == "BAAI/bge-m3"
+    assert getattr(embedder, "_use_fp16") is False, "string 'false' should normalize to False"
 
 
 def test_producer_unknown_type():

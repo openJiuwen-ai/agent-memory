@@ -21,8 +21,13 @@ L2 归一化在 encode 之后手动完成（而非传 normalize_embeddings 给�
 from __future__ import annotations
 
 import math
+import threading
 
-from jiuwen_memory.common._support import resolve_model_source
+from jiuwen_memory.common._support import (
+    as_bool,
+    resolve_effective_fp16,
+    resolve_model_source,
+)
 from jiuwen_memory.common.base import PluginType
 from jiuwen_memory.common.embedder.base import Embedder, EmbedderProducer
 from jiuwen_memory.common.errors import BackendError, HealthCheckError
@@ -71,6 +76,7 @@ class BGEM3Embedder(Embedder):
         self._normalize_embeddings = normalize_embeddings
         self._use_fp16 = use_fp16
         self._model = None  # lazy load
+        self._model_lock = threading.RLock()
 
     def plugin_type(self) -> PluginType:
         return PluginType.EMBEDDER
@@ -104,68 +110,65 @@ class BGEM3Embedder(Embedder):
             logger.error("BGEM3Embedder: encode failed: %s", exc)
             raise
 
-    def _load_model(self):
+    def _load_model(self) -> None:
         """延迟加载模型——首次 embed/health 时才初始化，避免 import 时长时间等待。
 
         repo id 只从本地 HuggingFace 缓存解析，模型加载过程不联网。
-        本地目录直接加载。
+        本地目录直接加载。多线程并发首次调用经 ``_model_lock`` 双检串行，保证
+        底层模型只构造一次且不暴露半初始化状态。
         """
         if self._model is not None:
             return
-        # CPU 环境下强制 fp32：fp16 是 CUDA tensor 优化，CPU 上 FlagEmbedding 的设备
-        # 转移逻辑（torch>=2.x meta device）会令权重停留在 meta 占位状态，推理时报
-        # "Cannot copy out of meta tensor; no data!"。无 CUDA 时无视配置强制 fp32。
-        effective_fp16 = self._use_fp16
-        if self._use_fp16:
-            try:
-                import torch
-                cuda_available = torch.cuda.is_available()
-            except Exception:  # noqa: BLE001
-                cuda_available = False
-            if not cuda_available:
-                effective_fp16 = False
-                logger.warning(
-                    "BGEM3Embedder: use_fp16=true ignored on CPU-only runtime "
-                    "(would trigger meta-tensor error); falling back to fp32."
-                )
-
-        model_source = resolve_model_source(
-            self._model_name_or_path, component="BGEM3Embedder"
-        )
-        try:
-            from FlagEmbedding import BGEM3FlagModel
-        except ImportError as exc:
-            raise BackendError(
-                "BGEM3Embedder requires the 'FlagEmbedding' package. "
-                "Install it with: pip install FlagEmbedding"
-            ) from exc
-        logger.info(
-            "BGEM3Embedder: loading local model %s (fp16=%s)",
-            model_source,
-            effective_fp16,
-        )
-        try:
-            self._model = BGEM3FlagModel(
-                model_source,
-                use_fp16=effective_fp16,
+        with self._model_lock:
+            if self._model is not None:
+                return
+            model_source = resolve_model_source(
+                self._model_name_or_path, component="BGEM3Embedder"
             )
-            logger.info("BGEM3Embedder: model loaded successfully")
-        except Exception as exc:
-            raise BackendError(
-                f"BGEM3Embedder: failed to load model {model_source}: {exc}."
-            ) from exc
+            try:
+                from FlagEmbedding import BGEM3FlagModel
+            except ImportError as exc:
+                raise BackendError(
+                    "BGEM3Embedder requires the 'FlagEmbedding' package. "
+                    "Install it with: pip install FlagEmbedding"
+                ) from exc
+            effective_fp16 = resolve_effective_fp16(
+                self._use_fp16, component="BGEM3Embedder"
+            )
+            logger.info(
+                "BGEM3Embedder: loading local model %s (fp16=%s)",
+                model_source,
+                effective_fp16,
+            )
+            try:
+                model = BGEM3FlagModel(
+                    model_source,
+                    use_fp16=effective_fp16,
+                )
+                self._model = model
+                logger.info("BGEM3Embedder: model loaded successfully")
+            except Exception as exc:
+                raise BackendError(
+                    f"BGEM3Embedder: failed to load model {model_source}: {exc}."
+                ) from exc
 
     def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         # normalize_embeddings 不传给底层 tokenizer（避免版本兼容问题），
         # 而在 encode 之后手动做 L2 归一化。
-        result = self._model.encode(
-            texts,
-            return_dense=True,
-            return_sparse=False,
-            return_colbert_vecs=False,
-            max_length=self._max_length,
-            batch_size=self._max_batch_size,
-        )
+        # FlagEmbedding 单卡 encode 非线程安全（内部会触发 model.to(device) 等就地
+        # 状态变更），按单 batch 串行化底层推理；CPU 侧归一化放锁外以降低持锁时间。
+        with self._model_lock:
+            if self._model is None:
+                self._load_model()
+            model = self._model
+            result = model.encode(
+                texts,
+                return_dense=True,
+                return_sparse=False,
+                return_colbert_vecs=False,
+                max_length=self._max_length,
+                batch_size=self._max_batch_size,
+            )
         dense = result["dense_vecs"]
         # dense 是 numpy ndarray (batch, dim) → 转为 list[list[float]]
         vectors = [row.tolist() for row in dense]
@@ -197,7 +200,7 @@ def _build(config):
     dim = config.get("embedder_dim", 64)
     return BGEM3Embedder(
         model_name_or_path=config.get("embedder_bge_m3_model", "BAAI/bge-m3"),
-        use_fp16=config.get("embedder_bge_m3_fp16", True),
+        use_fp16=as_bool(config.get("embedder_bge_m3_fp16"), default=True),
         dimension=dim if dim != 64 else 1024,
         max_batch_size=config.get("embedder_bge_m3_batch_size", 12),
         max_length=config.get("embedder_bge_m3_max_length", 8192),
