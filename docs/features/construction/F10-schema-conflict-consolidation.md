@@ -153,6 +153,9 @@ unsettled；外部修正记忆（`update`）同样触发重审。因此该形态
   unsettled，下一次巩固会重审被修正的记忆；`run_id` 的残留用于区分「从未巩固」
   与「巩固后被人工修正」。只改 `tags` / `tier` 等非事实字段不清标记，避免无谓的
   簇级 LLM。Schema 属性 Merge Planner 的替换产物同样不继承源单元的标记。
+- 两个标记键属于内核账目键，已列入 `KERNEL_SYSTEM_METADATA_KEYS`：调用方经
+  `add` / `update` / `batch_update` 显式传入会被拒绝；标记由内核写入与维护
+  （巩固打标；`update` 改写事实字段时清空，非事实字段变更时随版本继承）。
 
 ### 8. 配套变更：Schema 抽取输出上限可配置
 

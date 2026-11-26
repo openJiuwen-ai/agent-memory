@@ -11,7 +11,10 @@ from jiuwen_memory.api import MemoryAPI, MemoryPatch, Scope
 from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
 from jiuwen_memory.common.security.types import RequestSecurityContext
 from jiuwen_memory.common.type_def import MemoryTier, MemoryUnit, RawPayload
+from jiuwen_memory.common.type_def.memory import memory_key
+from jiuwen_memory.common.type_def.memory_codec import dumps, loads
 from jiuwen_memory.control.types import UpdateMode, UpdateSelector
+from jiuwen_memory.storage.kv import KVStore
 from tests.unit.api.fixtures import security_for
 
 _DONE_KEY = "consolidation_done_at"
@@ -45,29 +48,33 @@ class _RebuildPatchPrivacy:
         return None
 
 
-def _kernel_for(tag: str) -> tuple[MemoryAPI, Scope, RequestSecurityContext]:
+def _kernel_for(tag: str) -> tuple[MemoryAPI, KVStore, Scope, RequestSecurityContext]:
     scope = Scope(org=f"cc-{tag}", user="u1", agent="a1", session="s1")
     kernel = build_kernel()
-    return kernel.api, scope, security_for(kernel.api, scope)
+    return kernel.api, kernel.kv, scope, security_for(kernel.api, scope)
 
 
-def _marked_unit(api: MemoryAPI, scope: Scope, security: RequestSecurityContext) -> MemoryUnit:
-    """先写一条普通记忆，再经 update 打上巩固标记。"""
+def _marked_unit(
+    api: MemoryAPI,
+    kv: KVStore,
+    scope: Scope,
+    security: RequestSecurityContext,
+) -> MemoryUnit:
+    """先写一条普通记忆，再经真源写入模拟巩固落盘打上的标记。
+
+    保留键闸禁止调用方经 update 赋值这两个键，因此这里直接改写真源单元。
+    """
     unit = api.add("Jon is a banker", scope, security=security)[0]
-    return api.update(
-        unit.id,
-        scope,
-        MemoryPatch(
-            system_metadata={_DONE_KEY: _DONE_AT, _RUN_KEY: _RUN_ID}
-        ),
-        security=security,
-    )
+    stored = loads(kv.get(scope, memory_key(unit.id)))
+    stored.system_metadata.update({_DONE_KEY: _DONE_AT, _RUN_KEY: _RUN_ID})
+    kv.update(scope, memory_key(unit.id), dumps(stored))
+    return api.get(unit.id, scope, security=security)
 
 
 def test_overwrite_with_content_clears_done_keeps_run() -> None:
     """OVERWRITE 原地改内容：done 清空，run_id 保留。"""
-    api, scope, security = _kernel_for("overwrite")
-    marked = _marked_unit(api, scope, security)
+    api, kv, scope, security = _kernel_for("overwrite")
+    marked = _marked_unit(api, kv, scope, security)
     assert marked.system_metadata[_DONE_KEY] == _DONE_AT
 
     updated = api.update(
@@ -88,8 +95,8 @@ def test_overwrite_with_content_clears_done_keeps_run() -> None:
 
 def test_supersede_with_content_clears_done_on_new_version() -> None:
     """SUPERSEDE 产生新版本：新版本不带 settled 标记（run_id 保留）。"""
-    api, scope, security = _kernel_for("supersede")
-    marked = _marked_unit(api, scope, security)
+    api, kv, scope, security = _kernel_for("supersede")
+    marked = _marked_unit(api, kv, scope, security)
 
     updated = api.update(
         marked.id, scope, MemoryPatch(content="Jon is a teacher"), security=security
@@ -112,8 +119,8 @@ def test_supersede_with_content_clears_done_on_new_version() -> None:
 )
 def test_non_factual_change_keeps_done(patch: MemoryPatch) -> None:
     """只改 tags / tier / user_metadata：不是事实字段变更，标记保持不变。"""
-    api, scope, security = _kernel_for("non-factual")
-    marked = _marked_unit(api, scope, security)
+    api, kv, scope, security = _kernel_for("non-factual")
+    marked = _marked_unit(api, kv, scope, security)
 
     updated = api.update(marked.id, scope, patch, security=security)
 
@@ -123,9 +130,9 @@ def test_non_factual_change_keeps_done(patch: MemoryPatch) -> None:
 
 def test_batch_update_per_item_clears_done() -> None:
     """batch_update 逐条模式复用同一清理逻辑。"""
-    api, scope, security = _kernel_for("batch-item")
-    first = _marked_unit(api, scope, security)
-    second = _marked_unit(api, scope, security)
+    api, kv, scope, security = _kernel_for("batch-item")
+    first = _marked_unit(api, kv, scope, security)
+    second = _marked_unit(api, kv, scope, security)
 
     result = api.batch_update(
         UpdateSelector(unit_ids=[first.id, second.id], scope=scope),
@@ -142,9 +149,9 @@ def test_batch_update_per_item_clears_done() -> None:
 
 def test_batch_update_unified_clears_done_for_every_candidate() -> None:
     """统一模式（单 patch 作用多个候选）：每个候选都清标记，patch 不被污染。"""
-    api, scope, security = _kernel_for("batch-unified")
-    first = _marked_unit(api, scope, security)
-    second = _marked_unit(api, scope, security)
+    api, kv, scope, security = _kernel_for("batch-unified")
+    first = _marked_unit(api, kv, scope, security)
+    second = _marked_unit(api, kv, scope, security)
 
     result = api.batch_update(
         UpdateSelector(unit_ids=[first.id, second.id], scope=scope),
@@ -159,8 +166,8 @@ def test_batch_update_unified_clears_done_for_every_candidate() -> None:
 
 def test_clear_marks_survives_privacy_patch_rebuild() -> None:
     """顺序契约：清标记必须在 privacy 重建 patch 之后，否则注入键会被覆盖掉。"""
-    api, scope, security = _kernel_for("privacy")
-    marked = _marked_unit(api, scope, security)
+    api, kv, scope, security = _kernel_for("privacy")
+    marked = _marked_unit(api, kv, scope, security)
     api._privacy = _RebuildPatchPrivacy()  # pylint: disable=protected-access
 
     updated = api.update(
