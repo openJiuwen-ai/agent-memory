@@ -6,6 +6,9 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -156,11 +159,233 @@ def test_lazy_load_from_flagembedding(tmp_path, monkeypatch):
 
 
 def test_missing_flagembedding_dependency_reports_backend_error(tmp_path):
-    """本地模型存在但依赖缺失时，返回稳定的后端错误契约。"""
-    with patch.dict(sys.modules, {"FlagEmbedding": None}):
-        reranker = BGEReranker(model_name_or_path=str(tmp_path))
+    """本地模型存在但依赖缺失时，快速失败且不提前触发 torch CUDA 检测。"""
+    cuda_probe = MagicMock(return_value=False)
+    fake_torch = SimpleNamespace(cuda=SimpleNamespace(is_available=cuda_probe))
+    with patch.dict(sys.modules, {"FlagEmbedding": None, "torch": fake_torch}):
+        reranker = BGEReranker(model_name_or_path=str(tmp_path), use_fp16=True)
         with pytest.raises(BackendError, match="FlagEmbedding"):
             reranker.rerank_texts("coffee", ["coffee note"])
+    cuda_probe.assert_not_called()
+
+
+def test_fp16_disabled_on_cpu(tmp_path, monkeypatch):
+    """T-BGE-RR-09: CPU-only 运行时（cuda 不可用）下，use_fp16=true 被强制降为 fp32。"""
+    fake_torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False))
+    fake_flag = SimpleNamespace(FlagReranker=MockFlagReranker)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "FlagEmbedding", fake_flag)
+    monkeypatch.setattr(
+        "jiuwen_memory.common.reranker.reranker_impl.bge_reranker.resolve_model_source",
+        lambda *_args, **_kwargs: str(tmp_path),
+    )
+
+    reranker = BGEReranker(model_name_or_path="BAAI/bge-reranker-v2-m3", use_fp16=True)
+    getattr(reranker, "_load_model")()
+    assert getattr(reranker, "_model").use_fp16 is False, "CPU 下 use_fp16 应被强制降为 False"
+
+
+def test_fp16_kept_on_cuda(tmp_path, monkeypatch):
+    """T-BGE-RR-10: CUDA 可用时，use_fp16=true 保持不变。"""
+    fake_torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True))
+    fake_flag = SimpleNamespace(FlagReranker=MockFlagReranker)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "FlagEmbedding", fake_flag)
+    monkeypatch.setattr(
+        "jiuwen_memory.common.reranker.reranker_impl.bge_reranker.resolve_model_source",
+        lambda *_args, **_kwargs: str(tmp_path),
+    )
+
+    reranker = BGEReranker(model_name_or_path="BAAI/bge-reranker-v2-m3", use_fp16=True)
+    getattr(reranker, "_load_model")()
+    assert getattr(reranker, "_model").use_fp16 is True, "CUDA 下 use_fp16 应保持 True"
+
+
+def test_fp16_disabled_when_torch_unavailable(tmp_path, monkeypatch):
+    """T-BGE-RR-11: torch 不可导入时，use_fp16=true 安全降级为 False。"""
+    fake_flag = SimpleNamespace(FlagReranker=MockFlagReranker)
+    monkeypatch.setitem(sys.modules, "torch", None)
+    monkeypatch.setitem(sys.modules, "FlagEmbedding", fake_flag)
+    monkeypatch.setattr(
+        "jiuwen_memory.common.reranker.reranker_impl.bge_reranker.resolve_model_source",
+        lambda *_args, **_kwargs: str(tmp_path),
+    )
+
+    reranker = BGEReranker(model_name_or_path="BAAI/bge-reranker-v2-m3", use_fp16=True)
+    getattr(reranker, "_load_model")()
+    assert getattr(reranker, "_model").use_fp16 is False, "torch 缺失时应降级为 fp32"
+
+
+class _ConcurrencyDetectingFlagReranker:
+    """模拟非线程安全的 FlagReranker：并发进入 compute_score 时抛出 meta tensor 错误。"""
+
+    def __init__(self, model_name_or_path: str = "", use_fp16: bool = True) -> None:
+        self.model_name_or_path = model_name_or_path
+        self.use_fp16 = use_fp16
+        self._guard = threading.Lock()
+        self._active = 0
+        self.max_concurrent = 0
+        self.call_count = 0
+
+    def compute_score(self, sentence_pairs, normalize=True):
+        _ = normalize
+        with self._guard:
+            self._active += 1
+            self.call_count += 1
+            if self._active > self.max_concurrent:
+                self.max_concurrent = self._active
+            overlapping = self._active > 1
+        try:
+            time.sleep(0.01)
+            if overlapping:
+                raise NotImplementedError("Cannot copy out of meta tensor; no data!")
+            return [
+                1.0 if query == text else 0.25
+                for query, text in sentence_pairs
+            ]
+        finally:
+            with self._guard:
+                self._active -= 1
+
+
+def test_concurrent_rerank_serializes_model_and_preserves_scores():
+    """T-BGE-RR-12: 多线程并发 rerank 时底层模型串行执行，且每线程分数完整无串位。"""
+    reranker = BGEReranker(max_batch_size=2)
+    model = _ConcurrencyDetectingFlagReranker()
+    setattr(reranker, "_model", model)
+
+    worker_count = 8
+    barrier = threading.Barrier(worker_count)
+
+    def _run(idx: int) -> list[float]:
+        query = f"q-{idx}"
+        candidates = [f"q-{idx}", f"other-{idx}", f"q-{idx}"]
+        barrier.wait()
+        return reranker.rerank_texts(query, candidates)
+
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        results = list(pool.map(_run, range(worker_count)))
+
+    assert model.max_concurrent == 1, f"expected max_concurrent=1, got {model.max_concurrent}"
+    assert model.call_count == worker_count * 2, "each 3-item input with batch_size=2 takes 2 calls"
+    for idx, scores in enumerate(results):
+        assert scores == [1.0, 0.25, 1.0], f"worker {idx} got unexpected scores: {scores}"
+
+
+def test_concurrent_lazy_load_initializes_once(tmp_path, monkeypatch):
+    """T-BGE-RR-13: 多线程并发首次调用时，懒加载仅构造一次底层模型。"""
+    init_guard = threading.Lock()
+    init_count = 0
+    created_models: list[_ConcurrencyDetectingFlagReranker] = []
+
+    def _build_model(model_name_or_path: str, use_fp16: bool = True):
+        nonlocal init_count
+        time.sleep(0.03)
+        with init_guard:
+            init_count += 1
+        instance = _ConcurrencyDetectingFlagReranker(model_name_or_path, use_fp16=use_fp16)
+        created_models.append(instance)
+        return instance
+
+    fake_flag = SimpleNamespace(FlagReranker=_build_model)
+    monkeypatch.setitem(sys.modules, "FlagEmbedding", fake_flag)
+    monkeypatch.setattr(
+        "jiuwen_memory.common.reranker.reranker_impl.bge_reranker.resolve_model_source",
+        lambda *_args, **_kwargs: str(tmp_path),
+    )
+
+    reranker = BGEReranker(model_name_or_path="BAAI/bge-reranker-v2-m3", use_fp16=False)
+    worker_count = 8
+    barrier = threading.Barrier(worker_count)
+
+    def _run(idx: int) -> list[float]:
+        barrier.wait()
+        return reranker.rerank_texts(f"k-{idx}", [f"k-{idx}", "miss"])
+
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        results = list(pool.map(_run, range(worker_count)))
+
+    assert init_count == 1, f"lazy load should run once, got {init_count}"
+    assert len(created_models) == 1, "only one reranker model should be created"
+    assert created_models[0].max_concurrent == 1, "concurrent compute_score should be serialized"
+    for idx, scores in enumerate(results):
+        assert scores == [1.0, 0.25], f"worker {idx} scores mismatch: {scores}"
+
+
+def test_concurrent_lazy_load_failure_allows_retry(tmp_path, monkeypatch):
+    """T-BGE-RR-14: 并发首次加载失败后释放锁且不残留半成品，等待线程接力重试成功。"""
+    attempts = 0
+    attempt_guard = threading.Lock()
+    created_models: list[_ConcurrencyDetectingFlagReranker] = []
+
+    def _flaky_model(model_name_or_path: str, use_fp16: bool = True):
+        nonlocal attempts
+        with attempt_guard:
+            attempts += 1
+            current = attempts
+        if current == 1:
+            time.sleep(0.03)
+            raise RuntimeError("transient reranker load failure")
+        instance = _ConcurrencyDetectingFlagReranker(model_name_or_path, use_fp16=use_fp16)
+        created_models.append(instance)
+        return instance
+
+    fake_flag = SimpleNamespace(FlagReranker=_flaky_model)
+    monkeypatch.setitem(sys.modules, "FlagEmbedding", fake_flag)
+    monkeypatch.setattr(
+        "jiuwen_memory.common.reranker.reranker_impl.bge_reranker.resolve_model_source",
+        lambda *_args, **_kwargs: str(tmp_path),
+    )
+
+    reranker = BGEReranker(model_name_or_path="BAAI/bge-reranker-v2-m3", use_fp16=False)
+    worker_count = 4
+    barrier = threading.Barrier(worker_count)
+
+    def _run(idx: int) -> tuple[int, list[float] | None, Exception | None]:
+        barrier.wait()
+        try:
+            return idx, reranker.rerank_texts(f"q-{idx}", [f"q-{idx}", "miss"]), None
+        except BackendError as exc:
+            return idx, None, exc
+
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        outcomes = list(pool.map(_run, range(worker_count)))
+
+    errors = [exc for _, _, exc in outcomes if exc is not None]
+    successes = [scores for _, scores, exc in outcomes if exc is None and scores is not None]
+
+    assert len(errors) == 1, f"expected 1 BackendError from initial failure, got {errors}"
+    assert "transient reranker load failure" in str(errors[0])
+    assert len(successes) == worker_count - 1, "waiting threads should recover and succeed"
+    assert attempts == 2, f"expected 1 failed + 1 successful load, got {attempts}"
+    assert len(created_models) == 1, "only one reranker model should be published after recovery"
+    assert getattr(reranker, "_model") is created_models[0]
+    assert created_models[0].max_concurrent == 1, "post-recovery compute_score must stay serialized"
+    for scores in successes:
+        assert scores == [1.0, 0.25], f"unexpected recovered scores: {scores}"
+
+
+def test_concurrent_health_and_rerank_no_deadlock():
+    """T-BGE-RR-15: health 与 rerank 并发交错调用无死锁且保持底层互斥。"""
+    reranker = BGEReranker()
+    model = _ConcurrencyDetectingFlagReranker()
+    setattr(reranker, "_model", model)
+
+    worker_count = 6
+    barrier = threading.Barrier(worker_count)
+
+    def _run(idx: int) -> None:
+        barrier.wait()
+        if idx % 2 == 0:
+            reranker.health()
+        else:
+            scores = reranker.rerank_texts(f"q-{idx}", [f"q-{idx}"])
+            assert scores == [1.0], f"unexpected scores for worker {idx}: {scores}"
+
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        list(pool.map(_run, range(worker_count)))
+
+    assert model.max_concurrent == 1, f"expected max_concurrent=1, got {model.max_concurrent}"
 
 
 def test_producer_known():
@@ -174,7 +399,7 @@ def test_producer_create_from_config():
         "bge_reranker",
         {
             "reranker_bge_model": "BAAI/bge-reranker-v2-m3",
-            "reranker_bge_fp16": False,
+            "reranker_bge_fp16": "false",
             "reranker_bge_batch_size": 4,
             "reranker_bge_normalize": False,
         },

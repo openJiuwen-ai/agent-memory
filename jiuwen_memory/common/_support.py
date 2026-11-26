@@ -24,7 +24,10 @@ from urllib.parse import parse_qs, urlparse
 
 from jiuwen_memory.common.errors import AgentMemoryError, BackendError, ValidationError
 from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import Scope
+
+logger = get_logger(__name__)
 
 SCOPE_DIMS = ("org", "space", "user", "agent", "session")
 
@@ -229,6 +232,32 @@ def resolve_model_source(model_name_or_path: str, *, component: str) -> str:
             f"{component}: model {model_name_or_path} is not available locally. "
             "Ensure the HuggingFace cache is complete or provide a local model directory."
         ) from exc
+
+
+def resolve_effective_fp16(use_fp16: bool, *, component: str) -> bool:
+    """无 CUDA 时将 ``use_fp16=True`` 强制降级为 fp32。
+
+    fp16 是 CUDA tensor 优化，CPU-only 运行时（如 ``python:3.11-slim`` 容器）下
+    ``FlagEmbedding`` 的设备转移逻辑（torch>=2.x meta device）会令权重停留在 meta
+    占位状态，推理时报 ``Cannot copy out of meta tensor; no data!``，或触发 CPU
+    Half 算子不兼容。无 CUDA 时无视配置强制降级 fp32。
+    """
+    if not use_fp16:
+        return False
+    try:
+        import torch
+
+        cuda_available = bool(torch.cuda.is_available())
+    except Exception:  # noqa: BLE001
+        cuda_available = False
+    if not cuda_available:
+        logger.warning(
+            "%s: use_fp16=true ignored on CPU-only runtime "
+            "(would trigger meta-tensor error); falling back to fp32.",
+            component,
+        )
+        return False
+    return True
 
 
 def read_ssl_config(config: Any, *, backend: str) -> SslConfig:
