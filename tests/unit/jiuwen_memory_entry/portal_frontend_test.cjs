@@ -1,6 +1,7 @@
 // Portal 页面状态回归：不依赖浏览器，用最小 DOM/HTTP 替身执行 index.html 内联脚本。
 // 覆盖配置草稿与预览、最新详情、概览错误、导出重新鉴权和批量遗忘部分失败。
 const fs = require('node:fs');
+const path = require('node:path');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const htmlPath = process.argv[2];
@@ -11,7 +12,12 @@ assert.doesNotMatch(html, /id="semantic-search"/);
 assert.match(html, /id="mode-semantic"/);
 assert.match(html, /id="tab-overview" class="active"[^>]*aria-selected="true"/);
 assert.match(html, /id="memories"[^>]* hidden>/);
-assert.match(html, /id="breadcrumb-current"[^>]*>记忆概览/);
+assert.doesNotMatch(html, /id="(?:breadcrumb-current|data-sources|connection-state|connection-dot)"/);
+assert.doesNotMatch(html, /id="(?:settings-runtime|instance-info|settings-instance-hint)"/);
+const embeddedEmblem = html.match(/<img class="overview-emblem"[^>]*src="data:image\/png;base64,([^"]+)"/);
+assert.ok(embeddedEmblem, 'the single-file Portal must embed its overview emblem');
+assert.deepEqual(Buffer.from(embeddedEmblem[1], 'base64'),
+  fs.readFileSync(path.join(path.dirname(htmlPath), 'assets', 'overview-emblem.png')));
 
 class Element {
   constructor(tag = 'div') {
@@ -25,9 +31,14 @@ class Element {
   add(child) { this.append(child); }
   replaceChildren(...children) { this._text = ''; this.children = children; }
   replaceWith(child) { this.replacement = child; }
-  addEventListener(name, fn) { this.events[name] = fn; }
+  addEventListener(name, fn) {
+    const existing = this.events[name];
+    this.events[name] = existing ? (...args) => { existing(...args); fn(...args); } : fn;
+  }
+  dispatchEvent(event) { this.events[event.type]?.(event); }
   setAttribute(name, value) { this[name] = value; }
   getAttribute(name) { return this[name] ?? null; }
+  getBoundingClientRect() { return {left:0,top:0,bottom:20,width:20}; }
   focus() {}
   showModal() { this.open = true; }
   close() { this.open = false; }
@@ -82,7 +93,7 @@ function setup(handler, listHandler, {
   };
   const context = vm.createContext({
     location: {hash,pathname:"/portal/",search:""},
-    URLSearchParams,history,
+    URLSearchParams,Event,history,
     document, localStorage: storage,
     setTimeout, clearTimeout, navigator: {clipboard: {writeText: async text => {copied.push(text);}}},
     Option: function (text, value) { const el = new Element('option'); el.textContent = text; el.value = value; return el; },
@@ -142,7 +153,7 @@ async function languageSwitchKeepsFiltersAndResults() {
   assert.equal(page.document.documentElement.lang, 'en');
   assert.equal(page.document.title, 'Memory Management · agent_memory');
   assert.equal(toggle.textContent, '中文');
-  assert.equal(page.get('breadcrumb-current').textContent, 'My Memories');
+  assert.equal(page.get('memory-page-title').textContent, 'Memory Library');
   assert.equal(page.get('memory-filter')['aria-label'], 'Search memories');
   assert.equal(page.get('memory-filter').value, '关键词');
   assert.equal(page.get('source').value, source);
@@ -152,7 +163,7 @@ async function languageSwitchKeepsFiltersAndResults() {
   assert.equal(page.get('memory-list').children[0], row);
   assert.equal(requests, requestsBeforeSwitch);
   const formatted = new Intl.DateTimeFormat('en', {
-    month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',
+    year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',
   }).format(new Date(date));
   assert.ok(row.textContent.includes(formatted));
   assert.ok(row.textContent.includes(source));
@@ -277,6 +288,76 @@ async function inFlightDraft() {
   assert.equal(page.run("settingControls.find(el => el.dataset.key === 'llm.default.params.llm_temperature').value"), '3');
 }
 
+async function settingsSteppersUseDraftAndValidationFlow() {
+  const numericField=(parameter,base,writable=true)=>({...field(base),
+    key:'llm.default.params.'+parameter,writable});
+  const saves=[];
+  const page=setup(async (action,body)=>{
+    if(action==='read_config')return response({
+      available:true,version:1,apply_state:'applied',fields:[
+        numericField('llm_max_tokens',1),numericField('llm_timeout',0.5),
+        numericField('llm_max_retries',4,false),
+      ],
+    });
+    saves.push(body);
+    return response({applied:true});
+  });
+  await page.run("switchTab('settings')");
+  const advanced=page.get('settings-list').children[0].children.find(el=>el.className==='settings-advanced');
+  const steppers=advanced.children[1].children.map(box=>box.children.find(el=>el.className==='setting-stepper'));
+  const [tokens,timeout,retries]=steppers;
+  assert.equal(page.get('settings-bar').hidden,true,'clean settings should not show draft controls');
+  assert.equal(tokens.children[0].disabled,true);
+  assert.equal(timeout.children[0].disabled,true,'decrementing a fractional timeout must keep it positive');
+  assert.ok(retries.children.every(control=>control.disabled),'read-only fields disable both step buttons');
+  tokens.children[2].onclick();timeout.children[2].onclick();
+  assert.equal(tokens.children[0].disabled,false);
+  assert.equal(timeout.children[1].value,'1.5');
+  assert.equal(page.get('settings-bar').hidden,false);
+  page.get('preview').onclick();
+  assert.match(page.get('diff').textContent,/0\.5 → 1\.5/);
+  await page.get('save').onclick();
+  assert.deepEqual(saves,[{version:1,changes:{
+    'llm.default.params.llm_max_tokens':2,'llm.default.params.llm_timeout':1.5,
+  },restore:[]}]);
+  assert.equal(page.get('settings-bar').hidden,true);
+}
+
+async function settingsRestoreOverrideFromField() {
+  const saves=[];
+  const page=setup(async (action,body)=>{
+    if(action==='read_config')return response({
+      available:true,version:saves.length+1,applied_version:1,
+      apply_state:saves.length===1?'pending':'applied',
+      fields:[saves.length?field(0.2):field(0.7,0.9,true)],
+    });
+    assert.equal(action,'save_config');
+    saves.push(body);
+    return response({applied:!!body.retry});
+  });
+  await page.run("switchTab('settings')");
+  await page.run('loadSettings()');
+  assert.equal(page.get('configuration-state').textContent,'');
+  assert.equal(page.get('diff').textContent,'');
+  const group=page.get('settings-list').children[0];
+  assert.ok(group.children.every(child=>child.tag!=='details'));
+  const heading=group.children.find(child=>child.className==='settings-advanced')
+    .children[1].children[0].children[0];
+  const reset=heading.children[1];
+  assert.equal(reset.textContent,'恢复启动值');
+  reset.onclick();
+  page.get('preview').onclick();
+  assert.match(page.get('diff').textContent,/0\.9 → 0\.7/);
+  await page.get('save').onclick();
+  assert.deepEqual(saves,[{version:1,changes:{},restore:['llm.default.params.llm_temperature']}]);
+  assert.match(page.get('configuration-state').textContent,/尚未应用/);
+  assert.equal(page.get('apply-settings').hidden,false);
+  await page.get('apply-settings').onclick();
+  assert.deepEqual(saves[1],{retry:true});
+  assert.equal(page.get('configuration-state').textContent,'');
+  assert.equal(page.get('apply-settings').hidden,true);
+}
+
 async function stalePreview() {
   let version = 1;
   let base = 1;
@@ -321,6 +402,25 @@ async function detailContent() {
   await card.children.find(el => el.className === 'card-open').onclick();
   assert.match(page.get('memory-detail').textContent, /fresh detail content/);
   assert.doesNotMatch(page.get('memory-detail').textContent, /old list content/);
+}
+
+async function rowActionsUseFreshLifecycleAndContent() {
+  let lifecycle='active';
+  const page=setup(async action=>{
+    assert.equal(action,'get');
+    return response({...unit('fresh action content'),lifecycle});
+  });
+  await new Promise(resolve=>setImmediate(resolve));
+  page.run("cards('memory-list', [{content:'cached list content', lifecycle:'active', ref:recordKey({},'r')}])");
+  const actions=page.get('memory-list').children[0].children.find(el=>el.className==='memory-row-actions');
+  await actions.children[1].onclick();
+  assert.equal(page.get('forget-content').textContent,'fresh action content');
+  assert.equal(page.get('forget-dialog').open,true);
+  page.get('forget-dialog').close();
+  lifecycle='forgotten';
+  await actions.children[0].onclick();
+  assert.ok(!page.get('memory-dialog').open,'a stale active row must not open the correction editor');
+  assert.match(page.get('notice').textContent,/已不再有效/);
 }
 
 async function modalDuplicateSubmission() {
@@ -413,7 +513,7 @@ async function overviewCountsAndFailure(){
   });
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(listCalls,1,'opening the overview should only fetch the visible view');
-  await page.run('loadOverview()');
+  await page.get('refresh-overview').onclick();
   assert.equal(overviewCalls,2,'startup and explicit refresh each use one list request');
   assert.equal(page.get('stat-all').textContent,'200','overview uses server count rather than sample length');
   assert.equal(page.get('stat-active').textContent,'180');assert.equal(page.get('stat-sources').textContent,'3');
@@ -422,7 +522,19 @@ async function overviewCountsAndFailure(){
   const cells=page.get('activity-days').children.flatMap(week=>week.children.filter(el=>el.tag==='button'));
   assert.equal(cells.length,365);assert.equal(cells[0].style.gridRow,'7'); // Saturday
   assert.ok(cells[0].className.includes('heat-2'));assert.ok(cells.at(-1).className.includes('heat-4'));
-  cells.at(-1).onclick();assert.match(page.get('day-detail').textContent,/2024年3月2日 · 10 条/);
+  assert.equal(cells.at(-1).tabIndex,0);
+  assert.match(page.get('day-detail').textContent,/2024年3月2日 · 10 条/);
+  cells[0].onmouseenter();
+  assert.equal(page.get('activity-tooltip').hidden,false);
+  assert.match(page.get('activity-tooltip-date').textContent,/2023\/3\/4/);
+  assert.equal(page.get('activity-tooltip-count').textContent,'新增 3 条');
+  cells[0].onmouseleave();
+  assert.equal(page.get('activity-tooltip').hidden,true);
+  cells[0].onfocus();
+  assert.equal(cells[0].tabIndex,0);assert.equal(cells.at(-1).tabIndex,-1);
+  assert.match(page.get('day-detail').textContent,/2023年3月4日 · 3 条/);
+  cells[0].onblur();
+  cells.at(-1).onclick();
   const sources=page.get('overview-sources').children;
   assert.match(sources[0].textContent,/app-a144 条 · 80%/);
   assert.match(sources[1].textContent,/未标注来源35 条/);
@@ -439,11 +551,14 @@ async function overviewCountsAndFailure(){
     assert.equal(page.run('activeTab'),'memories');assert.equal(body.lifecycle,state);
     assert.equal(body.source,null);assert.equal(body.project,null);assert.equal(body.query,'');
   }
+  await page.get('view-all-activity').onclick();
+  assert.equal(page.run('activeTab'),'memories');
+  assert.equal(selections.at(-1).lifecycle,null);
   empty=true;await page.run('loadOverview()');assert.equal(page.get('stat-active').textContent,'0');
   assert.match(page.get('overview-sources').textContent,/No active memories/);
   assert.equal(page.get('stat-sources').textContent,'1','retired sources still count on the source apps card');
   fail=true;await page.run('loadOverview()');assert.equal(page.get('stat-all').textContent,'—');assert.match(page.get('overview-error').textContent,/unavailable/);
-  assert.equal(page.get('activity-chart').hidden,true);assert.equal(page.get('overview-sources').children.length,0);
+  assert.equal(page.get('calendar-panel').hidden,true);assert.equal(page.get('overview-sources').children.length,0);
 }
 async function topicShortcutsUseExistingFilters(){
   const requests=[];
@@ -451,11 +566,12 @@ async function topicShortcutsUseExistingFilters(){
   await new Promise(resolve=>setImmediate(resolve));
   page.run("setFilterValue('source','my-app');setFilterValue('agent','my-agent');setFilterValue('project','my-project');$('lifecycle').value='forgotten';$('memory-filter').value='keyword';offset=40;snapshot='old'");
   for(const [name,memoryClass,tier]of [['profile','user_profile',null],['knowledge','long_term_memory','semantic'],['procedure',null,'procedural'],['all',null,null]]){
-    await page.run(`switchTab('${name==='all'?'memories':name}')`);const body=requests.at(-1);
+    await page.get('topic-'+name).onclick();const body=requests.at(-1);
     assert.equal(body.memory_class,memoryClass);assert.equal(body.tier,tier);assert.equal(body.offset,0);assert.equal(body.snapshot,null);
     assert.equal(body.source,'my-app');assert.equal(body.agent,'my-agent');assert.equal(body.project,'my-project');assert.equal(body.lifecycle,'forgotten');assert.equal(body.query,'keyword');
-    assert.equal(page.get('tab-'+(name==='all'?'memories':name))['aria-selected'],'true','empty facets must retain the requested shortcut');
-    assert.equal(page.get('breadcrumb-current').textContent,{profile:'用户画像',knowledge:'项目知识',procedure:'过程与做法',all:'我的记忆'}[name]);
+    assert.equal(page.get('topic-'+name)['aria-pressed'],'true','empty facets must retain the requested shortcut');
+    assert.equal(page.get('tab-memories')['aria-selected'],'true','category selection keeps the memory library selected');
+    assert.equal(page.get('memory-page-title').textContent,'记忆仓库');
   }
   page.run("setFilterValue('memory-class','custom-class');syncTopicShortcut()");
   assert.equal(page.get('tab-memories')['aria-selected'],'true');assert.match(page.get('memory-page-description').textContent,/按当前分类/);
@@ -467,10 +583,14 @@ async function topicShortcutsUseExistingFilters(){
     assert.equal(requests.at(-1).memory_class,memoryClass);assert.equal(requests.at(-1).tier,tier);
     await page.run("$('reset-filters').onclick()");
     const body=requests.at(-1);assert.equal(body.memory_class,memoryClass);assert.equal(body.tier,tier);assert.equal(body.source,null);assert.equal(body.query,'');assert.equal(body.lifecycle,'active');
-    assert.equal(page.run('activeTab'),name,'reset must keep the current category');assert.equal(page.get('tab-'+name)['aria-selected'],'true');
+    assert.equal(page.run('activeTab'),name,'reset must keep the current category');assert.equal(page.get('topic-'+name)['aria-pressed'],'true');
   }
   await page.run("switchTab('memories')");assert.equal(page.get('tier-filter').hidden,false);assert.equal(page.get('class-filter').hidden,false);
+  page.get('filter-toggle').onclick();
+  assert.equal(page.get('more-filters').hidden,false);
+  assert.equal(page.get('filter-toggle')['aria-expanded'],'true');
   await page.run("switchTab('search')");assert.equal(page.run('activeTab'),'memories');assert.equal(page.run('searchMode'),'semantic');assert.equal(page.get('semantic-results').hidden,false);assert.equal(page.get('browse-results').hidden,true);
+  assert.equal(page.get('filter-toggle')['aria-expanded'],'false');
 }
 async function unifiedSearchKeepsScopesSeparate(){
   const calls=[];const page=setup(async(action,body)=>{if(action==='search'){calls.push(body);return response({items:[],scores_comparable:false});}throw Error(action);});
@@ -604,7 +724,10 @@ async function sharedPageManagesBothInstances(){
   await selectionClearsOnRefresh();
   await inFlightDraft();
   await stalePreview();
+  await settingsSteppersUseDraftAndValidationFlow();
+  await settingsRestoreOverrideFromField();
   await detailContent();
+  await rowActionsUseFreshLifecycleAndContent();
   await expiredReferenceOffersListRefresh();
   await expiredSessionStopsPortalActions();
   await sharedPageManagesBothInstances();
