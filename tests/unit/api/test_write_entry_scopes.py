@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
+from unittest.mock import Mock
 
 import pytest
 
 from jiuwen_memory.api import assemble
+from jiuwen_memory.common.errors import LLMTimeoutError
 from jiuwen_memory.common.security.request_context import internal_context
 from jiuwen_memory.common.type_def import Scope
 from jiuwen_memory.control.executor import ExecutorLane
@@ -141,6 +143,44 @@ def test_two_runtimes_do_not_share_degrade_counters() -> None:
     finally:
         first.close()
         second.close()
+
+
+def test_single_infer_timeout_releases_lock_without_repeating_extract(monkeypatch) -> None:
+    api = assemble()
+    timeout = LLMTimeoutError("model timed out")
+    extract = Mock(side_effect=[timeout, []])
+    try:
+        monkeypatch.setattr(api._engine._evolver._extractor, "extract", extract)
+        options = {"security": _security(), "system_metadata": {"infer": "true"}}
+        with pytest.raises(LLMTimeoutError) as caught:
+            api.add("第一轮", _SCOPE, **options)
+        assert caught.value is timeout
+        assert extract.call_count == 1
+        assert "merge_fallback" not in api._engine.write_signals.counters()
+
+        assert api.add("下一轮", _SCOPE, **options) == []
+        assert extract.call_count == 2
+    finally:
+        api.close()
+
+
+@pytest.mark.parametrize(
+    ("count", "cause"), [(1, ValueError("invalid response")), (2, LLMTimeoutError("timeout"))],
+)
+def test_other_uncommitted_extract_failures_fall_back_per_item(monkeypatch, count, cause) -> None:
+    from jiuwen_memory.control.types import BatchWriteItem
+
+    api = assemble()
+    extract = Mock(side_effect=[cause] + [[] for _ in range(count)])
+    try:
+        monkeypatch.setattr(api._engine._evolver._extractor, "extract", extract)
+        items = [BatchWriteItem(content=f"条目{i}", scope=_SCOPE) for i in range(count)]
+        result = api.batch_add(items, security=_security(), system_metadata={"infer": "true"})
+        assert [outcome.error for outcome in result.outcomes] == [""] * count
+        assert [len(call.args[0]) for call in extract.call_args_list] == [count] + [1] * count
+        assert api._engine.write_signals.counters()["merge_fallback"] == 1
+    finally:
+        api.close()
 
 
 def test_repeated_assembly_does_not_leak_threads() -> None:
