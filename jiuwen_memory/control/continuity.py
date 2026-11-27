@@ -1,12 +1,14 @@
 """Continuity application contract. Authentication remains at the API boundary."""
 
+import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 from jiuwen_memory.common.errors import (
     ITEM_LEVEL_ERRORS,
     UnsupportedCapabilityError,
+    ValidationError,
     is_item_level_error,
 )
 from jiuwen_memory.common.factory.factory import Factory
@@ -24,8 +26,49 @@ ReadMemory = Callable[[MemoryRef], MemoryUnit]
 WriteMemory = Callable[[str, dict[str, Any]], list[MemoryUnit]]
 
 
+class TaskConnectorPolicy(Protocol):
+    """Connector governance supplied by the API PEP for task changes.
+
+    The Continuity port calls these checks on the same task record snapshot it
+    mutates. Participant checks raise ``PermissionDeniedError``; the owner bind
+    check raises ``ValidationError`` with the detailed configuration reason.
+    """
+
+    def owner_connector(self, connector_id: str) -> None:
+        """Owner bind: connector configured, enabled, org-matched and project-covered."""
+
+    def owned_connector(self, connector_id: str) -> None:
+        """Participant attribution: the connector is configured for the caller's actor."""
+
+    def available_connector(self, connector_id: str) -> None:
+        """Participant new close: owned, enabled and still covering the project."""
+
+    def actor_connector(self, connector_id: str) -> None:
+        """Participant new bind: the caller's single enabled project connector."""
+
+
 class ContinuityProducer(Factory):
     TOP_NAME = "continuity"
+
+    @classmethod
+    def build(cls, target: str, params: Any, ctx: Any, *, name: str = "") -> Any:
+        instance = super().build(target, params, ctx, name=name)
+        require_task_connector_policy(instance, target)
+        return instance
+
+
+def require_task_connector_policy(plugin: Any, target: str) -> None:
+    """Assembly gate: Continuity plugins must accept the commit-time policy (S09 §14)."""
+    parameters = inspect.signature(type(plugin).task).parameters
+    accepts_policy = any(
+        parameter.kind is parameter.VAR_KEYWORD or parameter.name == "connector_policy"
+        for parameter in parameters.values()
+    )
+    if not accepts_policy:
+        raise ValidationError(
+            f"continuity target {target!r}: {type(plugin).__name__}.task must accept the "
+            "connector_policy keyword; task-change authorization runs inside the port"
+        )
 
 
 class Continuity(ABC):
@@ -70,7 +113,15 @@ class Continuity(ABC):
         return False
 
     @abstractmethod
-    def task(self, scope: Scope, request: TaskRequest, owner: str, read: ReadMemory) -> dict:
+    def task(
+        self,
+        scope: Scope,
+        request: TaskRequest,
+        owner: str,
+        read: ReadMemory,
+        *,
+        connector_policy: TaskConnectorPolicy,
+    ) -> dict:
         ...
 
     @abstractmethod

@@ -4,9 +4,9 @@
 
 | 项 | 值 |
 | --- | --- |
-| 状态 | 2026-11-05 设计修订已实现：两档模式、接续参数并入 `add`/`batch_add`/`search`、关系真源改存 Registry KV、`list` 过滤下推、接口改名与删减；剩余实现差距见 [F11 12.2](../features/construction/F11-role-memory.md#122-实现差距)。真实产品 G0 联调、外部 Agent 记忆统一导入与真实存量验收待完成 |
+| 状态 | 2026-11-05 设计修订已实现：两档模式、接续参数并入 `add`/`batch_add`/`search`、关系真源改存 Registry KV、`list` 过滤下推、接口改名与删减；2026-11-24 增加参与 Agent 自绑定与凭自身有效绑定关闭任务的权限。剩余实现差距见 [F11 12.2](../features/construction/F11-role-memory.md#122-实现差距)。真实产品 G0 联调、外部 Agent 记忆统一导入与真实存量验收待完成 |
 | 关联模块 | jiuwen_memory_adapter/、jiuwen_memory_entry/、jiuwen_memory/api/、jiuwen_memory/control/、jiuwen_memory/common/、jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-24 |
+| 最近一次修订日期 | 2026-11-26 |
 | 关联特性文档 | [F11-role-memory](../features/construction/F11-role-memory.md) |
 | 关联规约 | [S02](S02-memory-api.md)、[S03](S03-control.md)、[S04](S04-retrieval.md)、[S06](S06-storage.md)、[S07](S07-common.md)、[S09](S09-plugin-development.md) |
 
@@ -77,12 +77,12 @@
 | `connector_id` | string | `""` | bind、find 使用；须是已配置连接 |
 | `context_id` | string | `""` | bind、find 使用 |
 | `context_source` | string | `"native"` | native / adapter |
-| `binding_id` | string | `""` | unbind 指定 |
-| `background` | MemoryRef[] | `[]` | 随任一变更登记的背景引用，提交前逐个读取校验 |
+| `binding_id` | string | `""` | unbind 指定要撤销的绑定；非创建者 close 时必须指定自己在该任务上的有效绑定 |
+| `background` | MemoryRef[] | `[]` | 随 owner 变更登记的背景引用，提交前逐个读取校验；非创建者 bind/unbind/close 不得携带 |
 | `required` | bool | `true` | 本次 background 是否为必需证据 |
 | `reason` | string | `""` | 解绑原因 |
-| `title` | string | `""` | create 登记任务标题；bind 可补齐旧记录空标题，不覆盖非空值；旧 create 调用可省略 |
-| `description` | string | `""` | create 登记说明；bind 可补齐旧记录空说明 |
+| `title` | string | `""` | create 登记任务标题；创建者 bind 可补齐旧记录空标题，不覆盖非空值；非创建者 bind/unbind/close 不得携带 |
+| `description` | string | `""` | create 登记说明；创建者 bind 可补齐空说明；非创建者 bind/unbind/close 不得携带 |
 | `parent_task_id` | string 或 null | `null` | 仅 create 使用；父任务须存在于当前项目且调用者具备项目 READ；`continuity_task_parent` 登记为内容轴 READ 入口，与任务查询采用同一项目读取判定 |
 | `query` | string 或 null | `null` | find 的可选任务描述查询；精确 binding 无结果时才用 |
 | `top_k` | int | `5` | find 描述候选数，范围 1–100；不截断已有上下文的精确结果 |
@@ -106,7 +106,7 @@ TaskRecord（`/continuity/tasks/<task_id>`）：
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `task_id` | string | 由负责人摘要与 create 的 `request_id` 计算 |
-| `owner` | string | 创建者身份摘要；首版只有 owner 可修改任务，未实现委托表 |
+| `owner` | string | 创建者身份摘要；owner 管理任务元数据、背景和全部绑定。非 owner 只能使用自己的 connector 自绑定、解绑自身绑定，并凭该任务上的自身有效绑定关闭任务 |
 | `revision` | int | 每次变更加一；事件提交关联背景时也递增 |
 | `state` | string | open / closed；closed 后拒绝变更和新事件 |
 | `title` / `description` | string | 任务标题与说明；历史缺值按空串读取；空描述记录不被自动猜测匹配 |
@@ -407,6 +407,7 @@ supported_in_conditions 由已确认 `supports` 关系提升其语义 target 的
 - `BatchWriteOutcome` 新增 `operation_id` 与 `continuity_status`（committed / partial / unknown / rejected）。被拒绝的接续项给 `continuity_status="rejected"`；`operation_id` 按回执回填；鉴权拒绝及连接校验之前的失败不回填（事件键需先查绑定，有键/无键会泄露绑定是否存在），连接校验通过后的失败带回事件键；单项失败按 `continue_on_error` 处理，不中断其他项；`continue_on_error=false` 时其后未执行的项 `continuity_status` 为空、`error_type="Skipped"`（没执行，可原样重放，不冒充 rejected）。
 - `Continuity.record_batch` 的逐项语义对两档实现一致（含契约默认回退）：可归因到单条、需先修正再提交的失败（事件摘要冲突、引用缺失、校验或权限拒绝）返回 `{status: rejected, operation_id, error}`；状态可原样重试的故障（后端不可用、搬迁中、限流）仍向上抛，由批次级失败处理，不得降级成 rejected。`continue_on_error` 是该契约的一部分：覆盖 `record_batch` 的插件必须接受它；`continue_on_error=false` 时其后的项返回 `{status: skipped}` 且不再写入，已写入的前缀仍如实报告成功——不得用抛错把整段记成同一个错误。
 - **插件接口升级（S09 §14）**：`Continuity.record_batch` 新增 `continue_on_error` 关键字参数。继承默认实现、没有覆写该方法的插件不受影响；覆写者必须在签名中接受该参数。调用方在**调用前**按插件方法签名判定一次：能以关键字接受该参数（或声明 `**kwargs`）就带参数调用；同名但仅限位置的参数不算接受，否则退回不带该关键字的调用并输出一条 warning；该路径不提供逐项 rejected/skipped 语义。判定只在调用前发生，**不得在失败后重试**——整批可能已写入一部分，重试会重复执行。无法自省签名时按新契约调用、让插件如实报错。插件升级完成后删除兼容入口，不长期保留两套事实来源。
+- **任务变更插件契约（S09 §14）**：`Continuity.task` 要求 `connector_policy` 策略回调，在 Registry 单写锁内按同一任务记录完成 owner、绑定归属、回执归属与绑定状态判定；connector 配置校验由 API 以策略回调注入。装配期校验 `task` 签名接受 `connector_policy`，未迁移的实现直接装配失败，不提供旧签名回退或兼容方法；`binding_connector()` 保留原签名供接续事件等调用方使用。内置 `ContinuityService` 提供完整语义，参与者回执记录服务端提交主体与确认 connector；仓外实现须迁移到新版端口后再装配。
 - 整批重放安全：已 committed 的项返回已保存单元，partial 的项补齐背景，unknown 的项须先核对。不同项的提交不构成事务，任务修订号可能比项数少（按任务合并），也可能因重试多递增一次。
 
 ### 历史导入交换格式
@@ -434,11 +435,13 @@ Adapter 交付 UTF-8 JSONL：每行一个 [`ContinuityEvent`](#continuityevent�
 | 操作 | 行为 | 权限与错误 |
 | --- | --- | --- |
 | 注册任务 | 创建稳定 task_id，保存组织、项目空间、负责人及目标引用；初始为 open，可同时登记背景引用；绑定需另行 bind | 需要项目 WRITE；背景引用逐个读取校验 |
-| 绑定上下文 | 将可信连接＋本地上下文及 ID 来源关联任务，返回 binding_id | 首版仅创建负责人可建立；须验证连接属于本组织且允许该项目 |
+| 绑定上下文 | 将可信连接＋本地上下文及 ID 来源关联任务，返回 binding_id | 创建者可绑定任意合法且启用的 connector；非创建者只能绑定认证主体自己的 connector，且不得同时修改任务元数据或 background。均须验证 connector 属于本组织并覆盖该项目 |
 | 查询任务/绑定 | 按 task_id 或连接＋上下文读取有权查看的映射及当前修订 | 多个匹配不得默选；背景引用按源权限裁剪，不暴露其他项目绑定或私有来源 |
-| 解除绑定 | 软撤销映射，记录操作者、原因和修订，历史关联仍可审计 | 解除不等于删除历史或撤销源记录授权 |
+| 解除绑定 | 软撤销映射，记录操作者、原因和修订，历史关联仍可审计 | 创建者可解除任意绑定；非创建者只能解除属于当前认证主体且在提交时仍活跃的绑定，不能夹带 background/标题/说明修改。解除不等于删除历史或撤销源记录授权 |
 | 关联已有记忆 | 将有权引用的 MemoryRef 挂到任务的背景清单，标注用途和范围 | 校验任务管理权和来源读取权；不复制正文、不改源 Scope，不授予他人读取权 |
-| 关闭任务 | 标记 closed，保留历史；新事件不能隐式重开 | 首版仅创建负责人，带 expected_revision |
+| 关闭任务 | 标记 closed，保留历史；新事件不能隐式重开 | 创建负责人可直接关闭；非创建者须携带自己在该任务上的有效 `binding_id`，不能借用他人的绑定，也不能夹带 background/标题/说明修改；绑定归属与活跃状态在提交时按同一任务记录判定，新的 close 还要求 connector 当前启用并覆盖项目，历史请求重放除外；均带 expected_revision |
+
+非创建者的 connector/绑定提交判定失败统一返回 `PermissionDeniedError`，不通过错误类型或文案暴露全局 connector 配置或绑定存在性。owner 保留未配置、停用、跨组织、未覆盖项目及绑定失效的细分错误用于排障。
 
 任务标识由 agent-memory 生成，用户或脚本负责显式绑定；Adapter 负责解析并回传绑定，产品无需实现“跨产品任务等价”API。一会话多任务默认使用不同绑定，未提供绑定而无法唯一解析时拒绝。解除后重新关联创建新绑定，不能让迟到事件被静默写入另一个任务。
 
@@ -482,7 +485,7 @@ Provider 取得 Runtime 时相同。每次请求还要复核角色、凭据及�
 未绑定来源的浏览器会话不得根据当前注册表选择其他来源，其请求返回 401。
 HTTP 失败不切到本地 SDK；多个独立 runtime 不能同时写同一 Registry。
 
-修改已有任务的请求须携带 expected_revision 和稳定 request_id；创建请求以调用身份、项目和 request_id 形成稳定创建键，避免重试创建多个任务。同修订并发更新只有一个成功，其余返回 conflict；在声明的回执保留窗口内，同一已提交请求返回既有结果，同 request_id 不同操作或内容返回冲突。回执过期后旧修订请求仍拒绝，不能当成新操作重新执行；调用方改为查询当前状态核对。重试也须重新认证授权，不回显已失去权限的内容。状态及操作回执作为同一任务控制记录提交，不能先报告成功再异步落盘。审计记录请求和实际结果，不把失败请求记为完成。
+修改已有任务的请求须携带 expected_revision 和稳定 request_id；创建请求以调用身份、项目和 request_id 形成稳定创建键，避免重试创建多个任务。同修订并发更新只有一个成功，其余返回 conflict；在声明的回执保留窗口内，同一已提交请求返回既有结果，同 request_id 不同操作或内容返回冲突。回执状态在建立 connector/绑定归属后才向参与者披露；参与者回执在同一原子提交内记录服务端提交主体与确认的 connector 标识，缺少归属信息的存量回执不能作为参与者重放依据。回执过期后旧修订请求仍拒绝，不能当成新操作重新执行；调用方改为查询当前状态核对。重试也须重新认证授权，不回显已失去权限的内容。状态及操作回执作为同一任务控制记录提交，不能先报告成功再异步落盘。审计记录请求和实际结果，不把失败请求记为完成。
 
 具名持久 KV 须声明单记录原子替换（`persistent_atomic_records`），并支持 `claim_single_writer(namespace)`，持有到 Store 关闭。SQLite 用独立文件锁拒绝第二写者，仅限单机文件系统，不支持跨主机网络文件系统多写；`allow_ephemeral` 仅用于测试。
 
@@ -499,7 +502,7 @@ continuity 档的任务背景在 top_k 截断前按必需背景优先、其余�
 BM25 每次在当前项目开放任务的标题/说明上计算，不新增数据库或持久索引，仅返回正分候选，
 按分数倒序、同分按 task_id 排序后取 top_k。默认分词器对英文小写化、中文逐字切分；
 可配置 jieba 改善中文词语匹配。此配置只控制任务描述查询，不关闭普通记忆链路的 Embedder。
-旧任务可通过精确 find 找回，再由 owner 在 bind 时补齐空标题/说明。
+旧任务可通过精确 find 找回；其他 Agent 可用自己的 connector/context 自绑定后接续，只有 owner 能在 bind 时补齐空标题/说明。任务完成后，创建者或已绑定参与 Agent 均可关闭任务。
 新增请求字段全部缺省时保留旧变更请求的幂等摘要，既有回执可继续重放。
 
 装配与生命周期：角色模式下 Continuity 查询使用的 GraphStore 与关系投影写入的 GraphStore 必须是同一对象：两者由同一装配上下文按具名依赖解析，Continuity 装配时校验投影器实际持有的图与视图使用的图是同一对象（对象身份，端口名只用于声明依赖、不能仅靠字符串比较）；不一致即启动失败。IndexBuilder 以公开能力声明支持的写入模式（契约见 S05 `supported_write_modes`），只声明 RETRIEVAL_ONLY 的构建器（如关系投影器）配到主写入链位置时启动期拒绝，判断依据是能力声明而非 target 名或具体类型（S09 §9；能力声明已落地，主写入链的装配期拒绝检查仍未接入 Engine 装配）。Registry KV（含单写锁）、证据图及其 KV 由装配根持有，`runtime.close()` 按"停止接续准入 → 关闭 Continuity → 关闭图存储 → 关闭底层 KV"释放，共享 KV 只关闭一次（按对象身份去重），单写锁随 KV 关闭释放，关闭后同进程可重新装配；借用资源不由当前装配根关闭；装配中途失败只释放本次创建的资源与本次获取的单写锁。显式配置的可选组件（关系发现、LLM 冲突策略）启动期 health 失败即启动失败，运行期失败显式降级（`association_status=partial` 或 escalate）。重新装配与同一图对象校验已落地并经验证（`runtime.close()` 后重装成功、投影器/视图图不一致启动失败）；装配中途失败回滚与借用资源区分仍待验证。
@@ -510,7 +513,7 @@ BM25 每次在当前项目开放任务的标题/说明上计算，不新增数�
 
 新产品取得授权并绑定任务即可查询，不需要前任在线、prepare 或 accept。可选背景快照是普通有引用的记录，不转移执行权。任务背景缺失时返回 gaps，不能把未知当作未做或已完成。
 
-Registry 的修订检查只保护映射和背景清单。多个绑定可并发写观察，事件按稳定键幂等；互相冲突的结果分别保留并标注，不按最后写入覆盖任务事实。已撤销绑定拒绝新事件；关闭任务后仅允许授权的历史查询和显式管理操作，不因迟到结果自动重开。正文保存与关联登记非跨库事务，部分失败返回已保存引用和未完成关联，按回执核对后重试。
+Registry 的修订检查只保护映射和背景清单。多个绑定可并发写观察，事件按稳定键幂等；互相冲突的结果分别保留并标注，不按最后写入覆盖任务事实。已撤销绑定拒绝新事件；关闭任务后仅允许授权的历史查询和显式管理操作，不因迟到结果自动重开。任务变更的 owner、绑定归属、回执归属与绑定状态在 Registry 单写锁内按同一任务记录判定：已提交请求的回执重放先于 connector 启用与 binding active 检查，成功 bind/unbind/close 后即使 connector 停用、绑定撤销或任务关闭，相同请求仍返回 `replayed=true`；对已撤销或他人绑定的新请求先于修订检查统一拒绝，非 owner 的新 close 仍要求 connector 启用且覆盖当前项目。正文保存与关联登记非跨库事务，部分失败返回已保存引用和未完成关联，按回执核对后重试。
 
 ## 关系记录与职责扩展契约
 
@@ -589,6 +592,7 @@ Provider/MCP Adapter 只负责注册、可信上下文、参数转换及结构�
 - 相同 query/anchor 不同 duty 返回正确关系类型与方向；对照纯向量、标签重排和无职责图展开，检查路径正确率及成本。
 - candidate（兼容旧 proposed）、反证、环、超预算、失效端点、撤回边、图滞后、缺失通道、权限中间节点均有可验证行为。
 - 任务映射重启可读；并发修订、事件重试、绑定撤销及任务关闭不误关联或重开。
+- 不同主体或不同 context 不能复用服务端状态；非创建者可自绑定自己的 connector、解绑自身绑定，并可凭自身 active binding 关闭任务，但不能修改任务元数据或 background，也不能借用其他主体的 binding 关闭任务。
 - 实际存量无需职责标签即可点读；关系补建幂等、可撤回，不改原正文，不误删后续关系。
 - 结构化响应包含 view_meta.anchors / paths / gaps 和策略版本；工具 schema、默认职责与显式职责一致。
 - `search` 不带接续参数时结果与改动前一致；接续模式下带 duty 返回普通结果与 relation_expansion_disabled。

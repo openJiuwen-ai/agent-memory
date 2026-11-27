@@ -19,6 +19,7 @@ from jiuwen_memory.control.continuity_impl.repository import ContinuityRepositor
 from jiuwen_memory.control.continuity_impl.service import ContinuityService
 from jiuwen_memory.retrieval.role_view_impl.bounded import RoleViewBuilder
 from jiuwen_memory.storage.kv_impl.sqlite_kv_store import SQLiteKVStore
+from tests.support.connector_policies import AllowAllConnectorPolicy
 
 pytestmark = pytest.mark.unit
 
@@ -110,7 +111,13 @@ def test_task_event_retries_and_restart_without_handoff(setup):
         RoleViewBuilder(),
         projector=EvidenceGraphBuilder(service.graph),
     )
-    task = restarted.task(scope, TaskRequest("get", task_id=task_id), "reader", read)
+    task = restarted.task(
+        scope,
+        TaskRequest("get", task_id=task_id),
+        "reader",
+        read,
+        connector_policy=AllowAllConnectorPolicy(),
+    )
     assert task["background"][0]["ref"] == first["refs"][0]
     with pytest.raises(ConflictError):
         restarted.record(
