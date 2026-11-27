@@ -23,7 +23,8 @@ import logging
 import os
 from datetime import UTC, datetime
 
-from jiuwen_memory.api import RequestSecurityContext, Surface, assemble
+from jiuwen_memory.api import RequestSecurityContext, Surface, assemble_runtime
+from jiuwen_memory.api.memory_api_impl import LocalMemoryAPI
 from jiuwen_memory.common.security import new_request_context
 from jiuwen_memory.common.security.space_roles import SpaceContentRole, SpaceGovernanceRole
 from jiuwen_memory.common.security.types import AuthContext, Role
@@ -136,7 +137,7 @@ def _provision(api) -> Scope:
     return Scope(org=ORG, space=MAIN_SPACE)
 
 
-def _collective(api) -> None:
+def _collective(api: LocalMemoryAPI) -> None:
     """群体记忆：按归属坐标分流写入、跨空间检索、空间隔离。
 
     与前面各节共用同一个内核——开关开着时前面的写入落在主空间，这里再加一个协作空间，
@@ -214,7 +215,18 @@ def main() -> None:
         )
     else:
         logger.info("[config] 无用户配置，按内置默认装配（纯内存离线）")
-    api = assemble(config=config)
+    runtime = assemble_runtime(config=config)
+    try:
+        api = runtime.api
+        # 示例读取本地装配的空间治理开关和路由表。
+        if not isinstance(api, LocalMemoryAPI):
+            raise TypeError("quickstart requires LocalMemoryAPI")
+        _run_demo(api)
+    finally:
+        runtime.close(wait=True)
+
+
+def _run_demo(api: LocalMemoryAPI) -> None:
     # 开启空间治理后写入未注册空间由放行改为拒绝，因此先开通主空间、scope 指向它；
     # 未开启时空间维留空，与改造前一致。后面各节的调用形式两种形态下完全相同。
     scope = _provision(api) if api.space_governance_enabled else ALICE_SCOPE

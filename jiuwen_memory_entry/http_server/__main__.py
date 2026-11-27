@@ -427,7 +427,11 @@ class HttpServer(Server):
                         if browser_request and security.auth.actor != owner:
                             raise AuthenticationError("Portal session identity changed")
                         if security.auth.actor.user == COLLECTIVE_MANAGER_ID:
-                            if browser_request or is_portal or verb not in COLLECTIVE_MANAGEMENT_OPERATIONS:
+                            if (
+                                browser_request
+                                or is_portal
+                                or verb not in COLLECTIVE_MANAGEMENT_OPERATIONS
+                            ):
                                 raise PermissionDeniedError(
                                     "principal is restricted to collective membership management"
                                 )
@@ -467,7 +471,9 @@ class HttpServer(Server):
                             raw_collective = self.headers.get(COLLECTIVE_CONTEXT_HEADER)
                             if raw_collective is not None:
                                 if not credentials.api_key:
-                                    raise AuthenticationError("Collective gateway credentials required")
+                                    raise AuthenticationError(
+                                        "Collective gateway credentials required"
+                                    )
                                 try:
                                     coordinates = json.loads(raw_collective)
                                 except ValueError as exc:
@@ -607,10 +613,10 @@ class HttpServer(Server):
         policy.check(host, requires_loopback=requires_loopback)
 
     def serve(self, host: str, port: int) -> None:
-        # 同步宿主无事件循环：起 daemon 线程自持 loop 跑看门狗
-        self._runtime.start()
         httpd = None
         try:
+            # 同步宿主无事件循环：起 daemon 线程自持 loop 跑看门狗
+            self._runtime.start()
             self._check_binding(host)
             self.restore_dreaming()
             # 上游嵌入测试会替换标准 server factory；正常运行始终使用有界实现。
@@ -631,9 +637,11 @@ class HttpServer(Server):
         except KeyboardInterrupt:
             logger.info("agent-memory server stopped")
         finally:
-            if httpd is not None:
-                httpd.server_close()
-            self.close(wait=True)
+            try:
+                if httpd is not None:
+                    httpd.server_close()
+            finally:
+                self.close(wait=True)
 
 
 def main(argv: list[str] | None = None) -> int:
