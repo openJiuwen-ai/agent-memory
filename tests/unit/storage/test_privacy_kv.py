@@ -23,9 +23,12 @@ def test_privacy_kv_pins_late_bound_sqlite_path(privacy, tmp_path):
     raw = SQLiteKVStore(config_source=config)
     store = PrivacyKVStore(raw, privacy)
     try:
+        assert store.backend_info() == ("SQLiteKVStore", str(first.resolve()))
+        assert not first.exists()
         with store.bind_coordination(store.coordination_key()):
             config.put("kv_store.db_path", str(second))
             store.insert(SCOPE, "job", b"first")
+        assert store.backend_info() == ("SQLiteKVStore", str(second.resolve()))
         assert not store.exists(SCOPE, "job")
         config.put("kv_store.db_path", str(first))
         assert store.get(SCOPE, "job") == b"first"

@@ -210,6 +210,9 @@ class RoutingKVStore(KVStore):
         bound = self._bound_store.get()
         return bound if bound is not None else self._router.get()
 
+    def backend_info(self) -> tuple[str, str | None]:
+        return self._active_store().backend_info()
+
     def coordination_key(self) -> tuple[str, str | int]:
         return self._active_store().coordination_key()
 

@@ -704,3 +704,34 @@ def test_cli_reports_corrupt_config_layer_without_traceback(tmp_path, capsys) ->
     )
 
     assert result == 2
+
+
+@pytest.mark.parametrize(
+    ("key", "hint"),
+    [
+        ("kv_store", "Put kernel configuration under memory_api"),
+        ("markdown_store", "Put kernel configuration under memory_api"),
+        ("shadow_index", "Put kernel configuration under memory_api"),
+        ("globals", "Put kernel configuration under memory_api"),
+        ("storage", "Migrate the legacy storage section to memory_api.store_manager"),
+    ],
+)
+def test_cli_rejects_misplaced_kernel_config(
+    tmp_path, monkeypatch, capsys, caplog, key: str, hint: str
+) -> None:
+    from server import Server
+
+    monkeypatch.delenv("AGENT_MEMORY_SERVER", raising=False)
+    monkeypatch.setattr(Server, "build", lambda *args, **kwargs: pytest.fail("must not assemble"))
+    config = tmp_path / "misplaced.json"
+    config.write_text(json.dumps({"memory_api": {}, key: {}}), encoding="utf-8")
+
+    result = cli.main([
+        "--config", str(config), "--auth-mode", "dev",
+        "add", "--content", "coffee", "--scope", json.dumps(SCOPE),
+    ])
+
+    assert result == 2
+    assert capsys.readouterr().out == ""
+    assert f"unexpected top-level service configuration keys {key!r}" in caplog.text
+    assert hint in caplog.text

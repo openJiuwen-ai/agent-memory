@@ -1770,8 +1770,10 @@ HTTP/MCP 的 peer、限流和协议解析仍由各入口负责。独立安全构
 
 ### 公开 Server 装配入口
 
-`assemble_server_runtime(policies=None, config=None, *, security_runtime=AUTO_SECURITY_RUNTIME)
--> ServerRuntime` 从同一公开 API 包导出；Access 只传普通配置 mapping，不解析内核私有成员。
+`assemble_server_runtime(policies=None, config=None, *, security_runtime=AUTO_SECURITY_RUNTIME,
+log_kv_backend=False) -> ServerRuntime` 从同一公开 API 包导出。Access 只传普通配置 mapping，
+不解析内核私有成员。启用 `log_kv_backend` 且 INFO 日志可用时，记录装配后生效的 KV
+后端和可用的本地路径。查询诊断信息失败时，只记录异常类型并继续返回运行时。
 `MemoryRuntime` 提供 `api`、`authenticate(credentials)`、`start()`、异步
 `start_background()` 和 `close(*, wait=True)`。异步宿主绑定其持续运行的事件循环；同步
 宿主显式启动自有 loop，两者不暴露 Store 或任务控制器。默认无 watcher 时启动为 no-op，
