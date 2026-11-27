@@ -560,7 +560,7 @@ MaxP、展开上限及预算由 S04 定义，不从尚未实现的策略键推�
 | `DeleteSelector` | dataclass | unit_ids / scope / tags / before / mode(DeleteMode) |
 | `PrincipalPath` | 枚举 | USER_AGENT / AGENT_USER |
 | `SpaceStatus` | 枚举 | ACTIVE / FROZEN / ARCHIVED / DELETING / DELETED |
-| `SpacePolicy` | dataclass | require_space / principal_path / storage_isolation_strategy / retention / quotas / index_profiles / pipeline_profiles（兼容配置字段）/ write_mode（`any` 缺省 / `derived_only` 只接受派生写入——derived_only 下 `get`/`list` 在 API 层改判为 UPDATE 并关闭「本人所写」附加集合，只对 editor 放行，见 S02 不变量 24） |
+| `SpacePolicy` | dataclass | require_space / principal_path / storage_isolation_strategy / retention / quotas / index_profiles / pipeline_profiles（兼容配置字段） |
 | `SpaceSpec` | dataclass | org / space / display_name / principal_path / policy / metadata |
 | `SpaceInfo` | dataclass | org / space / display_name / status / principal_path / policy / metadata / created_at / archived_at |
 | `SpacePatch` | dataclass | display_name / status / principal_path / policy / metadata |

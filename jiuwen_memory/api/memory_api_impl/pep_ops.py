@@ -449,8 +449,8 @@ class PepOpsMixin:
         ``own_actions_apply`` 覆盖入口表的「本人所写」附加集合开关（与 ``space_action``、
         ``space_axis`` 并列的属性通道）；经验条目的 ``get`` / ``list`` 在本方法内按判定
         上下文的类型改写（mem2.0 §2.3「经验条目只对编辑者可读写」）：``memory_type`` 为
-        ``experience`` 时要求动作由读改为更新、附加集合关闭，于是只有基础动作含更新的
-        编辑者能通过。
+        ``experience`` 时要求动作由读改为更新、附加集合关闭。空间判据单独允许个人空间
+        的唯一用户归属主体点读系统生成的经验。
         """
         if not target.org or not target.space:
             # 非空间级目标不装配空间属性，但独占键仍须剥离：不剥则调用方注入的
