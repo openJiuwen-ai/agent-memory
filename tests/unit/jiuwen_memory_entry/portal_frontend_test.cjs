@@ -14,10 +14,8 @@ assert.match(html, /id="tab-overview" class="active"[^>]*aria-selected="true"/);
 assert.match(html, /id="memories"[^>]* hidden>/);
 assert.doesNotMatch(html, /id="(?:breadcrumb-current|data-sources|connection-state|connection-dot)"/);
 assert.doesNotMatch(html, /id="(?:settings-runtime|instance-info|settings-instance-hint)"/);
-const embeddedEmblem = html.match(/<img class="overview-emblem"[^>]*src="data:image\/png;base64,([^"]+)"/);
-assert.ok(embeddedEmblem, 'the single-file Portal must embed its overview emblem');
-assert.deepEqual(Buffer.from(embeddedEmblem[1], 'base64'),
-  fs.readFileSync(path.join(path.dirname(htmlPath), 'assets', 'overview-emblem.png')));
+assert.match(html, /<img class="overview-emblem"[^>]*src="\/portal\/assets\/overview-emblem\.png"/);
+assert.doesNotMatch(html, /data:image\/[^,]*;base64,/i);
 
 class Element {
   constructor(tag = 'div') {
@@ -30,6 +28,13 @@ class Element {
   append(...children) { this.children.push(...children); }
   add(child) { this.append(child); }
   replaceChildren(...children) { this._text = ''; this.children = children; }
+  querySelectorAll(selector) {
+    assert.equal(selector, 'details[open]');
+    return this.children.flatMap(child => [
+      ...(child.tag === 'details' && child.open ? [child] : []),
+      ...child.querySelectorAll(selector),
+    ]);
+  }
   replaceWith(child) { this.replacement = child; }
   addEventListener(name, fn) {
     const existing = this.events[name];
@@ -360,13 +365,20 @@ async function settingsSteppersUseDraftAndValidationFlow() {
       available:true,version:1,apply_state:'applied',fields:[
         numericField('llm_max_tokens',1),numericField('llm_timeout',0.5),
         numericField('llm_max_retries',4,false),
+        {...field(0.2), key:'llm.retrieval.fast.params.llm_temperature'},
       ],
     });
     saves.push(body);
     return response({applied:true});
   });
   await page.run("switchTab('settings')");
-  const advanced=page.get('settings-list').children[0].children.find(el=>el.className==='settings-advanced');
+  const groups=page.get('settings-list').children;
+  assert.deepEqual(groups.map(group=>group.children[0].children[0].textContent),['主模型','retrieval.fast']);
+  const [advanced,otherAdvanced]=groups.map(group=>group.children.find(el=>el.tag==='details'));
+  assert.equal(advanced.children[0].tag,'summary');
+  assert.equal(advanced.open,false);
+  assert.equal(otherAdvanced.open,false);
+  advanced.open=true;
   const steppers=advanced.children[1].children.map(box=>box.children.find(el=>el.className==='setting-stepper'));
   const [tokens,timeout,retries]=steppers;
   assert.equal(page.get('settings-bar').hidden,true,'clean settings should not show draft controls');
@@ -376,6 +388,10 @@ async function settingsSteppersUseDraftAndValidationFlow() {
   tokens.children[2].onclick();timeout.children[2].onclick();
   assert.equal(tokens.children[0].disabled,false);
   assert.equal(timeout.children[1].value,'1.5');
+  page.run('renderSettings()');
+  const sections=page.get('settings-list').children.map(group=>group.children.find(el=>el.tag==='details'));
+  assert.deepEqual(sections.map(section=>section.open),[true,false]);
+  sections[0].open=false;
   assert.equal(page.get('settings-bar').hidden,false);
   page.get('preview').onclick();
   assert.match(page.get('diff').textContent,/0\.5 → 1\.5/);
@@ -403,9 +419,9 @@ async function settingsRestoreOverrideFromField() {
   assert.equal(page.get('configuration-state').textContent,'');
   assert.equal(page.get('diff').textContent,'');
   const group=page.get('settings-list').children[0];
-  assert.ok(group.children.every(child=>child.tag!=='details'));
-  const heading=group.children.find(child=>child.className==='settings-advanced')
-    .children[1].children[0].children[0];
+  const advanced=group.children.find(child=>child.tag==='details');
+  advanced.open=true;
+  const heading=advanced.children[1].children[0].children[0];
   const reset=heading.children[1];
   assert.equal(reset.textContent,'恢复启动值');
   reset.onclick();
@@ -563,16 +579,16 @@ async function overviewCountsAndFailure(){
     listCalls++;
     if(body.limit===20){
       selections.push(body);
-      return response({items:[],count:0,snapshot:'s',sources:['','app-a','*']});
+      return response({items:[],count:0,snapshot:'s',sources:['','Claude_Code','*']});
     }
     overviewCalls++;
     assert.equal(body.include_lifecycle_counts,true);
     assert.equal(body.overview_timezone,Intl.DateTimeFormat().resolvedOptions().timeZone);
     if(fail)return response({message:'unavailable'},false,503);
     return response({items:[],lifecycle_counts:{active:empty?0:180,superseded:12,forgotten:5,archived:3},
-      sources:empty?['archive-only']:['','app-a','*','archive-only'],
+      sources:empty?['archive-only']:['','Claude_Code','*','archive-only'],
       overview:{start_date:'2023-03-04',daily_counts:empty?Array(365).fill(0):days,
-        source_counts:empty?{}:{'':35,'*':1,'app-a':144}}});
+        source_counts:empty?{}:{'':35,'*':1,'Claude_Code':144}}});
   });
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(listCalls,1,'opening the overview should only fetch the visible view');
@@ -599,14 +615,27 @@ async function overviewCountsAndFailure(){
   cells[0].onblur();
   cells.at(-1).onclick();
   const sources=page.get('overview-sources').children;
-  assert.match(sources[0].textContent,/app-a144 条 · 80%/);
+  assert.match(sources[0].textContent,/Claude_Code144 条 · 80%/);
   assert.match(sources[1].textContent,/未标注来源35 条/);
+  for (const [row, expected] of [
+    [sources[0], 'claudecode'], [sources[1], 'default'], [sources[2], 'default'],
+  ]) {
+    const icon = row.children[0].children[0];
+    assert.equal(icon.tag, 'img');
+    assert.equal(icon.alt, '');
+    assert.equal(icon.src, '/portal/assets/agent-' + expected + '.png');
+  }
+  for (const name of page.run("new Set([...sourceIconNames.values(), 'default'])")) {
+    const image = fs.readFileSync(path.join(path.dirname(htmlPath), 'assets', 'agent-' + name + '.png'));
+    assert.equal(image.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', 'invalid PNG for ' + name);
+  }
   page.get('language-toggle').onclick();
   assert.match(page.get('activity-total').textContent,/13 added/);
   assert.match(page.get('day-detail').textContent,/March 2, 2024 · 10 records/);
   assert.match(sources[1].textContent,/Source Unknown/);
-  for(const [source,row] of [['app-a',sources[0]],['',sources[1]],['*',sources[2]]]){
+  for(const [source,row] of [['Claude_Code',sources[0]],['',sources[1]],['*',sources[2]]]){
     await row.onclick();assert.equal(selections.at(-1).source,source);assert.equal(selections.at(-1).lifecycle,'active');
+    assert.equal(page.get('memory-list').children[0].children[0].src, '/portal/assets/memory-empty.svg');
   }
   for(const [id,state] of [['all',null],['active','active'],['superseded','superseded'],['forgotten','forgotten'],['archived','archived']]){
     page.run("setFilterValue('project','prior');$('memory-filter').value='old query'");
