@@ -179,7 +179,8 @@ L0/L1 分层检索在 content（L2）之外，额外召回预生成的概要（L
    手工/测试接线用 `CompositeDomainStore.bind_recallers`。
 8. `MultimodalRetriever` 只组合已注入的基础 Retriever，不得直接依赖 `KvProducer`、
    扫描 KV 或识别具体存储后端。原生、CLM、ELM 分支分别检索；无视频记忆时两个视频
-   分支自然为空，再按 RRF 融合并截断到请求的 `top_k`。
+   分支自然为空，再按 RRF 融合并截断到请求的 `top_k`。各分支已返回的 `ChannelError`
+   按原生、CLM、ELM 顺序汇总到 `RetrievalResult.errors`，不受轨迹开关或结果截断影响。
 10. Schema TemporalEntity 选择器只在普通 Reranker、阈值、top-k 与 disclosure 完成后运行。
    最终普通结果只提供 Entity seed；Entity 索引与直达 Property 路径独立，直达 Property 不受 Entity 名额截断，
    并扩展同实体、同属性前后 `property_extension_step` 条（`default_property`
