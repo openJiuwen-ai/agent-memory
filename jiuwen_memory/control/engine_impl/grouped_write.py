@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from jiuwen_memory.common.errors import AgentMemoryError, WriteIncompleteError
+from jiuwen_memory.common.errors import AgentMemoryError, LLMTimeoutError, WriteIncompleteError
 from jiuwen_memory.common.ingest_cancellation import IngestCancelled
 from jiuwen_memory.common.log import get_logger, metadata_for_log
 from jiuwen_memory.common.trace import TraceLevel, trace_event, traced
@@ -298,6 +298,10 @@ class GroupedWriteMixin:
                     _llm_lane(), first.evolver.evolve_grouped, units
                 )
             except ExtractNotCommittedError as exc:
+                cause = exc.__cause__
+                if len(segment) == 1 and isinstance(cause, LLMTimeoutError):
+                    _set_failure(outcomes[indices[0]], cause)
+                    return
                 self.write_signals.record(
                     DegradeEvent.MERGE_FALLBACK,
                     scope=_segment_scope(segment),
