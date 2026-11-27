@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/config/` |
-| 最近一次修订日期 | 2026-11-23 |
+| 最近一次修订日期 | 2026-11-26 |
 | 关联特性文档 | `docs/features/config/F01-config-source.md`；Storage 实例动态配置见 `docs/features/config/F02-routing-storage.md`；Schema 抽取与更新装配见 `docs/features/construction/F08-entity-schema-extension.md`；Schema TemporalEntity 检索见 `docs/features/retrieval/F08-schema-temporal-entity.md`；SDK 运行日志接管见 `docs/features/api/F09-sdk-runtime-logging.md`；Portal 设计见 `docs/features/F05-personal-memory-portal.md`；写入真异步与批量编排见 `docs/features/control/F10-async-write-orchestration.md`、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 范围 / 边界
@@ -26,6 +26,14 @@
 - 不规定产品配置中心的推送/TTL/缓存失效运维接口（实现方可自管缓存，首版契约不要求 invalidate）
 - **不**在未使用 `RoutingStoreManager` 时原地拆换同一 `CompositeStoreManager` 内部端口拓扑；Store 级异质切换落在各 `*_store.active` + `Routing*Store`（方案 A，F01 §2.1.5）
 - **允许**装配期预装多套完整 `StoreManager`，经 `RoutingStoreManager` + `store_manager.active` 动态选用（config/F02 与 storage/F07，已落地）；**禁止**把「同实现换连接 / 只换某一 Store」误做成多套 manager + `store_manager.active`
+
+## CLI、HTTP 和 MCP 服务装配配置
+
+本地 CLI、HTTP 和 MCP 共用服务配置结构。顶层支持 `profile`、`policies`、`http`
+和 `memory_api`，内核配置（如 `globals`、`kv_store`、`shadow_index`）放在
+`memory_api` 对象下。合并后出现其他顶层键，或 `memory_api` 既非对象也非 `null` 时，
+在装配前抛出 `ValidationError`。省略 `memory_api` 或设置为 `null` 时使用内核默认配置。
+SDK 的 `Config` 直接接收内核配置。
 
 ## Portal 配置保存与恢复
 

@@ -14,6 +14,7 @@ import pytest
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.config import Config
 from jiuwen_memory_entry.core import config_loader
+from jiuwen_memory_entry.core.profiles import load_config
 
 pytestmark = pytest.mark.unit
 
@@ -41,6 +42,28 @@ def _write(tmp_path, text: str, name: str = "config.yml") -> str:
     path = tmp_path / name
     path.write_text(text, encoding="utf-8")
     return str(path)
+
+
+def test_service_config_preserves_valid_sections_and_layer_priority() -> None:
+    base = {"profile": "offline", "memory_api": {"globals": {"write_document": False}}}
+    override = {
+        "profile": "local",
+        "policies": {"scope.require_space": "true"},
+        "http": {"dev_identities": {}},
+        "memory_api": {"kv_store": {"default": "memory"}},
+    }
+
+    merged = load_config([base, override])
+
+    assert merged.profile == "local"
+    assert merged.policies == override["policies"]
+    assert merged.settings == override
+
+
+@pytest.mark.parametrize("value", [[], "", False])
+def test_service_config_rejects_non_object_memory_api(value) -> None:
+    with pytest.raises(ValidationError, match="memory_api configuration must be an object"):
+        load_config([{"memory_api": value}])
 
 
 def test_load_layer_expands_yaml_env(tmp_path, entry_env) -> None:

@@ -133,6 +133,20 @@ batch 固定逐行 JSON，不使用展示选项。
 
 本地用重复 `--config` 叠加 JSON/YAML 层，例如
 `--config base.yaml --config local.yaml`，在 OFFLINE 基础上按顺序覆盖。
+服务配置顶层支持 `profile`、`policies`、`http` 和 `memory_api`。
+存储和其他内核配置放在 `memory_api` 下。CLI 遇到未知顶层键时以退出码 2
+提示调整配置层级。
+本地启动日志记录已装配的 KV 后端和可用的本地路径。
+
+```yaml
+memory_api:
+  kv_store:
+    default:
+      target: sqlite
+      params:
+        db_path: ./agent_memory.db
+```
+
 远程不能同时传本地 `--config`，服务配置由 HTTP 进程负责。
 命令结束（含失败）关闭 client，释放内核运行时资源；batch 在全部记录处理完后关闭。
 
@@ -144,3 +158,4 @@ batch 固定逐行 JSON，不使用展示选项。
 `tests/unit/jiuwen_memory_entry/test_cli.py` 覆盖全部方法/参数集合、默认值省略、
 旧字段拒绝、原 JSON 返回、安全身份与目标分离、资源关闭，以及本地/真实 HTTP
 模式的增删改查和异步写入。`examples/demo_cli.py` 提供同进程调用示例。
+`tests/integration/jiuwen_memory_entry/test_cli_persistence.py` 通过独立进程验证 SQLite 持久化。

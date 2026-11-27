@@ -109,6 +109,13 @@ class KVStore(BaseStore):
         """Index service for this logical KV view, when supported by the backend."""
         return None
 
+    def backend_info(self) -> tuple[str, str | None]:
+        """Return the active backend and optional local path without opening a connection.
+
+        Connection URLs and credentials are excluded.
+        """
+        return type(self).__name__, None
+
     def migration_read(self, scope: Scope, key: str, *, max_value_bytes: int) -> bytes | None:
         """Optional bounded exact read; None is oversized, missing still raises NotFoundError."""
         raise UnsupportedCapabilityError("bounded_migration_read", "kv", "storage")

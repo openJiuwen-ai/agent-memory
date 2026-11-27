@@ -827,6 +827,17 @@ def test_invalid_dev_identity_config_rejects_startup_before_binding(
     assert binding_httpd == []
 
 
+def test_http_rejects_misplaced_kernel_config_before_assembly(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(
+        http_server_module, "load_layer", lambda _path: {"globals": {"write_document": True}}
+    )
+    monkeypatch.setattr(HttpServer, "build", lambda *_: pytest.fail("must not assemble"))
+
+    assert http_server_module.main(["--auth-mode", "required", "config.yml"]) == 2
+    assert "unexpected top-level service configuration keys 'globals'" in caplog.text
+    assert "Put kernel configuration under memory_api" in caplog.text
+
+
 def test_required_mode_does_not_activate_configured_dev_identities(monkeypatch) -> None:
     monkeypatch.setattr(
         http_server_module,

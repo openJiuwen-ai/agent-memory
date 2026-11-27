@@ -203,11 +203,11 @@ class StoreManager(ABC):
 
     @abstractmethod
     def markdown(self, name: str = "default") -> MarkdownStore:
-        """取 MARKDOWN 端口（文档记忆人类视图，仅文档模式 write_document=true 装配）。"""
+        """取已装配的 MARKDOWN 端口（文档记忆人类视图）。"""
 
     @abstractmethod
     def shadow_index(self, name: str = "default") -> DocumentShadowIndex:
-        """取 DOCUMENT_SHADOW 端口（文档记忆机器索引，仅文档模式装配）。"""
+        """取已装配的 DOCUMENT_SHADOW 端口（文档记忆机器索引）。"""
 
     def has_kv(self, name: str = "default") -> bool:
         return name == "default" and StorageCapability.KV in self.capabilities()

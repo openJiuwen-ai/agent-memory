@@ -281,6 +281,7 @@
 - 文档 add/update/delete/edit 及 LocalWatchdog 对账必须先获取 `document_operation` 资源锁再读取旧状态，补偿结束后才释放；锁范围内不得跨 await。资源锁先于各存储实例锁，根目录与 shadow.write_lock_key 分别登记并按稳定顺序获取，不以 Scope 或项目作为锁键。关闭后排队的看门狗任务在取得锁后须复查代次。
 
 - LocalWatchdog 对账时，新增记录的 Scope 必须在删除旧记录之前从同文件历史取出；不能等删空后再回查归属。
+- LocalWatchdog 装配时校验默认 Markdown 端口及其解析后的非空 `root`，使用该目录监听。
 
 配置工厂选中 ES 全文、ES 实体、Milvus 向量或 `milvus_graph` 融合后，在同步装配期经 `preload_backend`
 加载 `elasticsearch` / `pymilvus`，记录开始、完成与耗时；仅对依赖导入期间的普通
@@ -305,6 +306,8 @@ Milvus 向量后端的 `load_timeout`（默认 30s，须为有限正数）用于
 4. KVStore 的 `ttl` 单位为秒（float），`0` 表示永不过期。`remaining_ttl` 契约：
    **永久记录返回 `0.0`；key 缺失、已过期但尚未物理删除、或后端无法给出剩余 TTL 一律返回
    `None`**。迁移 / 重新分区只在非 `None` 时写目标，避免把过期记录迁成永久副本。
+   `backend_info()` 提供启动诊断。SQLite 返回解析后的路径，隐私、加密及动态路由包装转发到
+   当前底层实例。分片路由涉及归属存储、分片和透传存储，返回路由后端名称和 `None` 路径。
 5. GraphStore 的 `seed_ids` 用于图召回时定位入口节点，匹配语义由后端定义（允许实现差异）；
    可选 `extensions` 承载 `shards`，共享图后端须在截断前按节点标签过滤，普通后端保持不传。
 6. FusionStore 的 `FusionRecord` 可部分字段为 None（如只写向量不写文本）。

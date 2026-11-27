@@ -117,6 +117,11 @@ def test_non_memory_key_goes_to_passthrough() -> None:
         assert not shard_store.exists(SCOPE, "/messages/1")
 
 
+def test_backend_info_has_no_single_path_for_shard_router() -> None:
+    store, _, _ = make_store()
+    assert store.backend_info() == ("ShardRoutedKVStore", None)
+
+
 def test_pending_and_cleaning_are_invisible() -> None:
     """TC-S2-3：pending / cleaning / 无归属均不可见。"""
     store, stores, placement = make_store()

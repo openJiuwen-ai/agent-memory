@@ -28,6 +28,9 @@ class PrivacyKVStore(KVStore):
     def store_type(self):
         return self._delegate.store_type()
 
+    def backend_info(self) -> tuple[str, str | None]:
+        return self._delegate.backend_info()
+
     def coordination_key(self) -> tuple[str, str | int]:
         return self._delegate.coordination_key()
 

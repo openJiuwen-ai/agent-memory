@@ -128,6 +128,9 @@ class EncryptedKVStore(KVStore, ConditionalKV):
     def security(self) -> StoreSecurity:
         return self._store_security
 
+    def backend_info(self) -> tuple[str, str | None]:
+        return self._raw.backend_info()
+
     def coordination_key(self) -> tuple[str, str | int]:
         return self._raw.coordination_key()
 
