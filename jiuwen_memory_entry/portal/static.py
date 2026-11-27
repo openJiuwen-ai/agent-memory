@@ -25,11 +25,15 @@ def serve_portal_file(handler: BaseHTTPRequestHandler, path: str) -> bool:
         data = resource.read_bytes()
     except FileNotFoundError:
         return False
+    headers = {
+        "Content-Type": content_type,
+        "Content-Length": str(len(data)),
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
     handler.send_response(200)
-    handler.send_header("Content-Type", content_type)
-    handler.send_header("Content-Length", str(len(data)))
-    handler.send_header("Cache-Control", "no-store")
-    handler.send_header("X-Content-Type-Options", "nosniff")
+    for name, value in headers.items():
+        handler.send_header(name, value)
     handler.end_headers()
     handler.wfile.write(data)
     return True
