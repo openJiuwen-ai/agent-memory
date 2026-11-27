@@ -1140,17 +1140,23 @@ def main() -> int:
         level=logging.INFO, format="[%(asctime)s] %(name)s %(levelname)s %(message)s"
     )
     try:
-        if _TRANSPORT in ("http", "streamable-http"):
-            _check_binding(os.environ.get("MCP_HOST", "127.0.0.1"))
-    except ValidationError as bind_error:
-        logger.error("MCP server refused to start: %s", bind_error)
-        return 2
-    _SRV.restore_dreaming()
-    if _TRANSPORT in ("http", "streamable-http"):
-        mcp.run(transport="streamable-http")  # host/port 已在 FastMCP(...) 设好
-    else:
-        mcp.run()  # stdio（默认）——Claude Desktop / Claude Code 直接挂载
-    return 0
+        use_http = _TRANSPORT in ("http", "streamable-http")
+        if use_http:
+            try:
+                _check_binding(os.environ.get("MCP_HOST", "127.0.0.1"))
+            except ValidationError as bind_error:
+                logger.error("MCP server refused to start: %s", bind_error)
+                return 2
+        _SRV.restore_dreaming()
+        if use_http:
+            mcp.run(transport="streamable-http")  # host/port 已在 FastMCP(...) 设好
+        else:
+            mcp.run()  # stdio（默认）——Claude Desktop / Claude Code 直接挂载
+        return 0
+    finally:
+        # 绑定检查、恢复任务或传输启动可能在进入 _lifespan 前退出，由入口兜底关闭。
+        # 正常退出时 _lifespan 已完成关闭，Runtime 可安全重复关闭。
+        _SRV.close(wait=True)
 
 
 if __name__ == "__main__":

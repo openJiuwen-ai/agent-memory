@@ -16,7 +16,7 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-from jiuwen_memory.api import Surface, assemble
+from jiuwen_memory.api import MemoryAPI, Surface, assemble_runtime
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.security import new_request_context
 from jiuwen_memory.common.security.types import AuthContext, Role
@@ -88,7 +88,14 @@ def main() -> None:
             },
         }
     )
-    api = assemble(config=config)
+    runtime = assemble_runtime(config=config)
+    try:
+        _run_demo(runtime.api)
+    finally:
+        runtime.close(wait=True)
+
+
+def _run_demo(api: MemoryAPI) -> None:
     scope = Scope(org="schema-demo", user="alice")
     units = api.add(
         "speaker=Alice: On 2023-08-03, I started working as a software engineer at Acme.",

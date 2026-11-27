@@ -17,12 +17,11 @@
 - **InProcessScheduler**：``submit`` 是 async + 内部 ``await job.run()``——submit 即跑完 Job。
   step 2 / step 4 的原文**立即 ARCHIVED**——与 middle=false 表现一致（§2.1 检视意见症状）。
 - **AsyncTimerScheduler**：``submit`` 入队 + 起 Timer 协程——Job 不立即跑。
-  step 2 / step 4 的原文**先 ACTIVE 后 ARCHIVED**——sleep middle_interval 后 Timer 触发 Job.run
+  step 2 / step 4 的原文**先 ACTIVE 后 ARCHIVED**。测试推进调度时钟后，Timer 触发 Job.run
   → evolver EXTRACT 派生 + 归档原文。
 
-**测试函数 async def + @pytest.mark.asyncio**：AsyncTimerScheduler 装配期 ``asyncio.create_task``
-启动长期 Timer 协程——依赖事件循环存活。``asyncio.run`` 包一层会关循环，Timer 协程被取消。
-pytest-asyncio 提供贯穿测试函数全程的事件循环。
+**测试函数 async def + @pytest.mark.asyncio**：pytest-asyncio 提供贯穿测试函数的调用循环，
+AsyncTimerScheduler 在自有循环运行 Timer；测试结束时由 Runtime 关闭调度器并回收线程。
 
 **同步 API 调用推到独立线程**：``api.add`` / ``api.list`` / ``api.search`` 是同步方法（内部
 ``asyncio.run(self._engine.xxx)``）——在已运行的事件循环里直接调会 RuntimeError。用
@@ -43,12 +42,13 @@ import os
 import pytest
 from dotenv import load_dotenv
 
-from jiuwen_memory.api.memory_api_impl.assembly import _build_kernel as build_kernel
+from jiuwen_memory.api import assemble_runtime
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import Context, LifecycleState, MemoryTier, Scope
 from jiuwen_memory.config.config import Config
 from tests.support.scoped_authenticator import ScopedAuthenticator
+from tests.unit.control.fixtures import hold_middle_timer
 
 # 模块导入时加载项目根 .env——把 .env 内的 OPENAI_API_KEY 等塞进 os.environ。
 # .env 在 .gitignore 内已忽略，不会误提交；缺失也不报错（仅本次测试 skip）。
@@ -164,18 +164,6 @@ def _kernel_config(
     return Config.from_dict(config_dict), middle_interval
 
 
-def _cleanup_scheduler(kernel) -> None:
-    """清理 AsyncTimerScheduler 的 Timer 协程——避免跨测试残留。
-
-    InProcessScheduler 无后台协程，本函数对其无操作。
-    """
-    scheduler = kernel.api._scheduler
-    if hasattr(scheduler, "_wheels"):
-        for wheel in scheduler._wheels.values():
-            if wheel.task is not None and not wheel.task.done():
-                wheel.task.cancel()
-
-
 def _list_via_thread(api, scope: Scope = SCOPE, *, identity: Scope = SCOPE):
     """在 async 测试函数里调同步 api.list——推到独立线程避免 RuntimeError。
 
@@ -199,19 +187,12 @@ def _recall_via_thread(api, query: str, ctx: Context, *, identity: Scope = SCOPE
     )
 
 
-async def _recall_async(kernel, query: str, ctx: Context, *, top_k: int = 30):
-    """直接 await engine.recall——跳过 api.search 的 to_thread + asyncio.run 双重开销。
-
-    step 4 立即 recall（middle=true 路径）需在 Timer 触发前完成。api.search 内部
-    ``asyncio.run(engine.recall)`` 在子线程跑——双重事件循环切换 + LLM 调用累积 10s+
-    延迟，常被 Timer 抢先归档原文。直接 await engine.recall 在主循环跑——仍走 LLM
-    embedding/retrieval，但省去切换开销，且与 Timer 协程在同循环协作调度（recall
-    await 时 Timer 协程可继续 sleep，不会因切换延迟错过窗口）。
-    """
+async def _recall_async(runtime, query: str, ctx: Context, *, top_k: int = 30):
+    """通过异步引擎验证检索链路，省去同步 API 的事件循环切换。"""
     from jiuwen_memory.retrieval.types import RetrievalQuery
 
     rq = RetrievalQuery(text=query, top_k=top_k, extensions=dict(ctx.extensions))
-    return await kernel.api._engine.recall(ctx.scope, rq)
+    return await runtime.api._engine.recall(ctx.scope, rq)
 
 
 def _sync_write_via_thread(
@@ -304,17 +285,10 @@ _STEP2_CONTENT = "bob visited kyoto last summer"  # sync write middle=true
 _STEP3_CONTENT = "carol works on python projects"  # async write middle=false
 _STEP4_CONTENT = "dave enjoys hiking on weekends"  # async write middle=true
 
-# middle_interval 必须大于 step 4 立即 recall 的耗时——recall 走 KeywordFeatureExtractor
-# + HashingEmbedder（本地非 LLM 调用），实测约 12-15s（含 to_thread + asyncio.run 双重
-# 切换 + 索引扫描）。设 30s 留余量：step 4 写入后 Timer 在 30s 触发，立即 recall 在
-# 15s 内完成 → 仍有 15s 余量。
 _MIDDLE_INTERVAL_ASYNC_TIMER = 30
 _TICK_INTERVAL_ASYNC_TIMER = 2
 
-# 等待 Timer 触发的 sleep 时长——middle_interval=30s + 连续性检测/evolve 的 LLM 调用。
-# 预算按"单次 LLM 调用 ~20s"（慢模型如实测 GLM-5.1）估算：Timer t≈30s 触发后，
-# Job 需 1 次连续性检测 + 1-2 次批抽取（串行依赖），最坏 ~60s；sleep 120s 留余量。
-# 快模型（调用 <5s）下本测试更早满足断言，只是多等一会儿。
+# 推进时钟后给调度轮询、连续性检测和真实 LLM 抽取留出上限。
 _TIMER_WAIT_SECONDS = 120
 
 
@@ -340,8 +314,8 @@ async def test_in_memory_in_process() -> None:
         scheduler_target="in_process",
         middle_interval=4,
     )
-    kernel = build_kernel(config=config)
-    api = kernel.api
+    runtime = assemble_runtime(config=config)
+    api = runtime.api
     try:
         ctx = Context(scope=SCOPE)
 
@@ -354,7 +328,7 @@ async def test_in_memory_in_process() -> None:
         logger.info(f"\n[step 1] alice write id={alice_original_id}")
         # 立即 recall + list
         list_after_s1 = await _list_via_thread(api)
-        recall_s1 = await _recall_async(kernel, "alice green tea", ctx)
+        recall_s1 = await _recall_async(runtime, "alice green tea", ctx)
         logger.info(f"[step 1] list size={len(list_after_s1.items)}")
         for u in list_after_s1.items:
             logger.info(
@@ -377,7 +351,7 @@ async def test_in_memory_in_process() -> None:
         assert len(units_s2) == 1  # 原文
         bob_original_id = units_s2[0].id
         # InProcessScheduler 立即跑完 Job → 原文已 ARCHIVED
-        persisted_s2 = await kernel.api._engine.get(bob_original_id, SCOPE)
+        persisted_s2 = await runtime.api._engine.get(bob_original_id, SCOPE)
         assert persisted_s2.lifecycle == LifecycleState.ARCHIVED, (
             f"InProcessScheduler step 2 应立即 ARCHIVED 原文 {bob_original_id}，"
             f"got {persisted_s2.lifecycle}"
@@ -388,7 +362,7 @@ async def test_in_memory_in_process() -> None:
         )
         # 立即 recall + list
         list_after_s2 = await _list_via_thread(api)
-        recall_s2 = await _recall_async(kernel, "bob kyoto", ctx)
+        recall_s2 = await _recall_async(runtime, "bob kyoto", ctx)
         logger.info(f"[step 2] list size={len(list_after_s2.items)}")
         for u in list_after_s2.items:
             logger.info(
@@ -409,7 +383,7 @@ async def test_in_memory_in_process() -> None:
         logger.info("\n[step 3] carol write")
         # 立即 recall + list
         list_after_s3 = await _list_via_thread(api)
-        recall_s3 = await _recall_async(kernel, "carol python", ctx)
+        recall_s3 = await _recall_async(runtime, "carol python", ctx)
         logger.info(f"[step 3] list size={len(list_after_s3.items)}")
         for u in list_after_s3.items:
             logger.info(
@@ -432,7 +406,7 @@ async def test_in_memory_in_process() -> None:
         assert len(units_s4) == 1
         dave_original_id = units_s4[0].id
         # InProcessScheduler 立即跑完 Job → 原文已 ARCHIVED
-        persisted_s4 = await kernel.api._engine.get(dave_original_id, SCOPE)
+        persisted_s4 = await runtime.api._engine.get(dave_original_id, SCOPE)
         assert persisted_s4.lifecycle == LifecycleState.ARCHIVED, (
             f"InProcessScheduler step 4 应立即 ARCHIVED 原文 {dave_original_id}，"
             f"got {persisted_s4.lifecycle}"
@@ -442,7 +416,7 @@ async def test_in_memory_in_process() -> None:
         )
         # 立即 recall + list
         list_after_s4 = await _list_via_thread(api)
-        recall_s4 = await _recall_async(kernel, "dave hiking", ctx)
+        recall_s4 = await _recall_async(runtime, "dave hiking", ctx)
         logger.info(f"[step 4] list size={len(list_after_s4.items)}")
         for u in list_after_s4.items:
             logger.info(
@@ -481,40 +455,28 @@ async def test_in_memory_in_process() -> None:
             f"ARCHIVED 应为 bob/dave 原文，got {archived_ids}"
         )
     finally:
-        _cleanup_scheduler(kernel)
+        await asyncio.to_thread(runtime.close, wait=True)
 
 
 # -- 用例 2: InMemoryEngine + AsyncTimerScheduler ------------------------ #
 
 
 @pytest.mark.asyncio
-async def test_in_memory_async_timer() -> None:
-    """InMemoryEngine + AsyncTimerScheduler——4 步骤写记忆。
+async def test_in_memory_async_timer(monkeypatch) -> None:
+    """InMemoryEngine 的异步定时转换。
 
-    AsyncTimerScheduler.submit 入队 + 起 Timer 协程——Job 不立即跑。
-
-    **sync write 的隐藏限制**：step 2 用 sync write（``api.add``）内部
-    ``asyncio.run(add_async)`` 在子线程建临时循环跑——AsyncTimerScheduler.submit
-    注册的 Timer 协程被绑到子线程临时循环；临时循环关 → Timer 被取消。
-    故 step 2 写入后立即查 bob 原文仍 ACTIVE——Timer 已死，尚未触发 Job。
-
-    step 4 用 ``await api.add_async`` 在主循环驱动——``_submit_timer`` 的 update
-    分支检测 ``wheel.task.done()`` 后通过 ``_ensure_timer_task`` 重启 Timer
-    （bugfix 修复——修复前此处不重启，导致 middle=true Job 永不执行）。
-    Timer 在 ``middle_interval`` 秒后触发 MiddleToLongJob.run——Job 列出所有
-    middle=true ACTIVE 原文（bob + dave）一并 EXTRACT + 归档。故 sleep 后
-    bob 和 dave 原文均 ARCHIVED。
-
-    step 1 / step 3（middle=false）：与用例 1 同构（同步 EXTRACT 派生）。
+    step 2 注册 Timer，step 4 复用该 Timer。完成归档前断言后推进调度时钟，
+    等待转换完成，再检查两条原文归档。
     """
+    advance_timer = hold_middle_timer(monkeypatch, timeout=_TIMER_WAIT_SECONDS)
     config, middle_interval = _kernel_config(
         engine_target="in_memory",
         scheduler_target="async_timer",
         middle_interval=_MIDDLE_INTERVAL_ASYNC_TIMER,
         tick_interval=_TICK_INTERVAL_ASYNC_TIMER,
     )
-    kernel = build_kernel(config=config)
-    api = kernel.api
+    runtime = assemble_runtime(config=config)
+    api = runtime.api
     try:
         ctx = Context(scope=SCOPE)
 
@@ -523,7 +485,7 @@ async def test_in_memory_async_timer() -> None:
         assert len(units_s1) >= 1
         logger.info("\n[step 1] alice write")
         list_after_s1 = await _list_via_thread(api)
-        recall_s1 = await _recall_async(kernel, "alice green tea", ctx)
+        recall_s1 = await _recall_async(runtime, "alice green tea", ctx)
         logger.info(f"[step 1] list size={len(list_after_s1.items)}")
         for u in list_after_s1.items:
             logger.info(
@@ -539,14 +501,13 @@ async def test_in_memory_async_timer() -> None:
         ), "step 1 后 list 应有 alice 派生"
 
         # ---- step 2: sync write middle=true（bob + kyoto） ----
-        # sync write 在子线程建临时循环跑 add_async——Timer 协程被绑到临时循环，
-        # 临时循环关后 Timer 被取消。step 2 立即查原文仍 ACTIVE。
+        # sync write 返回后 Timer 仍在调度器循环中等待首次触发，原文仍 ACTIVE。
         units_s2 = await _sync_write_via_thread(
             api, _STEP2_CONTENT, middle=True, middle_interval=middle_interval
         )
         assert len(units_s2) == 1
         bob_original_id = units_s2[0].id
-        persisted_s2_immediate = await kernel.api._engine.get(bob_original_id, SCOPE)
+        persisted_s2_immediate = await runtime.api._engine.get(bob_original_id, SCOPE)
         assert persisted_s2_immediate.lifecycle == LifecycleState.ACTIVE
         assert persisted_s2_immediate.tier == MemoryTier.WORKING
         logger.info(
@@ -554,7 +515,7 @@ async def test_in_memory_async_timer() -> None:
             f"lifecycle={persisted_s2_immediate.lifecycle.value}"
         )
         list_after_s2 = await _list_via_thread(api)
-        recall_s2 = await _recall_async(kernel, "bob kyoto", ctx)
+        recall_s2 = await _recall_async(runtime, "bob kyoto", ctx)
         logger.info(f"[step 2] list size={len(list_after_s2.items)}")
         for u in list_after_s2.items:
             logger.info(
@@ -574,7 +535,7 @@ async def test_in_memory_async_timer() -> None:
         assert len(units_s3) >= 1
         logger.info("\n[step 3] carol write")
         list_after_s3 = await _list_via_thread(api)
-        recall_s3 = await _recall_async(kernel, "carol python", ctx)
+        recall_s3 = await _recall_async(runtime, "carol python", ctx)
         logger.info(f"[step 3] list size={len(list_after_s3.items)}")
         for u in list_after_s3.items:
             logger.info(
@@ -590,14 +551,13 @@ async def test_in_memory_async_timer() -> None:
         ), "step 3 后 list 应有 carol 派生"
 
         # ---- step 4: await add_async middle=true（dave + hiking） ----
-        # async write 在主循环驱动——update 分支重启 Timer（bugfix），Timer 在
-        # middle_interval 秒后触发 MiddleToLongJob.run → 归档 bob + dave 原文。
+        # 同 scope 的第二次写入更新已注册的 Timer。
         units_s4 = await _async_write(
             api, _STEP4_CONTENT, middle=True, middle_interval=middle_interval
         )
         assert len(units_s4) == 1
         dave_original_id = units_s4[0].id
-        persisted_s4_immediate = await kernel.api._engine.get(dave_original_id, SCOPE)
+        persisted_s4_immediate = await runtime.api._engine.get(dave_original_id, SCOPE)
         assert persisted_s4_immediate.lifecycle == LifecycleState.ACTIVE, (
             f"step 4 立即查应仍 ACTIVE，got {persisted_s4_immediate.lifecycle}"
         )
@@ -607,7 +567,7 @@ async def test_in_memory_async_timer() -> None:
         )
         # 立即 recall——应召回 step 4 原文（Timer 触发前）。
         # _recall_async 直接 await engine.recall，跳过 to_thread + asyncio.run 双重切换。
-        result_s4_immediate = await _recall_async(kernel, "hiking", ctx)
+        result_s4_immediate = await _recall_async(runtime, "hiking", ctx)
         immediate_ids_s4 = {item.unit_id for item in result_s4_immediate.items}
         logger.info(f"[step 4] recall hits={len(result_s4_immediate.items)}")
         for item in result_s4_immediate.items:
@@ -623,36 +583,14 @@ async def test_in_memory_async_timer() -> None:
                 f"content={u.content!r}"
             )
 
-        # ---- sleep 等 Timer 触发 MiddleToLongJob.run ----
-        # middle_interval=30s，首次触发 t≈30s；连续性检测 + 真实 LLM evolve 约需 12-18s；
-        # sleep 50s 留余量给 drain 跑完。
-        await asyncio.sleep(_TIMER_WAIT_SECONDS)
-
-        # step 2 的 bob 原文——Timer 已死，仍 ACTIVE
-        persisted_bob_after = await kernel.api._engine.get(bob_original_id, SCOPE)
-        # step 2 的 bob 原文——step 4 async write 重启 Timer 后被一并归档。
-        # bugfix 前：sync write 让 Timer 死亡，step 4 async write 不重启 Timer，
-        # bob 永远 ACTIVE；bugfix 后（_ensure_timer_task 在 update 分支调用）：
-        # step 4 重启 Timer，Timer 触发 MiddleToLongJob 处理 entry（其 kind 是
-        # MiddleToLongJob），Job.run 列出所有 middle=true ACTIVE 原文一并归档
-        # ——bob + dave 都被 ARCHIVED。
-        assert persisted_bob_after.lifecycle == LifecycleState.ARCHIVED, (
-            f"step 4 重启 Timer 后 bob 原文 {bob_original_id} 应已 ARCHIVED，"
-            f"got {persisted_bob_after.lifecycle}"
-        )
-
-        # step 4 的 dave 原文——Timer 在主循环存活，触发 Job 后 ARCHIVED
-        persisted_dave_after = await kernel.api._engine.get(dave_original_id, SCOPE)
-        assert persisted_dave_after.lifecycle == LifecycleState.ARCHIVED, (
-            f"step 4 async write sleep 后原文 {dave_original_id} 应已 ARCHIVED，"
-            f"got {persisted_dave_after.lifecycle}"
-        )
+        # 归档前断言完成后触发 Timer，等待任务归档原文并清理索引。
+        await advance_timer(middle_interval)
 
         # 转换后 recall——dave 原文 ARCHIVED 不召回，但应召回派生记忆
         result_dave_after = await _recall_via_thread(api, "hiking", ctx)
         dave_after_ids = {item.unit_id for item in result_dave_after.items}
         assert dave_original_id not in dave_after_ids, (
-            f"sleep 后 dave 原文 {dave_original_id} 应 ARCHIVED 不召回，got {dave_after_ids}"
+            f"转换后不应召回 dave 原文 {dave_original_id}，got {dave_after_ids}"
         )
 
         # 最终 list 查看记忆——应有所有派生记忆（step 1/3 派生 + step 4 派生）
@@ -677,7 +615,7 @@ async def test_in_memory_async_timer() -> None:
             f"ARCHIVED 应为 bob/dave 原文，got {archived_ids}"
         )
     finally:
-        _cleanup_scheduler(kernel)
+        await asyncio.to_thread(runtime.close, wait=True)
 
 
 # -- 用例 3: CloudEngine + InProcessScheduler --------------------------- #
@@ -696,8 +634,8 @@ async def test_cloud_in_process() -> None:
         scheduler_target="in_process",
         middle_interval=4,
     )
-    kernel = build_kernel(config=config)
-    api = kernel.api
+    runtime = assemble_runtime(config=config)
+    api = runtime.api
     try:
         ctx = Context(scope=SCOPE)
 
@@ -706,7 +644,7 @@ async def test_cloud_in_process() -> None:
         assert len(units_s1) >= 1
         logger.info("\n[step 1] alice write")
         list_after_s1 = await _list_via_thread(api)
-        recall_s1 = await _recall_async(kernel, "alice green tea", ctx)
+        recall_s1 = await _recall_async(runtime, "alice green tea", ctx)
         logger.info(f"[step 1] list size={len(list_after_s1.items)}")
         for u in list_after_s1.items:
             logger.info(
@@ -728,7 +666,7 @@ async def test_cloud_in_process() -> None:
         assert len(units_s2) == 1
         bob_original_id = units_s2[0].id
         # InProcessScheduler 立即跑完 Job → 原文已 ARCHIVED
-        persisted_s2 = await kernel.api._engine.get(bob_original_id, SCOPE)
+        persisted_s2 = await runtime.api._engine.get(bob_original_id, SCOPE)
         assert persisted_s2.lifecycle == LifecycleState.ARCHIVED, (
             f"CloudEngine + InProcess step 2 应立即 ARCHIVED 原文 {bob_original_id}，"
             f"got {persisted_s2.lifecycle}"
@@ -739,7 +677,7 @@ async def test_cloud_in_process() -> None:
             f"lifecycle={persisted_s2.lifecycle.value}"
         )
         list_after_s2 = await _list_via_thread(api)
-        recall_s2 = await _recall_async(kernel, "bob kyoto", ctx)
+        recall_s2 = await _recall_async(runtime, "bob kyoto", ctx)
         logger.info(f"[step 2] list size={len(list_after_s2.items)}")
         for u in list_after_s2.items:
             logger.info(
@@ -759,7 +697,7 @@ async def test_cloud_in_process() -> None:
         assert len(units_s3) >= 1
         logger.info("\n[step 3] carol write")
         list_after_s3 = await _list_via_thread(api)
-        recall_s3 = await _recall_async(kernel, "carol python", ctx)
+        recall_s3 = await _recall_async(runtime, "carol python", ctx)
         logger.info(f"[step 3] list size={len(list_after_s3.items)}")
         for u in list_after_s3.items:
             logger.info(
@@ -781,7 +719,7 @@ async def test_cloud_in_process() -> None:
         assert len(units_s4) == 1
         dave_original_id = units_s4[0].id
         # InProcessScheduler 立即跑完 Job → 原文已 ARCHIVED
-        persisted_s4 = await kernel.api._engine.get(dave_original_id, SCOPE)
+        persisted_s4 = await runtime.api._engine.get(dave_original_id, SCOPE)
         assert persisted_s4.lifecycle == LifecycleState.ARCHIVED, (
             f"CloudEngine + InProcess step 4 应立即 ARCHIVED 原文 {dave_original_id}，"
             f"got {persisted_s4.lifecycle}"
@@ -791,7 +729,7 @@ async def test_cloud_in_process() -> None:
             f"lifecycle={persisted_s4.lifecycle.value}"
         )
         list_after_s4 = await _list_via_thread(api)
-        recall_s4 = await _recall_async(kernel, "dave hiking", ctx)
+        recall_s4 = await _recall_async(runtime, "dave hiking", ctx)
         logger.info(f"[step 4] list size={len(list_after_s4.items)}")
         for u in list_after_s4.items:
             logger.info(
@@ -828,31 +766,28 @@ async def test_cloud_in_process() -> None:
             f"ARCHIVED 应为 bob/dave 原文，got {archived_ids}"
         )
     finally:
-        _cleanup_scheduler(kernel)
+        await asyncio.to_thread(runtime.close, wait=True)
 
 
 # -- 用例 4: CloudEngine + AsyncTimerScheduler ------------------------- #
 
 
 @pytest.mark.asyncio
-async def test_cloud_async_timer() -> None:
-    """CloudEngine + AsyncTimerScheduler——4 步骤写记忆。
+async def test_cloud_async_timer(monkeypatch) -> None:
+    """CloudEngine 的异步定时转换。
 
-    与用例 2 同构——验证 CloudEngine 在 Timer 驱动下 middle 路径也能跑通。
-
-    sync write 的隐藏限制：step 2 sync write 在子线程建临时循环——
-    Timer 协程被绑到临时循环，循环关闭后 Timer 取消。step 2 立即查仍 ACTIVE。
-    step 4 async write 在主循环驱动，update 分支重启 Timer（bugfix 修复），
-    sleep 后 bob + dave 均被 MiddleToLongJob 归档 ARCHIVED。
+    step 2 注册 Timer，step 4 复用该 Timer。完成归档前断言后推进调度时钟，
+    等待转换完成，再检查两条原文归档。
     """
+    advance_timer = hold_middle_timer(monkeypatch, timeout=_TIMER_WAIT_SECONDS)
     config, middle_interval = _kernel_config(
         engine_target="cloud",
         scheduler_target="async_timer",
         middle_interval=_MIDDLE_INTERVAL_ASYNC_TIMER,
         tick_interval=_TICK_INTERVAL_ASYNC_TIMER,
     )
-    kernel = build_kernel(config=config)
-    api = kernel.api
+    runtime = assemble_runtime(config=config)
+    api = runtime.api
     try:
         ctx = Context(scope=SCOPE)
 
@@ -861,7 +796,7 @@ async def test_cloud_async_timer() -> None:
         assert len(units_s1) >= 1
         logger.info("\n[step 1] alice write")
         list_after_s1 = await _list_via_thread(api)
-        recall_s1 = await _recall_async(kernel, "alice green tea", ctx)
+        recall_s1 = await _recall_async(runtime, "alice green tea", ctx)
         logger.info(f"[step 1] list size={len(list_after_s1.items)}")
         for u in list_after_s1.items:
             logger.info(
@@ -877,13 +812,13 @@ async def test_cloud_async_timer() -> None:
         ), "step 1 后 list 应有 alice 派生"
 
         # ---- step 2: sync write middle=true（bob + kyoto） ----
-        # sync write 子线程临时循环——Timer 协程被取消，step 2 立即查仍 ACTIVE。
+        # sync write 返回后立即查询，Timer 还未触发，原文仍 ACTIVE。
         units_s2 = await _sync_write_via_thread(
             api, _STEP2_CONTENT, middle=True, middle_interval=middle_interval
         )
         assert len(units_s2) == 1
         bob_original_id = units_s2[0].id
-        persisted_s2_immediate = await kernel.api._engine.get(bob_original_id, SCOPE)
+        persisted_s2_immediate = await runtime.api._engine.get(bob_original_id, SCOPE)
         assert persisted_s2_immediate.lifecycle == LifecycleState.ACTIVE
         assert persisted_s2_immediate.tier == MemoryTier.WORKING
         logger.info(
@@ -891,7 +826,7 @@ async def test_cloud_async_timer() -> None:
             f"lifecycle={persisted_s2_immediate.lifecycle.value}"
         )
         list_after_s2 = await _list_via_thread(api)
-        recall_s2 = await _recall_async(kernel, "bob kyoto", ctx)
+        recall_s2 = await _recall_async(runtime, "bob kyoto", ctx)
         logger.info(f"[step 2] list size={len(list_after_s2.items)}")
         for u in list_after_s2.items:
             logger.info(
@@ -911,7 +846,7 @@ async def test_cloud_async_timer() -> None:
         assert len(units_s3) >= 1
         logger.info("\n[step 3] carol write")
         list_after_s3 = await _list_via_thread(api)
-        recall_s3 = await _recall_async(kernel, "carol python", ctx)
+        recall_s3 = await _recall_async(runtime, "carol python", ctx)
         logger.info(f"[step 3] list size={len(list_after_s3.items)}")
         for u in list_after_s3.items:
             logger.info(
@@ -932,7 +867,7 @@ async def test_cloud_async_timer() -> None:
         )
         assert len(units_s4) == 1
         dave_original_id = units_s4[0].id
-        persisted_s4_immediate = await kernel.api._engine.get(dave_original_id, SCOPE)
+        persisted_s4_immediate = await runtime.api._engine.get(dave_original_id, SCOPE)
         assert persisted_s4_immediate.lifecycle == LifecycleState.ACTIVE, (
             f"step 4 立即查应仍 ACTIVE，got {persisted_s4_immediate.lifecycle}"
         )
@@ -942,7 +877,7 @@ async def test_cloud_async_timer() -> None:
         )
         # 立即 recall——应召回 step 4 原文（Timer 触发前）。
         # _recall_async 直接 await engine.recall，跳过 to_thread + asyncio.run 双重切换。
-        result_s4_immediate = await _recall_async(kernel, "hiking", ctx)
+        result_s4_immediate = await _recall_async(runtime, "hiking", ctx)
         immediate_ids_s4 = {item.unit_id for item in result_s4_immediate.items}
         logger.info(f"[step 4] recall hits={len(result_s4_immediate.items)}")
         for item in result_s4_immediate.items:
@@ -958,28 +893,14 @@ async def test_cloud_async_timer() -> None:
                 f"content={u.content!r}"
             )
 
-        # ---- sleep 等 Timer 触发 MiddleToLongJob.run ----
-        await asyncio.sleep(_TIMER_WAIT_SECONDS)
-
-        # step 2 bob 原文——step 4 重启 Timer 后被一并归档
-        persisted_bob_after = await kernel.api._engine.get(bob_original_id, SCOPE)
-        assert persisted_bob_after.lifecycle == LifecycleState.ARCHIVED, (
-            f"step 4 重启 Timer 后 bob 原文 {bob_original_id} 应已 ARCHIVED，"
-            f"got {persisted_bob_after.lifecycle}"
-        )
-
-        # step 4 dave 原文——Timer 在主循环，sleep 后 ARCHIVED
-        persisted_dave_after = await kernel.api._engine.get(dave_original_id, SCOPE)
-        assert persisted_dave_after.lifecycle == LifecycleState.ARCHIVED, (
-            f"step 4 async write sleep 后原文 {dave_original_id} 应已 ARCHIVED，"
-            f"got {persisted_dave_after.lifecycle}"
-        )
+        # 归档前断言完成后触发 Timer，等待任务归档原文并清理索引。
+        await advance_timer(middle_interval)
 
         # 转换后 recall——dave 原文 ARCHIVED 不召回
         result_dave_after = await _recall_via_thread(api, "hiking", ctx)
         dave_after_ids = {item.unit_id for item in result_dave_after.items}
         assert dave_original_id not in dave_after_ids, (
-            f"sleep 后 dave 原文 {dave_original_id} 应 ARCHIVED 不召回，got {dave_after_ids}"
+            f"转换后不应召回 dave 原文 {dave_original_id}，got {dave_after_ids}"
         )
 
         # 最终 list 查看记忆——应有所有派生记忆
@@ -1004,4 +925,4 @@ async def test_cloud_async_timer() -> None:
             f"ARCHIVED 应为 bob/dave 原文，got {archived_ids}"
         )
     finally:
-        _cleanup_scheduler(kernel)
+        await asyncio.to_thread(runtime.close, wait=True)

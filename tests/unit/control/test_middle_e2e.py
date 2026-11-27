@@ -17,7 +17,10 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
+from collections.abc import Iterator
+from concurrent.futures import Future
 
 import pytest
 
@@ -40,14 +43,15 @@ from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.index_builder import IndexBuilder
 from jiuwen_memory.control.base import ControlOperatorType
 from jiuwen_memory.control.engine_impl.in_memory_engine import InMemoryEngine
-from jiuwen_memory.control.jobs import JobFactory, JobType
+from jiuwen_memory.control.jobs import Job, JobFactory, JobType
 from jiuwen_memory.control.jobs_impl.middle_to_long_job import MiddleToLongJobSpec
 from jiuwen_memory.control.lifecycle import LifecycleManager, SweepTransition
 from jiuwen_memory.control.scheduler_impl.async_timer_scheduler import AsyncTimerScheduler
-from jiuwen_memory.control.types import JobStatus
+from jiuwen_memory.control.types import Channel, JobInfo, JobStatus
 from jiuwen_memory.ingest.ingestor_impl.simple_ingestor import SimpleIngestor
 from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
 from jiuwen_memory.storage.types import IndexRemoveMode, IndexWriteMode
+from tests.unit.control.fixtures import hold_middle_timer
 
 pytestmark = pytest.mark.unit
 
@@ -169,13 +173,43 @@ class _KvBackedLifecycle(LifecycleManager):
 # ---- 公共装配 ----
 
 
+class _SchedulerThreadProbe(Job):
+    """Capture thread handles from work executed by the submitted scheduler."""
+
+    def __init__(self, scope: Scope) -> None:
+        super().__init__(scope=scope)
+        self.threads: Future[tuple[threading.Thread, threading.Thread]] = Future()
+
+    async def run(self) -> JobInfo:
+        loop_thread = threading.current_thread()
+        worker_thread = await asyncio.to_thread(threading.current_thread)
+        self.threads.set_result((loop_thread, worker_thread))
+        return JobInfo(scope=self.scope, status=JobStatus.SUCCEEDED)
+
+
+def _probe_scheduler_threads(
+    instance: AsyncTimerScheduler, scope: Scope
+) -> tuple[threading.Thread, threading.Thread]:
+    probe = _SchedulerThreadProbe(scope)
+    asyncio.run(instance.submit(probe, Channel.BACKGROUND))
+    return probe.threads.result(timeout=5)
+
+
+@pytest.fixture
+def scheduler() -> Iterator[AsyncTimerScheduler]:
+    instance = AsyncTimerScheduler(tick_interval=1)
+    try:
+        yield instance
+    finally:
+        instance.shutdown(wait=True)
+
+
 def _build_engine(
+    scheduler: AsyncTimerScheduler,
     *,
     evolver=None,
     middle_concurrency: int = 1,
-) -> tuple[
-    InMemoryEngine, AsyncTimerScheduler, _RecordingIndex, InMemoryKVStore, _KvBackedLifecycle
-]:
+) -> tuple[InMemoryEngine, _RecordingIndex, InMemoryKVStore, _KvBackedLifecycle]:
     """构造最小可测 Engine + AsyncTimerScheduler（短 tick_interval=1）。
 
     mem2.0 重构后：llm 与 middle_* 业务参数经 JobFactory 固化到
@@ -185,7 +219,6 @@ def _build_engine(
     """
     kv = InMemoryKVStore()
     index = _RecordingIndex(kv)
-    scheduler = AsyncTimerScheduler(tick_interval=1)
     lifecycle = _KvBackedLifecycle(kv)
     evolver = evolver or _StubEvolver()
     ingestor = SimpleIngestor(normalizer=PassthroughNormalizer())
@@ -218,20 +251,19 @@ def _build_engine(
         pipeline=None,
         job_factory=factory,
     )
-    return engine, scheduler, index, kv, lifecycle
+    return engine, index, kv, lifecycle
 
 
 # ---- 场景 1：write(middle=true) 立即落盘 + submit ----
 
 
-def test_e2e_write_middle_persists_originals_and_submits_job() -> None:
+def test_e2e_write_middle_persists_originals_and_submits_job(scheduler) -> None:
     """场景 1：write(infer=true, middle=true) → 原文落 /memory/ + tier=WORKING +
     index.build + scheduler 收到 MiddleToLongJob。
 
-    必须在 write 后**同一事件循环内**断言 Timer 状态——``asyncio.run`` 结束时
-    事件循环关闭，未完成 Task 被取消，``wheel.task.done()`` 会是 True。
+    Timer 运行在 Scheduler 自有循环，fixture 负责关闭它。
     """
-    engine, scheduler, index, kv, _ = _build_engine()
+    engine, index, kv, _ = _build_engine(scheduler)
     scope = Scope(org="acme", user="u1")
 
     async def _run():
@@ -258,16 +290,82 @@ def test_e2e_write_middle_persists_originals_and_submits_job() -> None:
     asyncio.run(_run())
 
 
+def test_e2e_shutdown_cancels_pending_middle_conversion(scheduler, monkeypatch) -> None:
+    engine, index, kv, _ = _build_engine(scheduler)
+    scope = Scope(org="acme", user="u1")
+    owned_threads = _probe_scheduler_threads(scheduler, scope)
+    submitted_ids: list[str] = []
+    submit = scheduler.submit
+
+    async def record_submission(job: Job, channel: Channel) -> str:
+        job_id = await submit(job, channel)
+        submitted_ids.append(job_id)
+        return job_id
+
+    monkeypatch.setattr(scheduler, "submit", record_submission)
+    units = asyncio.run(
+        engine.write(
+            "alice likes tea",
+            scope,
+            system_metadata={"infer": "true", "middle": "true", "middle_interval": "60"},
+        )
+    )
+    job_id, = submitted_ids
+    assert scheduler.status(job_id).status == JobStatus.RUNNING, "timer must be registered"
+
+    peer = AsyncTimerScheduler(tick_interval=1)
+    try:
+        peer_threads = _probe_scheduler_threads(peer, scope)
+        scheduler.shutdown(wait=True)
+
+        assert not any(thread.is_alive() for thread in owned_threads), "owned threads must exit"
+        assert all(thread.is_alive() for thread in peer_threads), "peer threads must stay live"
+    finally:
+        peer.shutdown(wait=True)
+
+    assert scheduler.status(job_id).status == JobStatus.CANCELLED, "shutdown must cancel the timer"
+    persisted = loads(kv.get(scope, memory_key(units[0].id)))
+    assert persisted.lifecycle == LifecycleState.ACTIVE, "pending conversion must preserve input"
+    assert not index.removed, "shutdown must preserve the pending input's index"
+
+
+def test_e2e_two_writes_stay_active_until_middle_timer_is_advanced(scheduler, monkeypatch) -> None:
+    advance_timer = hold_middle_timer(monkeypatch, timeout=5)
+    engine, index, _, _ = _build_engine(scheduler)
+    scope = Scope(org="acme", user="u1")
+    metadata = {"infer": "true", "middle": "true", "middle_interval": "1"}
+
+    async def scenario(first: MemoryUnit) -> None:
+        # Let the private loop poll across the configured interval with the clock held.
+        await asyncio.sleep(1.2)
+        second, = await engine.write("bob likes coffee", scope, system_metadata=metadata)
+        for original in (first, second):
+            unit = await engine.get(original.id, scope)
+            assert unit.lifecycle == LifecycleState.ACTIVE, "original must be active before tick"
+        assert not index.removed, "the timer must not remove either original before the tick"
+
+        await advance_timer(1)
+
+        removed_ids = {unit.id for unit in index.removed}
+        assert removed_ids == {first.id, second.id}, "one conversion must remove both originals"
+        for original in (first, second):
+            unit = await engine.get(original.id, scope)
+            assert unit.lifecycle == LifecycleState.ARCHIVED, "the conversion must archive both"
+
+    try:
+        first, = asyncio.run(engine.write("alice likes tea", scope, system_metadata=metadata))
+        asyncio.run(scenario(first))
+    finally:
+        # Stop the scheduler before pytest restores the real clock.
+        scheduler.shutdown(wait=True)
+
+
 # ---- 场景 2：Timer 触发 → 转长期 → 原文 ARCHIVED + index.remove ----
 
 
-def test_e2e_timer_triggers_middle_to_long_and_archives_originals() -> None:
-    """场景 2：Timer 触发 → MiddleToLongJob.run → evolver.evolve → 原文 ARCHIVED + index.remove。
-
-    write + drive 必须在同一事件循环内——``asyncio.run`` 结束时事件循环关闭，
-    未完成 Timer Task 被取消，无法跨 ``asyncio.run`` 复活。
-    """
-    engine, scheduler, index, kv, lifecycle = _build_engine()
+def test_e2e_timer_triggers_middle_to_long_and_archives_originals(scheduler) -> None:
+    """场景 2：Timer 触发 → MiddleToLongJob.run → evolver.evolve → 原文 ARCHIVED + index.remove。"""
+    engine, index, kv, lifecycle = _build_engine(scheduler)
     scope = Scope(org="acme", user="u1")
 
     async def _run():
@@ -297,9 +395,9 @@ def test_e2e_timer_triggers_middle_to_long_and_archives_originals() -> None:
 # ---- 场景 3：候选转完后 Timer 退出 + 长生命 job_id SUCCEEDED ----
 
 
-def test_e2e_timer_exits_when_no_candidates_left() -> None:
+def test_e2e_timer_exits_when_no_candidates_left(scheduler) -> None:
     """场景 3：候选转完后再次 tick 返回 is_done=true → Timer 退出 + _wheels 移除 scope。"""
-    engine, scheduler, index, kv, _ = _build_engine()
+    engine, _, _, _ = _build_engine(scheduler)
     scope = Scope(org="acme", user="u1")
     jid_holder: dict[str, str] = {}
 
@@ -319,29 +417,20 @@ def test_e2e_timer_exits_when_no_candidates_left() -> None:
 
     asyncio.run(_run())
 
-    # 在事件循环结束后验证：_wheels 已移除该 scope
-    # 注意：Timer 协程在事件循环结束时被取消，但 _timer_loop 内的 break
-    # 已在循环存活期执行 → _wheels.pop 已调
-    # 若 wheel 仍存在则说明 Timer 未在循环存活期退出
-    # 由于 asyncio.run 结束会取消未完成 Task，可能 wheel 未退出——按 KV 状态判定为主
-    # 原文应已 ARCHIVED（首触已处理）
-    # 这里改为宽松验证：长生命 job_id 存在且 detail 反映已跑过
-    info = scheduler._jobs.get(jid_holder["jid"])  # pylint: disable=protected-access
-    assert info is not None
-    # 长生命 job_id 至少跑过一轮——is_done 路径或被取消都算"已完成"
+    # 调用循环结束后仍可在 Scheduler 自有循环查询定时任务。
+    info = scheduler.status(jid_holder["jid"])
     assert info.status in (JobStatus.RUNNING, JobStatus.SUCCEEDED)
 
 
 # ---- 场景 4：下次 write 重启 Timer ----
 
 
-def test_e2e_next_write_restarts_timer_after_exit() -> None:
+def test_e2e_next_write_restarts_timer_after_exit(scheduler) -> None:
     """场景 4：scope 已退出后再次 write(middle=true) → 重新起 Timer 协程。
 
-    本测试在同一事件循环内连续 write 两次，验证第二次 write 后 wheel 仍有 entry。
-    （跨 asyncio.run 重启 Timer 不可行——事件循环结束 Timer 被取消。）
+    本测试连续 write 两次，验证第二次 write 后 wheel 仍有 entry。
     """
-    engine, scheduler, index, kv, _ = _build_engine()
+    engine, index, kv, _ = _build_engine(scheduler)
     scope = Scope(org="acme", user="u1")
     scope_key = scheduler._scope_key(scope)  # pylint: disable=protected-access
     state = {}
@@ -382,14 +471,15 @@ def test_e2e_next_write_restarts_timer_after_exit() -> None:
 # ---- 场景 5：失败批次原文保留（下轮重试） ----
 
 
-def test_e2e_failed_batch_preserves_originals_for_retry() -> None:
+def test_e2e_failed_batch_preserves_originals_for_retry(scheduler) -> None:
     """场景 5：mock evolver 第一次失败 → 原文仍 ACTIVE+WORKING → 下轮重试成功。
 
     用 middle_interval=2 让首次触发(t=2s)与二次触发(t=4s)分开——
     t≈3s 时只到首次失败 drain 完成（原文未归档仍 ACTIVE）；t≈5s 时二次成功（原文 ARCHIVED）。
     """
     # fail_first_n=1：第一次 evolve 失败，第二次成功
-    engine, scheduler, index, kv, _ = _build_engine(
+    engine, index, kv, _ = _build_engine(
+        scheduler,
         evolver=_StubEvolver(fail_first_n=1)
     )
     scope = Scope(org="acme", user="u1")
@@ -424,7 +514,7 @@ def test_e2e_failed_batch_preserves_originals_for_retry() -> None:
 # ---- 场景 6：默认 recall 召回语义（仅做接口级验证） ----
 
 
-def test_e2e_recall_default_returns_active_only() -> None:
+def test_e2e_recall_default_returns_active_only(scheduler) -> None:
     """场景 6（接口级）：默认 recall 应只召回 ACTIVE 派生 + ACTIVE WORKING 原文。
 
     本测试不调真实 retriever（_RecordingIndex 不参与召回）——只验证：
@@ -432,7 +522,7 @@ def test_e2e_recall_default_returns_active_only() -> None:
     - 派生 unit 仍 ACTIVE。
     用 Engine.list（按 _list_units 过滤 lifecycle 默认 None = 全部）验证状态差异。
     """
-    engine, scheduler, index, kv, _ = _build_engine()
+    engine, index, kv, _ = _build_engine(scheduler)
     scope = Scope(org="acme", user="u1")
     state = {}
 
@@ -457,7 +547,7 @@ def test_e2e_recall_default_returns_active_only() -> None:
 # ---- 场景 7：sync 写入（临时 loop）关闭后 Timer 仍存活并触发中→长转换 ----
 
 
-def test_e2e_sync_write_temp_loop_shutdown_still_triggers_middle_to_long() -> None:
+def test_e2e_sync_write_temp_loop_shutdown_still_triggers_middle_to_long(scheduler) -> None:
     """场景 7（本改造的验收测试）：sync 写入经 ``asyncio.run`` 建临时 loop，
     接口返回后临时 loop 立即关闭——绑定在临时 loop 上的 Timer Task 在旧实现中
     随 loop 消亡，中期记忆的后台转换永不触发。
@@ -471,7 +561,7 @@ def test_e2e_sync_write_temp_loop_shutdown_still_triggers_middle_to_long() -> No
 
     这正是旧实现必挂、新实现必须通过的场景。
     """
-    engine, scheduler, index, kv, lifecycle = _build_engine()
+    engine, index, kv, lifecycle = _build_engine(scheduler)
     scope = Scope(org="acme", user="u1")
 
     # sync 写入 #1：临时 loop A——write + submit 完成后 loop A 关闭
