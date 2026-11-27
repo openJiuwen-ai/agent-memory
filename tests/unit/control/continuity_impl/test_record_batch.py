@@ -16,6 +16,7 @@ from jiuwen_memory.common.type_def.continuity import (
 from jiuwen_memory.control.continuity_impl.repository import ContinuityRepository
 from jiuwen_memory.control.continuity_impl.service import ContinuityService
 from jiuwen_memory.storage.kv_impl.sqlite_kv_store import SQLiteKVStore
+from tests.support.connector_policies import AllowAllConnectorPolicy
 
 pytestmark = pytest.mark.unit
 
@@ -36,12 +37,16 @@ def _read(_ref):
 
 
 def _bind(service):
-    task = service.task(_SCOPE, TaskRequest("create", "create"), "owner", _read)
+    task = service.task(
+        _SCOPE, TaskRequest("create", "create"), "owner", _read,
+        connector_policy=AllowAllConnectorPolicy(),
+    )
     bound = service.task(
         _SCOPE,
         TaskRequest("bind", "bind", task["task_id"], 1, connector_id="wb", context_id="c"),
         "owner",
         _read,
+        connector_policy=AllowAllConnectorPolicy(),
     )
     return task["task_id"], bound["task"]["bindings"][0]["binding_id"]
 

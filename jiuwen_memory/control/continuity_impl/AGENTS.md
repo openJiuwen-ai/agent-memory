@@ -24,7 +24,7 @@
 - 关系修订保留历史；自动裁决只依据同条件、已确认、带证据的 supports 保存裁决引用（verifies 不编码验证结果、不单独作为选胜依据），读取时回查验证关系头；不得仅凭写入时间或模型置信选胜者。
 - 管理用旧关系读取只用于已授权复核/撤回，不用于绕过视图的源权限和依赖核验。
 - 跨进程产品连接统一写服务；单 Agent 同进程 SDK 可以由 Adapter 共享一个 runtime，single_writer 标志不替代后端排他能力，ephemeral 只用于测试。
-- 任务父链仅 create 可设置，root_task_id 由父记录计算，旧根记录缺值按自身 task_id 读取。find 优先查开放任务的有效上下文 binding，仅无结果时用可选 query 查询开放任务描述；关闭任务不作为候选。描述查询缺少 Embedder 时使用 BM25；装配 embedder=null 可明确选择 BM25，tokenizer 默认共享 default，独立构造未传分词器时用内置 whitespace。Embedder 故障不回退；缓存不成为控制真源。旧字段全部缺省时保持原 mutation 回执摘要。
+- 任务父链仅 create 可设置，root_task_id 由父记录计算，旧根记录缺值按自身 task_id 读取。find 优先查开放任务的有效上下文 binding，仅无结果时用可选 query 查询开放任务描述；关闭任务不作为候选。描述查询缺少 Embedder 时使用 BM25；装配 embedder=null 可明确选择 BM25，tokenizer 默认共享 default，独立构造未传分词器时用内置 whitespace。Embedder 故障不回退；缓存不成为控制真源。旧字段全部缺省时保持原 mutation 回执摘要。任务变更在 Registry 单写锁内按同一任务记录判定 owner、绑定归属、回执归属与绑定状态后提交：已提交 `request_id` 的回执重放先于 connector 启用与 binding active 检查；参与者回执在同一原子提交内记录服务端提交主体与确认 connector，同 request_id 内容不同返回冲突。`Continuity.task` 要求 `connector_policy` 策略回调，装配期校验该签名。
 - continuity 档在最终截断前先排列必需背景，其余背景按登记倒序；角色档排序不变。等待超预算缺口仍为非阻断。
 - 投影器与视图必须使用同一 GraphStore 对象（`__init__` 以对象身份校验，不一致启动失败）。资源由装配根持有并关闭：`close()` 仅释放自身 Registry 单写锁；装配根按对象身份关闭本次创建的 Store，不关闭借用资源，关闭后同进程可重装。
 - 两档模式：`mode=continuity` 不装配图、视图与关系组件，构造时不得要求 `supports_incident_edges`；`mode=role` 缺图或视图时装配失败；`graph_store` 必须显式配置（默认是易失内存图，不校验就会让关系投影重启后静默消失），只有显式 `allow_ephemeral_graph` 才允许省略（该键只管图；Registry 侧仍是 `allow_ephemeral`，语义不变）。关系入口在接续模式返回 UnsupportedCapabilityError；`health()` 返回 `{continuity_mode}`；`task_background()` 是两档共用能力，接续模式据此恢复任务背景（不展开关系）；它返回 `{units, required_ids, gaps}`，任务缺失/背景不可读分别以缺口上报并带存储的 `required` 标记，不静默返回空。契约默认实现抛 `UnsupportedCapabilityError`。

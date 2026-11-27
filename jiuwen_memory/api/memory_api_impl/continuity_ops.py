@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -115,6 +116,62 @@ class _Skipped:
 
 _MANAGE_RELATION = ContextVar("continuity_manage_relation", default=False)
 _READ_DEPTH = ContextVar("continuity_read_depth", default=0)
+
+
+class _ContinuityConnectorPolicy:
+    """Connector governance that the Continuity task port runs on its record snapshot."""
+
+    def __init__(
+        self,
+        connectors: dict[str, dict],
+        scope: Scope,
+        actor: dict,
+        resolve_actor_connector: Callable[[], str],
+    ) -> None:
+        self._connectors = connectors
+        self._scope = scope
+        self._actor = actor
+        self._resolve_actor_connector = resolve_actor_connector
+
+    def owner_connector(self, connector_id: str) -> None:
+        """Owner bind keeps the detailed configuration failure reasons."""
+        connector = self._connectors.get(connector_id)
+        if not connector:
+            raise ValidationError("connector is not configured")
+        if not connector.get("enabled", True):
+            raise ValidationError("connector is disabled")
+        if connector.get("actor", {}).get("org") != self._scope.org:
+            raise ValidationError("connector is not configured for this organization")
+        if self._scope.space not in connector.get("projects", []):
+            raise ValidationError("connector is not configured for this project")
+
+    def owned_connector(self, connector_id: str) -> None:
+        """Participant attribution: the connector must map to the caller's actor."""
+        self._owned(connector_id)
+
+    def available_connector(self, connector_id: str) -> None:
+        """Participant new close: owned, enabled and still covering the project."""
+        connector = self._owned(connector_id)
+        if (
+            not connector.get("enabled", True)
+            or self._scope.space not in connector.get("projects", [])
+        ):
+            raise PermissionDeniedError("continuity_task_write")
+
+    def actor_connector(self, connector_id: str) -> None:
+        """Participant new bind: the caller's single enabled project connector."""
+        try:
+            resolved = self._resolve_actor_connector()
+        except ValidationError as exc:
+            raise PermissionDeniedError("continuity_task_write") from exc
+        if not resolved or connector_id != resolved:
+            raise PermissionDeniedError("continuity_task_write")
+
+    def _owned(self, connector_id: str) -> dict:
+        connector = self._connectors.get(connector_id)
+        if not connector or connector.get("actor") != self._actor:
+            raise PermissionDeniedError("continuity_task_write")
+        return connector
 
 
 class ContinuityOpsMixin:
@@ -329,17 +386,37 @@ class ContinuityOpsMixin:
         if request.operation == "create" and request.parent_task_id:
             self._authorize(security, scope, Action.READ, "continuity_task_parent")
         if request.operation not in {"create", "get", "find"}:
-            if service.task_owner(scope, request.task_id) != owner:
-                raise PermissionDeniedError("continuity_task_write")
-        if request.operation == "bind":
-            connector = self._continuity_connectors.get(request.connector_id)
-            if not connector or connector.get("actor", {}).get("org") != scope.org:
-                raise ValidationError("connector is not configured for this organization")
-            if scope.space not in connector.get("projects", []):
-                raise ValidationError("connector is not configured for this project")
-        result = service.task(scope, request, owner, self._role_reader(security, scope))
+            is_owner = service.task_owner(scope, request.task_id) == owner
+            if not is_owner:
+                if request.operation == "attach":
+                    raise PermissionDeniedError("continuity_task_write")
+                if request.operation in {"bind", "unbind", "close"}:
+                    self._reject_non_owner_task_metadata_change(request)
+        result = service.task(
+            scope,
+            request,
+            owner,
+            self._role_reader(security, scope),
+            connector_policy=self._task_connector_policy(scope, security),
+        )
         self._log(security.auth.actor, "continuity_task", request.task_id, target_scope=scope)
         return result
+
+    def _task_connector_policy(
+        self, scope: Scope, security: RequestSecurityContext,
+    ) -> _ContinuityConnectorPolicy:
+        return _ContinuityConnectorPolicy(
+            connectors=self._continuity_connectors,
+            scope=scope,
+            actor=asdict(security.auth.actor),
+            resolve_actor_connector=lambda: self._connector_for_actor(scope, security),
+        )
+
+    @staticmethod
+    def _reject_non_owner_task_metadata_change(request: TaskRequest) -> None:
+        """Keep owner-managed task fields out of participant bind/unbind/close."""
+        if request.background or request.title.strip() or request.description.strip():
+            raise PermissionDeniedError("continuity_task_write")
 
     def _require_relation_submitter(self, scope: Scope, security, connector: str) -> None:
         """Registration-side gate: the submitting connector, or project governance."""

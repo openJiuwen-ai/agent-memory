@@ -4,8 +4,8 @@
 
 | 项 | 值 |
 | --- | --- |
-| 日期 | 2026-10-27 |
-| 状态 | 2026-11-05 设计修订已落地：两档模式（接续 / 角色）、接口并入 add / batch_add / search、关系真源改存 Registry KV、范围收敛；剩余实现差距见 12.2。真实产品 G0 联调、外部 Agent 记忆迁移未完成 |
+| 日期 | 2026-11-26 |
+| 状态 | 2026-11-05 设计修订已落地：两档模式（接续 / 角色）、接口并入 add / batch_add / search、关系真源改存 Registry KV、范围收敛；2026-11-24 支持合法参与 Agent 自绑定、解绑自身绑定并关闭任务。剩余实现差距见 12.2。真实产品 G0 联调、外部 Agent 记忆迁移未完成 |
 | 影响范围 | 外部 Agent 接入适配；api、control、construction、retrieval、storage、common |
 | 关联规约 | [S02](../../specs/S02-memory-api.md)、[S03](../../specs/S03-control.md)、[S04](../../specs/S04-retrieval.md)、[S05](../../specs/S05-construction.md)、[S06](../../specs/S06-storage.md)、[S07](../../specs/S07-common.md)、[S09](../../specs/S09-plugin-development.md)、[S11 接续契约](../../specs/S11-cross-agent-continuity.md) |
 | 代码入口 | `jiuwen_memory/control/continuity.py`、`jiuwen_memory/retrieval/role_view.py`、`jiuwen_memory/api/memory_api_impl/continuity_ops.py` |
@@ -201,14 +201,14 @@ add / batch_add（continuity=ContinuityWrite）──写入──▶ MemoryUnit�
 
 **职责**：维护全局任务、产品绑定和任务背景引用，是"哪些记忆属于哪个任务、哪个产品上下文在参与"的唯一真源。它不保存正文，不分配执行权，也不推送通知。
 
-**组成**：契约在 `control/continuity.py`（`Continuity.task`、`task_owner`、`binding_connector`），实现由 `control/continuity_impl/service.py` 的 `ContinuityService.task` 与 `repository.py` 的 `ContinuityRepository` 组成。Repository 只负责控制记录的读写、修订检查和幂等回执；业务规则（谁能改、绑定校验、背景校验）在 Service 与 API PEP。
+**组成**：契约在 `control/continuity.py`（`Continuity.task` 带 `connector_policy` 策略回调、`task_owner`、`binding_connector`），实现由 `control/continuity_impl/service.py` 的 `ContinuityService.task` 与 `repository.py` 的 `ContinuityRepository` 组成。Repository 只负责控制记录的读写、修订检查和幂等回执；任务 owner、绑定归属、回执归属与绑定状态由 Service 在提交时按同一任务记录判定，connector 配置校验经 API 注入的策略回调执行，背景校验沿用 API 读写回调。
 
 **操作流程**：
 
 | 操作 | 流程 | 修订与幂等 |
 | --- | --- | --- |
 | create | 以"负责人身份摘要 ＋ `request_id`"计算 `task_id`，初始化 `state=open`、空绑定与背景；同请求可附带背景引用 | `expected_revision=0`；同 `request_id` 重试返回原结果 |
-| bind | API 先校验连接已配置、属于本组织且允许该项目；Service 追加 Binding，`binding_id` 由任务与 `request_id` 计算 | 需当前修订号；同修订并发只有一个成功 |
+| bind | connector 配置校验经 `connector_policy` 在提交时按同一记录执行；Service 追加 Binding，`binding_id` 由任务与 `request_id` 计算 | 需当前修订号；同修订并发只有一个成功 |
 | unbind | 软撤销：`active=false`，记录撤销者与原因；绑定记录保留供审计 | 同上 |
 | attach | 把 `MemoryRef` 加入背景（标注必需或可选），逐个点读校验存在、可读、摘要一致 | 同上；背景按值去重 |
 | close | `state=closed`；之后拒绝变更和新事件，不删除记录 | 同上 |
@@ -217,9 +217,13 @@ add / batch_add（continuity=ContinuityWrite）──写入──▶ MemoryUnit�
 
 **并发与持久化**：所有变更在 Repository 的进程内锁下执行"读记录 → 校验修订 → 应用变更 → 修订号加一 → 写回执 → 整条记录写回"。整条记录一次写入具名持久 KV，依赖 KV 的单记录原子替换；跨进程由 `claim_single_writer` 保证只有一个写服务。回执窗口 256 条，超出按修订号淘汰最旧的；淘汰后旧请求重放会因修订号不符被拒绝，不会被当成新操作执行。
 
-**权限**：读操作需项目 READ，变更需 WRITE；修改既有任务限创建负责人（首版无委托表）。绑定和背景登记都不授予来源读取权，读取时仍按原 Scope 判权。
+**权限**：读操作需项目 READ，变更需 WRITE。创建负责人管理任务标题、说明、背景和任意合法绑定；非创建者只能使用认证主体自己的启用 connector 自绑定，且不得随 bind/unbind/close 修改任务元数据或背景，只能解绑自己的绑定。创建负责人可直接关闭任务；非创建者必须携带自己在该任务上的有效 `binding_id`，并用同一 connector 身份关闭，不能借用其他 Agent 的绑定。owner、绑定归属、回执归属与绑定状态在 Registry 单写锁内按同一任务记录判定；connector 配置校验经 `connector_policy` 注入，owner bind 保留细分失败原因，参与者统一权限拒绝。绑定和背景登记都不授予来源读取权，读取时仍按原 Scope 判权。
 
-**失败处理**：修订冲突、`request_id` 被不同内容复用返回 `ConflictError`；任务已关闭返回 `ConflictError`；绑定不存在或已解绑返回 `ValidationError`；背景引用不可读或摘要不符在提交前即拒绝，不写入半条记录。
+不采用“仅创建负责人可关闭”：任务常由其他 Agent 执行完成，强制回头找创建者会阻断正常收尾。也不采用“任何项目写成员都可关闭”：项目 WRITE 只证明可参与项目，不能证明其参与了该任务。活动绑定是参与关系的现成证据，因此作为非创建者关闭的最小授权依据；close 不附带元数据或背景变更，避免把关闭权扩大成任务管理权。
+
+**失败处理**：修订冲突、`request_id` 被不同内容复用返回 `ConflictError`；任务已关闭返回 `ConflictError`；owner 操作遇到绑定不存在或已解绑返回 `ValidationError`；非创建者对未知、他人或已失效绑定的新请求在修订检查前统一返回 `PermissionDeniedError`，避免形成全局配置或绑定存在性预言机；背景引用不可读或摘要不符在提交前即拒绝，不写入半条记录。
+
+`request_id` 重放按已保存回执识别，先于 connector 启用状态、binding active 状态等可用性检查。成功 bind 后 connector 被停用、成功 close 后任务已关闭、成功 unbind 后绑定已撤销，调用方用相同 `request_id` 和相同内容重试仍返回 `replayed=true`；不同内容仍返回 `ConflictError`。新请求仍按当前权限和可用性配置判定，因此停用或不再覆盖当前项目的 connector 只能重放历史 close，不能发起新的 close；对已撤销绑定的参与者新请求在提交时按同一记录拒绝，先于修订检查。
 
 **与 MemoryUnit 的关系**：1:N 引用，不复制正文（理由见 4.1）。
 
@@ -633,7 +637,7 @@ agent-memory 是统一记忆底座。外部内容如果只存原文、不进入�
 - 引用因撤权不可读时，视图显示安全缺口或阻塞，不能继续展示旧摘要。核验以控制真源的必需引用集合为准：对调用者隐藏无权引用的身份，不等于从必需集合删除它。
 - 首版不自动把多空间素材合成为更广可见的经验：持久化派生只在可验证的共同可见边界内进行，否则拒绝，由有权责任方显式授权或在共享空间重新写入允许共享的内容；跨空间组合视图只对当前调用者生成并逐项校验来源；派生读取时来源权限失效或无法验证，保守停止返回依赖该来源的内容。工具输出、导入文本和历史建议均按数据处理，不能提升为系统指令。
 
-**当前实现**：来源隔离支持按连接整体关闭（`globals.continuity_connectors.<name>.enabled=false`）与按连接动态隔离（`quarantine_source` / `release_source`，带原因/操作者/时间），普通 get/search、跨空间查询（逐空间真实 Scope 复核）、`list`（过滤谓词下推）与关系读取都重新检查。`role_publish` 已按第 10 节删除。任务管理权首版仅限创建负责人，没有独立的委托表；未实现自动信任打分。
+**当前实现**：来源隔离支持按连接整体关闭（`globals.continuity_connectors.<name>.enabled=false`）与按连接动态隔离（`quarantine_source` / `release_source`，带原因/操作者/时间），普通 get/search、跨空间查询（逐空间真实 Scope 复核）、`list`（过滤谓词下推）与关系读取都重新检查。`role_publish` 已按第 10 节删除。任务元数据、背景和绑定管理权归创建负责人；参与 Agent 可用自身 connector 自绑定、解绑自身绑定，并凭自身 active binding 关闭任务，没有独立的委托表；未实现自动信任打分。
 
 ### 4.7 与既有机制的关系
 
@@ -967,7 +971,7 @@ globals:
 | `add` | 写入一条记忆；带 `continuity` 时幂等记录一个事件并关联到任务 | `continuity: ContinuityWrite \| None`；原始时间用既有 `event_time` | `list[MemoryUnit]`（重放返回已保存单元）；未完成抛 `WriteIncompleteError`（409） | 项目 WRITE；带 `continuity` 时认证主体须等于绑定所属连接的身份，且连接已启用 | 两档 |
 | `batch_add` | 批量写入；每项可带 `continuity`，用于外部 Agent 历史快速导入 | `BatchWriteItem.continuity` | `BatchWriteResult`，`BatchWriteOutcome` 新增 `operation_id`、`continuity_status` | 同上，逐项核对 | 两档 |
 | `search` | 检索；带 `task_id` / `anchor` / `duty` 时返回任务背景与职责视图 | `task_id`、`anchor`、`duty`、`view_budget` | `RetrievalResult`，可选字段 `paths`、`gaps`、`view_meta`，条目 `view` 标注 | 项目 READ；每个起点、节点、证据逐一判权 | 两档（接续模式不展开关系） |
-| `continuity_task` | 创建、查询、绑定、解绑、挂背景、关闭任务 | `TaskRequest` | 任务快照、修订号、是否重放 | get/find 需项目 READ；其他需 WRITE，修改既有任务限创建负责人；bind 还校验连接属于本组织和项目 | 两档 |
+| `continuity_task` | 创建、查询、绑定、解绑、挂背景、关闭任务 | `TaskRequest` | 任务快照、修订号、是否重放 | get/find 需项目 READ，其他需 WRITE；owner 管理元数据、背景和绑定；非创建者仅可自绑定、解绑自身绑定，并凭自身 active `binding_id` 关闭任务 | 两档 |
 | `continuity_relation` | 登记、复核或撤回一条证据关系 | `RelationRecord`、`expected_revision` | `status`（projecting / committed）、`relation_id`、`revision` | 项目 WRITE；修订既有关系另需按关系头快照做 UPDATE 判权 | 角色模式，否则 `UnsupportedCapabilityError` |
 | `continuity_recover` | 核对写入确认丢失的事件、核对派生构建、修复关系投影 | `ContinuityRecovery` | 核对结果、`next_action` | 项目 WRITE；事件恢复逐个引用 UPDATE 判权并校验原连接身份 | 两档（`kind=relation` 角色模式） |
 | `quarantine_source` | 治理：按来源连接隔离，记录原因 | `source_key`、`reason` | 隔离记录 | 项目 `MANAGE_SPACE` | 两档 |
@@ -1045,7 +1049,7 @@ sequenceDiagram
     API->>API: get/find 需 READ，其余需 WRITE
     Note over A,Mem: 步骤 2
     API->>Svc: task_owner(task_id)
-    API->>API: 修改既有任务时校验调用者是创建负责人
+    API->>API: owner 管理元数据/背景；参与 Agent 只可自绑定或凭自身绑定关闭
     Note over A,Mem: 步骤 3
     API->>API: bind 时校验 connector 属于本组织且允许该项目
     API->>Svc: task(request, owner, read)
@@ -1072,8 +1076,8 @@ sequenceDiagram
 步骤说明（编号对应图中的「步骤 N」标注）：
 
 1. 调用方传入项目 Scope 和 `TaskRequest`。`get` / `find` 只需项目 READ，`create` / `bind` / `unbind` / `attach` / `close` 需要项目 WRITE。
-2. 修改既有任务（`create` 以外的写操作）时，API 先通过 `task_owner` 取回任务创建负责人，只有负责人本人可以改；首版没有委托。
-3. `bind` 额外校验 `connector_id` 在 `globals.continuity_connectors` 中、属于本组织，且其 `projects` 包含当前空间。绑定只说明"这个产品的这个会话参与该任务"，不授予任何读取权。
+2. 修改既有任务时，API 先通过 `task_owner` 取回创建负责人。owner 可管理元数据、背景和绑定；非创建者的 bind 只允许使用认证主体自己的启用 connector，unbind 只能作用于自己的绑定；bind/unbind/close 均不得夹带元数据或背景。close 还允许持有该任务有效自身绑定（`binding_id`）的参与 Agent 执行。
+3. `bind` 额外校验 `connector_id` 在 `globals.continuity_connectors` 中、已启用、属于本组织，且其 `projects` 包含当前空间。非 owner 的 `connector_id` 还必须唯一对应当前认证主体。绑定只说明"这个产品的这个会话参与该任务"，不授予任何读取权。
 4. 请求带 `background`（挂背景引用）时，服务逐个点读这些 `MemoryRef`：调用者必须有读取权、内容摘要必须一致、记忆未被删除，否则整个请求失败，不会挂上读不到的引用。
 5. Registry 在单写锁内读出任务记录，依次核对：`request_id` 是否已处理过（处理过且内容一致则原样返回上次结果，标 `replayed=true`；内容不同则冲突），`expected_revision` 是否等于当前修订号（不等则冲突，调用方须先 `get` 再重试）。
 6. 核对通过后应用变更、修订号加 1、写入本次 `request_id` 的回执，整条任务记录一次原子写回，不存在"变更写了、回执没写"的中间状态。
@@ -2016,6 +2020,7 @@ Provider 复现。补充 SDK 生命周期定向测试 8 passed，覆盖初始化
 本节只列尚未完成的实现或验收；已完成能力归入附录 C。括号中的“原条目”保留历史对照编号，不作为当前待办数量。
 
 - **`record_batch` 插件接口升级的兼容窗口**：为 `continue_on_error` 保留了「旧签名退回调用 + warning」兼容入口。新特性尚未对外发布，插件升级完成后应删除该入口及其测试，避免长期维护两套调用约定。
+- **任务变更端口的插件迁移**：`Continuity.task` 要求 `connector_policy` 策略回调，在 Registry 单写锁内按同一任务记录完成判权；装配期校验 `task` 签名，未接受该参数的实现装配失败，不保留旧签名回退（S09 §14）。仓内实现、测试替身和调用方已同步更新；仓外 Continuity 实现须迁移到新版端口后重新装配。存量参与者回执缺少服务端归属信息时不能重放，需按当前权限以新 `request_id` 重新提交。
 - **「未执行」是否需要独立状态**：当前跳过项用 `continuity_status=""` + `error_type="Skipped"` 表达（空串同时也表示「没带 continuity」）。若后续出现按状态分流的下游，再评估是否引入第五种状态，避免继续依赖 `error_type` 区分。
 
 **2026-11-05 设计修订的落地情况**：以下 11 项已按目标设计实现（`MemoryAPI` 公开方法 47 → 43）。
