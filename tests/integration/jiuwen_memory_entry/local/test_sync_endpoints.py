@@ -188,6 +188,44 @@ def test_sync_mirror_delete_only_removed_item(sync_home):
     assert deleted["added"] == 0, deleted
 
 
+def test_sync_mirror_ignores_injected_context(sync_home):
+    from jiuwen_memory_entry.local.capture_filter import CONTEXT_CLOSE, CONTEXT_OPEN
+
+    home, token, _source = sync_home
+    discovery = ensure_service(home, timeout=90)
+    client = ServiceClient(discovery, token)
+    status, space = client.post(
+        "/v1/create_space",
+        {"spec": {"org": ORG, "space": PROJECT,
+                  "owner": {"org": ORG, "agent": "codex-sync"}}},
+    )
+    assert status == 200, space
+    status, before = client.post(
+        "/v1/list", {"scope": {"org": ORG, "space": PROJECT}}
+    )
+    assert status == 200, before
+    status, body = client.post(
+        "/local/sync/mirror",
+        {
+            "profile": "default",
+            "target": "memory",
+            "content": f"{CONTEXT_OPEN}\ninjected recall\n{CONTEXT_CLOSE}",
+            "action": "add",
+            "project": PROJECT,
+        },
+    )
+    assert status == 200, body
+    assert body == {"ignored": True, "reason": "injected context"}, body
+    status, after = client.post(
+        "/v1/list", {"scope": {"org": ORG, "space": PROJECT}}
+    )
+    assert status == 200, after
+    assert len(after["items"]) == len(before["items"]), after
+    assert all(
+        "injected recall" not in item["content"] for item in after["items"]
+    ), "injected context is never written"
+
+
 def test_sync_resolve_discard_releases_pending_cleanup(sync_home):
     import sqlite3
 

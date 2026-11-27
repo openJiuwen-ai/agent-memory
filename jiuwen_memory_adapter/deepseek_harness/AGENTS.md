@@ -14,6 +14,7 @@
 - 记忆故障不阻断该轮：探活、recall、capture 失败都返回原载荷/静默。
 - `turn/end` 只取 `source === "user"` 的 `user/message` 作为 prompt、最后一条助手消息作为 answer；工具、系统与注入记忆不进入正文。
 - recall 超时 2 秒；令牌缺失或无唯一 dsh 安装时不做任何请求。
+- `renderContext` 把注入文本包在 `<agent-memory-context>…</agent-memory-context>` 中，条目正文里的标记字面量先中和（S11「召回注入标记」）。
 
 ## 与其他子目录的边界
 

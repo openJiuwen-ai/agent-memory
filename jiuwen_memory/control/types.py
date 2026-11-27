@@ -426,7 +426,7 @@ class WriteTargets:
 
 @dataclass(frozen=True)
 class AddReceipt:
-    """Durable receipt for one ordinary ``add`` call (D15 capability 4)."""
+    """Receipt for one logical write (D15 capability 4): ``add`` or ``batch_add``."""
 
     operation_id: str
     scope: Scope
@@ -434,6 +434,9 @@ class AddReceipt:
     committed_at: datetime
     content_digest: str = ""
     units: tuple[MemoryUnit, ...] = ()
+    # 批量写入回执：逐项结果按输入顺序对齐（含被拒项）；单条回执恒为 None。
+    # outputs 为全部已提交单元的扁平列表，与单条回执同形。
+    batch_result: BatchWriteResult | None = None
 
 
 @dataclass

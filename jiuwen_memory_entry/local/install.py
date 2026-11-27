@@ -14,6 +14,7 @@ import os
 import secrets
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
@@ -28,7 +29,7 @@ from jiuwen_memory.api import (
 from jiuwen_memory_entry.local import discovery as discovery_module
 from jiuwen_memory_entry.local.client import ServiceClient
 from jiuwen_memory_entry.local.home import MemoryHome
-from jiuwen_memory_entry.local.hosts import EntryRef, HostInstall
+from jiuwen_memory_entry.local.hosts import CAPABILITIES, EntryRef, HostInstall
 from jiuwen_memory_entry.local.hosts.registry import HOSTS
 from jiuwen_memory_entry.local.locks import file_lock
 
@@ -38,6 +39,10 @@ STATE_INSTALLING = "installing"
 STATE_CONNECTED = "connected"
 STATE_DISCONNECTED = "disconnected"
 SETTINGS_LOCK_TIMEOUT = 10.0
+TAKEOVER_NEEDS_SYNC = "sync must complete before takeover"
+TAKEOVER_USER_CHANGED = (
+    "the user changed the host's own memory setting; the user's value was kept"
+)
 
 
 def _settings_lock(home: MemoryHome):
@@ -81,6 +86,7 @@ class Installation:
     profile: str = ""
     edition: str = ""
     instance: InstanceRef | None = None
+    takeover: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -166,6 +172,7 @@ def _load_install(home: MemoryHome, install_id: str) -> Installation | None:
             scope=str((data.get("instance") or {}).get("scope", "")),
             project_root=str((data.get("instance") or {}).get("project_root", "")),
         ),
+        takeover=dict(data.get("takeover") or {}),
     )
 
 
@@ -618,6 +625,7 @@ def connect(
     install = None
     was_connected = False
     confirmed = False
+    takeover_note = ""
     try:
         host_spec = HOSTS[host]
         detected = host_spec.instance(
@@ -683,6 +691,14 @@ def connect(
                 else "aborted on request; no host configuration was written",
             )
         confirmed = True
+        if not candidate_hooks and install.takeover:
+            # Reconnecting with hooks off puts the host's own memory back, exactly as
+            # turning the hooks off does; a failed restore never blocks the connect.
+            restored, _pending, takeover_note = _restore_takeover(
+                install, _host_install(home, install)
+            )
+            install = replace(install, takeover=restored)
+            _write_record(home, install)
         install = step_policy(
             home,
             install,
@@ -703,10 +719,13 @@ def connect(
             entries=[_entry_record(entry) for entry in entries],
         )
         _write_record(home, install)
+        message = f"connected {host}; service on port {status.get('port', discovery.port)}"
+        if takeover_note:
+            message += f"; {takeover_note}"
         return ConnectResult(
             install_id=install.install_id,
             state="complete",
-            message=f"connected {host}; service on port {status.get('port', discovery.port)}",
+            message=message,
         )
     except Exception as exc:  # noqa: BLE001 - reported as "incomplete, retry"
         if install is not None and (confirmed or not was_connected):
@@ -808,8 +827,21 @@ def disconnect(home: MemoryHome, install_id: str) -> list[EntryRef]:
         scope=install.instance.scope if install.instance else "",
         project_root=install.instance.project_root if install.instance else "",
     )
+    takeover, pending, _note = (
+        _restore_takeover(install, host_install) if install.takeover else ({}, None, "")
+    )
     kept = _rollback_layers(install.host, host_install, entries)
-    _write_record(home, replace(install, state=STATE_DISCONNECTED, entries=[]))
+    if pending is not None:
+        kept.append(pending)
+    _write_record(
+        home, replace(install, state=STATE_DISCONNECTED, entries=[], takeover=takeover)
+    )
+    instance = asdict(install.instance) if install.instance is not None else {}
+    from jiuwen_memory_entry.local.scan import dismiss_instance, resolve_pending_sync
+
+    if any(instance.values()):
+        dismiss_instance(home, install.host, instance)
+    resolve_pending_sync(home, install.install_id)
     return kept
 
 
@@ -871,6 +903,7 @@ def set_hooks(
         project_root=install.instance.project_root if install.instance else "",
     )
     writer = HOSTS[install.host].hook_writer()
+    note = ""
     try:
         if enabled:
             available = getattr(writer, "available", None)
@@ -899,6 +932,11 @@ def set_hooks(
             records.extend(_entry_record(entry) for entry in new_hook_entries)
             install = replace(install, hooks=True, entries=records)
         else:
+            takeover, _pending, note = (
+                _restore_takeover(install, host_install)
+                if install.takeover
+                else ({}, None, "")
+            )
             old = [_entry_from_record(item) for item in install.entries]
             hook_entries = [entry for entry in old if _is_hook_entry(entry)]
             kept = writer.rollback(host_install, hook_entries)
@@ -906,14 +944,184 @@ def set_hooks(
                 item for item in install.entries if str(item.get("layer", "mcp")) != "hook"
             ]
             records.extend(_entry_record(entry) for entry in kept)
-            install = replace(install, hooks=False, entries=records)
+            install = replace(install, hooks=False, entries=records, takeover=takeover)
         _write_record(home, install)
         return ConnectResult(
             install_id=install_id, state="complete",
-            message=f"hooks {'enabled' if enabled else 'disabled'} for {install.host}",
+            message=f"hooks {'enabled' if enabled else 'disabled'} for {install.host}"
+            + (f"; {note}" if note else ""),
         )
     except Exception as exc:  # noqa: BLE001 - reported to the CLI
         return ConnectResult(install_id=install_id, state="incomplete", message=str(exc))
+
+
+# -- takeover ----------------------------------------------------------------- #
+
+
+def _host_install(home: MemoryHome, install: Installation) -> HostInstall:
+    """What a takeover writer needs to know about ``install``."""
+    try:
+        interpreter = home.interpreter_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        interpreter = ""
+    return HostInstall(
+        install_id=install.install_id,
+        host=install.host,
+        connector_id=install.connector_id,
+        project=install.project,
+        interpreter=interpreter,
+        profile=install.profile,
+        edition=install.edition,
+        scope=install.instance.scope if install.instance else "",
+        project_root=install.instance.project_root if install.instance else "",
+    )
+
+
+def takeover_blocker(install: Installation) -> str:
+    """Why takeover is not offered for ``install``; empty when it is (F16 D16 §7).
+
+    The hooks must be on (MCP alone may record nothing), the setting that
+    switches the host's own memory off must be verified for the host, and the
+    host must provide the writer for it.
+    """
+    host = install.host
+    if not install.hooks:
+        return f"hooks are off for {host}: takeover is offered only with hooks on"
+    capabilities = CAPABILITIES.get(host)
+    verified = capabilities.takeover if capabilities is not None else "unsupported"
+    if verified != "supported":
+        return f"switching off {host}'s own memory is {verified}"
+    spec = HOSTS.get(host)
+    if spec is None or spec.takeover is None:
+        return f"{host} has no takeover writer"
+    return ""
+
+
+def takeover_current(home: MemoryHome, install: Installation) -> object | None:
+    """The host's own-memory setting as it is now; ``None`` when it cannot be read."""
+    spec = HOSTS.get(install.host)
+    if spec is None or spec.takeover is None:
+        return None
+    try:
+        return spec.takeover().current(_host_install(home, install))
+    except Exception:  # noqa: BLE001 - shown as unknown
+        return None
+
+
+def _takeover_entry(takeover: dict) -> EntryRef | None:
+    record = takeover.get("entry")
+    return _entry_from_record(record) if isinstance(record, dict) and record else None
+
+
+def _takeover_noop(install: Installation, enabled: bool) -> ConnectResult | None:
+    """The outcome when ``install`` is already in the requested takeover state."""
+    if bool(install.takeover) != enabled:
+        return None
+    state = "already taken over" if enabled else "not taken over"
+    return ConnectResult(
+        install_id=install.install_id, state="complete",
+        message=f"{install.host}'s own memory is {state}",
+    )
+
+
+def _takeover_prompt(install: Installation) -> str:
+    return (
+        f"takeover switches off {install.host}'s own memory for install "
+        f"{install.install_id}: agent memory records this host from now on. The host's "
+        "existing memory files are not deleted or rewritten; `jiwen-memory takeover "
+        f"off {install.host}`, turning the hooks off or `disconnect` switches its own "
+        "memory back on.\ncontinue and change host configuration?"
+    )
+
+
+def _restore_takeover(
+    install: Installation, host_install: HostInstall
+) -> tuple[dict, EntryRef | None, str]:
+    """Switch the host's own memory back on for an install under takeover.
+
+    Returns the ``takeover`` field to keep in the record (empty once nothing is
+    left to restore), the entry that is still switched off if any, and a note
+    for the report. A value the user changed in the meantime stays; a restore
+    that raises keeps the record, so the original value is not lost.
+    """
+    entry = _takeover_entry(install.takeover)
+    if entry is None:
+        return {}, None, ""
+    host = install.host
+    spec = HOSTS.get(host)
+    failure = f"{host} has no takeover writer" if spec is None or spec.takeover is None else ""
+    if not failure:
+        try:
+            if spec.takeover().restore(host_install, entry):
+                return {}, None, f"{host}'s own memory is back on"
+        except Exception as exc:  # noqa: BLE001 - reported, the caller goes on
+            failure = f"{type(exc).__name__}: {exc}"
+        else:
+            return {}, entry, TAKEOVER_USER_CHANGED
+    return (
+        dict(install.takeover),
+        entry,
+        f"restoring {host}'s own memory failed: {failure}",
+    )
+
+
+def set_takeover(
+    home: MemoryHome,
+    install_id: str,
+    enabled: bool,
+    *,
+    confirm=None,
+    sync_ok: Callable[[Installation], bool],
+) -> ConnectResult:
+    """Switch the host's own memory off for one install, or back on (F16 D16 §7).
+
+    Takeover is offered only with the hooks on, a verified setting and a host
+    writer for it; the install's sync must have completed first (``sync_ok`` is
+    the caller's verdict), otherwise nothing is changed. The original value is
+    recorded with the entry and put back when takeover is turned off, unless
+    the user changed it in the meantime.
+    """
+    install = _load_install(home, install_id)
+    if install is None:
+        raise ValidationError(f"unknown install: {install_id}")
+    if enabled:
+        blocked = takeover_blocker(install)
+        if blocked:
+            return ConnectResult(install_id, "unsupported", message=blocked)
+    settled = _takeover_noop(install, enabled)
+    if settled is not None:
+        return settled
+    if enabled:
+        if not sync_ok(install):
+            return ConnectResult(install_id, "incomplete", message=TAKEOVER_NEEDS_SYNC)
+        if confirm is not None and not confirm(_takeover_prompt(install)):
+            return ConnectResult(
+                install_id, "aborted",
+                message="takeover aborted; host configuration was not changed",
+            )
+    try:
+        with _settings_lock(home):
+            current = _load_install(home, install_id) or install
+            settled = _takeover_noop(current, enabled)
+            if settled is not None:
+                return settled
+            host_install = _host_install(home, current)
+            if enabled:
+                entry = HOSTS[current.host].takeover().disable(host_install)
+                updated = replace(current, takeover={"entry": _entry_record(entry)})
+                state = "complete"
+                message = (
+                    f"{current.host}'s own memory is switched off; "
+                    "agent memory records this host from now on"
+                )
+            else:
+                takeover, _pending, message = _restore_takeover(current, host_install)
+                updated = replace(current, takeover=takeover)
+                state = "incomplete" if takeover else "complete"
+            _write_record(home, updated)
+            return ConnectResult(install_id, state, message=message)
+    except Exception as exc:  # noqa: BLE001 - reported to the CLI
+        return ConnectResult(install_id, "incomplete", message=str(exc))
 
 
 def set_sync_policy(

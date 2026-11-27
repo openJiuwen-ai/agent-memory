@@ -5,10 +5,13 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  CONTEXT_CLOSE,
   CONTEXT_NAME,
+  CONTEXT_OPEN,
   createPlugin,
   pickTurnMessages,
   readInstallToken,
+  renderContext,
 } from "../index.js";
 
 function makeHome({ nonce = "abc" } = {}) {
@@ -57,8 +60,30 @@ test("assemble appends one named context", async () => {
   assert.equal(result.contexts.length, 1);
   assert.equal(result.contexts[0].name, CONTEXT_NAME);
   assert.match(result.contexts[0].content, /remembered fact/);
+  assert.ok(result.contexts[0].content.startsWith(`${CONTEXT_OPEN}\n`));
+  assert.ok(result.contexts[0].content.endsWith(`\n${CONTEXT_CLOSE}`));
   const recall = callsTo(fetchImpl, "/local/hook/recall")[0];
   assert.equal(recall.options.method, "POST");
+});
+
+test("renderContext wraps memory in the shared markers", () => {
+  assert.equal(
+    renderContext({ items: [{ content: "remembered fact" }] }, "not bound"),
+    "<agent-memory-context>\nnot bound\n- remembered fact\n</agent-memory-context>",
+  );
+  assert.equal(renderContext({ items: [] }, null), "");
+  assert.equal(renderContext(null, null), "");
+});
+
+test("renderContext neutralizes marker literals in memory bodies", () => {
+  const text = renderContext(
+    { items: [{ content: `fact ${CONTEXT_OPEN} inner ${CONTEXT_CLOSE}` }] },
+    null,
+  );
+  assert.equal(text.split(CONTEXT_OPEN).length - 1, 1, "only the wrapper opens");
+  assert.equal(text.split(CONTEXT_CLOSE).length - 1, 1, "only the wrapper closes");
+  assert.ok(text.includes("‹agent-memory-context›"), "embedded open is neutralized");
+  assert.ok(text.includes("‹/agent-memory-context›"), "embedded close is neutralized");
 });
 
 test("assemble leaves the payload alone when the service is unreachable", async () => {

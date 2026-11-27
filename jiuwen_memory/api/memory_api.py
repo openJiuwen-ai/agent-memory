@@ -52,6 +52,7 @@ from jiuwen_memory.common.type_def.continuity import (
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.control import (
+    AddReceipt,
     BatchUpdateResult,
     BatchWriteItem,
     BatchWriteResult,
@@ -218,27 +219,6 @@ class MemoryAPI(ABC):
     ) -> list[MemoryUnit]:
         """异步写入记忆；语义与 :meth:`add` 一致并直通引擎协程。"""
 
-    def add_sync(
-        self,
-        content: str,
-        scope: Scope,
-        *,
-        security: RequestSecurityContext,
-        system_metadata: dict[str, MetadataValueType] | None = None,
-        trusted_metadata: dict[str, MetadataValueType] | None = None,
-        occurred_at: datetime | None = None,
-        operation_id: str | None = None,
-    ) -> list[MemoryUnit]:
-        """Trusted write port used only by the host sync engine.
-
-        Unlike :meth:`add`, the caller may supply creation-only attribution in
-        ``trusted_metadata``. It is an explicit extension point, not a reserved-key
-        bypass available to ordinary API consumers; the implementation must keep
-        ``trusted_metadata`` separate from caller-facing validation. Assemblies
-        without the sync engine do not need to implement it.
-        """
-        raise UnsupportedCapabilityError("add_sync requires the local sync assembly")
-
     @abstractmethod
     def init_collective_dimension(
         self, dimension: Dimension, members: list[Member], *, security: RequestSecurityContext,
@@ -286,6 +266,7 @@ class MemoryAPI(ABC):
         stream_id: str = "",
         continue_on_error: bool = True,
         event_time: datetime | None = None,
+        operation_id: str | None = None,
     ) -> BatchWriteResult:
         """同步批量写入；结果按输入顺序逐项对齐。
 
@@ -293,6 +274,16 @@ class MemoryAPI(ABC):
         不给即该项没有落点，除非批级参数袋请求了判定（见 :meth:`add`）。判定请求是批级的，
         逐项参数袋携带 ``coords`` 即拒绝——整批共用一次判定上下文。``event_time`` 是批级缺省的
         含时区事件时间，逐项 ``BatchWriteItem.event_time`` 优先；不含时区时该项或整批被拒绝。
+
+        ``operation_id`` 与 :meth:`add` 同义：整批是**一次**逻辑写入、对应一张回执（与单条
+        回执同表，可由 ``operation_receipt`` 查询；回执 ``scope`` 为批级 ``scope``，未给则
+        为空 ``Scope``，探测时须传同一个值才能精确命中）。同 ID 且各项正文按序一致的重放
+        直接返回原结果、不重写；正文不一致或同 ID 并发返回 ``ConflictError``。重放判据
+        **只比较各项正文**：同一 ID、同样正文但换了逐项 ``scope`` / metadata 时照样重放
+        首次结果、不报冲突（首次结果里各项的落点 scope 会被逐项复核写权限），调用方不要
+        指望靠重放改落点。重放返回的是首次的实际结果（含被拒项），不会重试。它与逐项
+        结果 ``BatchWriteOutcome.operation_id``（接续项的事件幂等键）不是一回事；批内含
+        接续项时拒绝给批级 ``operation_id``。
         """
 
     @abstractmethod
@@ -310,6 +301,7 @@ class MemoryAPI(ABC):
         stream_id: str = "",
         continue_on_error: bool = True,
         event_time: datetime | None = None,
+        operation_id: str | None = None,
     ) -> BatchWriteResult:
         """异步批量写入；语义与 :meth:`batch_add` 一致。"""
 
@@ -550,6 +542,43 @@ class MemoryAPI(ABC):
     def supports_conditional_delete(self) -> bool:
         """Whether ``DeleteSelector.expected_digests`` is compared atomically."""
         return False
+
+    # -- 写入回执：进程内可信探测，不是数据面方法 ------------------------------------
+    # 以下四个都是非抽象默认成员，因此不进 HTTP/CLI/MCP 的传输契约；只供可信宿主（本机
+    # 同步引擎）在写入结果丢失后核对提交情况。能力经 supports_operation_receipt() 声明，
+    # 调用方先查能力再探测，不得按 hasattr 猜。
+
+    def supports_operation_receipt(self) -> bool:
+        """Whether ``operation_id`` write receipts can be probed in this process."""
+        return False
+
+    @property
+    def receipt_epoch(self) -> str:
+        """Identity of this process-local receipt store; empty when unsupported.
+
+        Trusted callers mint operation ids with it as prefix, so an id from a previous
+        process (whose receipts are gone) is recognisable without a probe.
+        """
+        return ""
+
+    def operation_receipt(
+        self, operation_id: str, scope: Scope, *, security: RequestSecurityContext
+    ) -> AddReceipt | None:
+        """Return the receipt of one committed write visible to ``scope``, else ``None``.
+
+        Trusted in-process probe. The lookup itself is not authorized (a miss reveals
+        nothing); a hit re-checks the trusted context and WRITE on the receipt scope
+        before anything is returned.
+
+        ``scope`` must equal the receipt scope exactly. Single-item receipts carry the
+        resolved target; batch receipts carry the batch-level ``scope`` argument, or an
+        empty ``Scope()`` when the caller gave none — probe those with ``Scope()``.
+        """
+        raise UnsupportedCapabilityError("operation_receipt", operation_id, type(self).__name__)
+
+    def receipt_evicted(self, operation_id: str, *, security: RequestSecurityContext) -> bool:
+        """Whether this subject's receipt was evicted by the capacity cap, not never written."""
+        raise UnsupportedCapabilityError("operation_receipt", operation_id, type(self).__name__)
 
     def prepare_video_ingest(
         self, uri: str, scope: Scope, *, security: RequestSecurityContext, project: str,

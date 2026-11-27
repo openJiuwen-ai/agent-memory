@@ -81,21 +81,23 @@ class MethodContract:
         }
 
 
-_INTERNAL_TRANSPORT_METHODS = frozenset({"add_sync"})
 _INTERNAL_TRANSPORT_PARAMETERS = {
     "add": frozenset({"operation_id"}),
     "add_async": frozenset({"operation_id"}),
+    "batch_add": frozenset({"operation_id"}),
+    "batch_add_async": frozenset({"operation_id"}),
 }
 
 
 def api_method_names() -> frozenset[str]:
     """Return the public abstract methods exposed by HTTP and CLI.
 
-    ``add_sync`` is a trusted in-process port for the local sync engine; it must
-    never become a transport verb, because its ``trusted_metadata`` would otherwise
-    let a remote caller spoof creation-only attribution.
+    Only abstract ``MemoryAPI`` methods are transport verbs. Declared optional
+    capabilities (``supports_operation_receipt`` and its family) are non-abstract
+    defaults, so they never become transport verbs; the receipt probe is an
+    in-process port and must not be reachable from a remote caller.
     """
-    return frozenset(MemoryAPI.__abstractmethods__) - _INTERNAL_TRANSPORT_METHODS
+    return frozenset(MemoryAPI.__abstractmethods__)
 
 
 def is_known_verb(verb: str) -> bool:

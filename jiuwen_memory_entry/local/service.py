@@ -18,6 +18,7 @@ import logging
 import os
 import secrets
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -65,6 +66,7 @@ from jiuwen_memory_entry.local.hooks import (  # noqa: E402
     RecallRequest,
 )
 from jiuwen_memory_entry.local.install import _install_dir, _read_record  # noqa: E402
+from jiuwen_memory_entry.local.scan import load_scan_grant  # noqa: E402
 from jiuwen_memory_entry.local.turns import TurnStore  # noqa: E402
 
 logger = logging.getLogger("agent-memory.local")
@@ -72,6 +74,10 @@ logger = logging.getLogger("agent-memory.local")
 LEASE_SECONDS = 60.0
 IDLE_EXIT_SECONDS = 600.0
 MAX_LOCAL_BODY_BYTES = 1024 * 1024
+SCAN_FIRST_DELAY = 5.0
+SCAN_CHECK_EVERY = 60.0
+SCAN_INTERVAL = 86400.0
+SCAN_LAST_FILE = "scan.last"
 
 
 class _LocalHttpServer(HttpServer):
@@ -890,6 +896,9 @@ class _LocalHttpServer(HttpServer):
                     return
                 from types import SimpleNamespace
 
+                from jiuwen_memory_entry.local.capture_filter import (
+                    strip_context_blocks,
+                )
                 from jiuwen_memory_entry.local.install import _load_install
                 from jiuwen_memory_entry.local.locks import file_lock
                 from jiuwen_memory_entry.local.sync.engine import SyncEngine
@@ -944,6 +953,17 @@ class _LocalHttpServer(HttpServer):
                 if not grant.roots:
                     handler.send(403, {"error": "SyncNotAllowed"}, request_id=request_id)
                     return
+                cleaned = strip_context_blocks(content)
+                if not cleaned:
+                    # A host may mirror text that is only the injected recall block;
+                    # writing it back would amplify the same memory every turn.
+                    handler.send(
+                        200,
+                        {"ignored": True, "reason": "injected context"},
+                        request_id=request_id,
+                    )
+                    return
+                content = cleaned
 
                 def profile_root() -> str:
                     for raw in grant.roots:
@@ -1193,6 +1213,15 @@ def _restrict(path: Path, mode: int) -> None:
         logger.warning("cannot restrict %s: %s", path, exc)
 
 
+def scan_due(last: float | None, now: float, interval: float = SCAN_INTERVAL) -> bool:
+    """Whether the periodic host scan is due at ``now``.
+
+    ``last`` is when the previous scan was started; ``None`` means no scan is
+    known to have run, so one is due.
+    """
+    return last is None or now - last >= interval
+
+
 class LocalService:
     """One resident service process for a data directory."""
 
@@ -1217,6 +1246,8 @@ class LocalService:
         self._sync_stop: threading.Event | None = None
         self._sync_thread: threading.Thread | None = None
         self._sync_last: dict[str, float] = {}
+        self._scan_stop: threading.Event | None = None
+        self._scan_thread: threading.Thread | None = None
         self._httpd: object | None = None
         self._turns: TurnStore | None = None
 
@@ -1542,6 +1573,7 @@ class LocalService:
                 self._recall_executor = RecallExecutor()
                 self._start_recovery()
                 self._start_sync_scheduler()
+                self._start_scan_scheduler()
                 try:
                     self._serve_cycle(httpd)
                 finally:
@@ -1622,6 +1654,104 @@ class LocalService:
         if thread is not None:
             thread.join(timeout=5.0)
 
+    def _start_scan_scheduler(self) -> None:
+        """Start the periodic host scan (F16 D16).
+
+        The first check waits :data:`SCAN_FIRST_DELAY` after the service cycle
+        began; from then on one check runs every :data:`SCAN_CHECK_EVERY`.
+        """
+        self._scan_stop = threading.Event()
+        stop = self._scan_stop
+
+        def run() -> None:
+            delay = SCAN_FIRST_DELAY
+            while not stop.wait(delay):
+                delay = SCAN_CHECK_EVERY
+                try:
+                    self._scan_tick(time.time())
+                except Exception:  # noqa: BLE001 - reported; the next check tries again
+                    logger.exception("periodic scan failed")
+
+        self._scan_thread = threading.Thread(target=run, daemon=True)
+        self._scan_thread.start()
+
+    def _stop_scan_scheduler(self) -> None:
+        stop, thread = self._scan_stop, self._scan_thread
+        self._scan_stop = None
+        self._scan_thread = None
+        if stop is not None:
+            stop.set()
+        if thread is not None:
+            thread.join(timeout=5.0)
+            if thread.is_alive():
+                logger.warning("scan thread did not stop within 5s")
+
+    def _scan_tick(self, now: float) -> bool:
+        """Run one periodic check; ``True`` when a scan was started.
+
+        A scan is due when the last one was started at least
+        :data:`SCAN_INTERVAL` before ``now``, or none is known. It only runs
+        while the user allows scanning and auto-connect is on, and always as a
+        separate process: ``connect`` asks this service to reload, and a reload
+        stops and joins the thread the check runs on — each would wait for the
+        other.
+        """
+        if not scan_due(self._scan_last(), now):
+            return False
+        grant = load_scan_grant(self.home)
+        if not grant.allowed or not grant.auto_connect:
+            return False
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "jiuwen_memory_entry.local.cli",
+                "scan",
+                "run",
+                "--background",
+                "--home",
+                str(self.home.root),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            env=os.environ.copy(),
+        )
+        self.home.data_dir.mkdir(parents=True, exist_ok=True)
+        (self.home.data_dir / SCAN_LAST_FILE).write_text(f"{now!r}\n", encoding="utf-8")
+        return True
+
+    # -- public seam for the scan scheduler (G.CLS.11) -------------------------- #
+    # The scheduler is driven from outside this class body (tests), which may only
+    # call public methods; each entry delegates to the private implementation
+    # unchanged, same as the route facade above.
+
+    def start_scan_scheduler(self) -> None:
+        self._start_scan_scheduler()
+
+    def stop_scan_scheduler(self) -> None:
+        self._stop_scan_scheduler()
+
+    def scan_tick(self, now: float) -> bool:
+        return self._scan_tick(now)
+
+    def _scan_last(self) -> float | None:
+        """When the last scan was started, or ``None`` when that is not known.
+
+        The time lives in the data directory, so it outlives reloads and
+        restarts. A marker that cannot be read or understood is no proof of a
+        recent scan.
+        """
+        try:
+            text = (self.home.data_dir / SCAN_LAST_FILE).read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            return None
+        try:
+            return float(text.strip())
+        except ValueError:
+            return None
+
     def stop_recovery(self) -> None:
         self._stop_recovery()
 
@@ -1641,6 +1771,7 @@ class LocalService:
         # Stop the runtime's background workers before its API/TurnStore are closed.
         self._stop_recovery()
         self._stop_sync_scheduler()
+        self._stop_scan_scheduler()
         if self._recall_executor is not None:
             self._recall_executor.close()
             self._recall_executor = None

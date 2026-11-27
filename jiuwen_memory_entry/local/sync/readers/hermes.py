@@ -65,7 +65,12 @@ def _scan_hermes(self, access, *, types, since, limit):
     result = ScanResult()
     count = 0
     for root in access.roots:
-        directories = [root / "memories", *sorted((root / "profiles").glob("*/memories"))]
+        memories_only = root.name == "memories"
+        directories = (
+            [root]
+            if memories_only
+            else [root / "memories", *sorted((root / "profiles").glob("*/memories"))]
+        )
         for directory in directories:
             profile = directory.parent.name if "profiles" in directory.parts else "default"
             for name, kind in (("MEMORY.md", "fact"), ("USER.md", "profile")):
@@ -97,7 +102,7 @@ def _scan_hermes(self, access, *, types, since, limit):
                         break
                     result.items.append(item)
                     count += 1
-        if "session_turn" in types:
+        if "session_turn" in types and not memories_only:
             db = root / "state.db"
             key = RangeKey(str(root), "session_turn")
             if db.is_file():

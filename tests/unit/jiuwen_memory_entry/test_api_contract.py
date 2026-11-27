@@ -38,7 +38,7 @@ pytestmark = pytest.mark.unit
 
 
 def test_http_method_registry_exactly_matches_memory_api() -> None:
-    assert api_contract.api_method_names() == MemoryAPI.__abstractmethods__ - {"add_sync"}
+    assert api_contract.api_method_names() == MemoryAPI.__abstractmethods__
     assert {
         "continuity_task",
         "continuity_relation",
@@ -60,7 +60,7 @@ def test_http_method_registry_exactly_matches_memory_api() -> None:
 def test_http_request_fields_are_derived_from_api_signature(verb: str) -> None:
     signature = inspect.signature(getattr(MemoryAPI, verb))
     expected = set(signature.parameters) - {"self", "security"}
-    if verb in {"add", "add_async"}:
+    if verb in {"add", "add_async", "batch_add", "batch_add_async"}:
         # operation_id is an internal receipt key, not a transport parameter.
         expected.discard("operation_id")
 
@@ -415,10 +415,17 @@ def test_search_transport_decodes_flat_hierarchy_parameters():
         api_contract.parse_request("search", {**raw, "options": {}})
 
 
-def test_trusted_sync_port_is_not_a_transport_verb() -> None:
-    assert "add_sync" not in api_contract.api_method_names()
+@pytest.mark.parametrize(
+    "member",
+    ["supports_operation_receipt", "operation_receipt", "receipt_evicted", "receipt_epoch"],
+)
+def test_receipt_capability_is_declared_but_not_a_transport_verb(member: str) -> None:
+    # Declared on the ABC (so callers check the capability, never hasattr), yet
+    # non-abstract: the in-process receipt probe must not be reachable remotely.
+    assert hasattr(MemoryAPI, member)
+    assert member not in api_contract.api_method_names()
     with pytest.raises(ValidationError, match="unknown MemoryAPI method"):
-        api_contract.parse_request("add_sync", {})
+        api_contract.parse_request(member, {})
 
 
 @pytest.mark.parametrize("verb", ["search_v2", "evolve_v2"])
