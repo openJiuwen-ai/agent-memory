@@ -65,6 +65,7 @@ from jiuwen_memory.common.trace import (
     trace_event,
 )
 from jiuwen_memory.common.type_def import (
+    EXT_CONTENT_PACK_KEEP_COUNT,
     EXT_MAX_TOKENS,
     EXT_QUERY_CONTEXT,
     AuditEvent,
@@ -231,6 +232,7 @@ __all__ = [
     # 数据模型（common.type_def）
     "Scope",
     "Context",
+    "EXT_CONTENT_PACK_KEEP_COUNT",
     "EXT_MAX_TOKENS",
     "EXT_QUERY_CONTEXT",
     "Modality",

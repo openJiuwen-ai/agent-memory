@@ -104,6 +104,7 @@ from .local_support import (
     _list_routing_clauses,
     _normalize_list_extensions,
     _parse_max_tokens,
+    _pop_content_pack_keep_count,
     _pop_coords,
     _pop_query_context,
     _pop_spaces,
@@ -273,6 +274,7 @@ class QueryOpsMixin:
         extensions = dict(context.extensions)
         max_tokens = _parse_max_tokens(extensions.pop(EXT_MAX_TOKENS, None))
         query_context = _pop_query_context(extensions)
+        content_pack_keep_count = _pop_content_pack_keep_count(extensions)
         pipeline = extensions.pop("retrieval_pipeline", None)
         self._queries.validate_retrieval_pipeline(pipeline)
         if self._privacy is not None:
@@ -305,6 +307,7 @@ class QueryOpsMixin:
             text=query, filters=options.filters, as_of=options.as_of,
             top_k=options.top_k, disclosure=options.disclosure,
             max_tokens=max_tokens, with_trajectory=options.with_trajectory,
+            content_pack_keep_count=content_pack_keep_count,
             extensions=extensions, hierarchy_kind=hierarchy.hierarchy_kind,
             hierarchy_role=hierarchy.hierarchy_role,
             span_start=hierarchy.span_start, span_end=hierarchy.span_end,

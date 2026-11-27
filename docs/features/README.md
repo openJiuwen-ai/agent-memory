@@ -115,6 +115,7 @@
 | `F12` | [F12-filter-contract-governance](retrieval/F12-filter-contract-governance.md) | filters 契约治理：把公共过滤语言当产品治理 |
 | `F13` | [F13-filter-governance-playbook](retrieval/F13-filter-governance-playbook.md) | filters 契约治理落地规范（团队执行版） |
 | `F14` | [F14-experience-retrieval](retrieval/F14-experience-retrieval.md) | 经验记忆检索与效用排序 |
+| `F15` | [F15-content-pack](retrieval/F15-content-pack.md) | Top-K 后置内容打包算子（ContentPacker） |
 
 ## storage 存储层（`docs/features/storage/`）
 
@@ -132,4 +133,4 @@
 
 ---
 
-共 76 篇。`docs/features/common/F04` 是安全能力唯一维护页（见 [docs/AGENTS.md](../AGENTS.md#安全文档例外单一维护)）。
+共 81 篇。`docs/features/common/F04` 是安全能力唯一维护页（见 [docs/AGENTS.md](../AGENTS.md#安全文档例外单一维护)）。

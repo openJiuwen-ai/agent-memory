@@ -120,6 +120,10 @@ class RetrievalQuery:
     # -- 调用级 options（就近覆盖 profile/scope 配置，§13.2）；None = 用装配默认 -- #
     channels: list[RecallChannel] | None = None  # 覆盖启用的召回通道；None 用 parser 建议
     rerank: bool | None = None  # 覆盖重排开关；None 用装配默认（是否注入了 reranker）
+    content_pack: bool | None = None  # 覆盖 Top-K 后置内容打包开关；None 用装配默认
+    # 请求级：禁止删条（仅压缩正文，保持返回条数 = Top-K）。不进 globals；由 search
+    # ``Context.extensions["content_pack_keep_count"]`` 在 API 边界写入本字段。
+    content_pack_keep_count: bool = False
     include_archived: bool = False  # 当前态查询是否纳入 archived 记忆
     # Schema 属性时间线查询；None 时仅在配置开启 conditional-auto 且命中时间意图时启用。
     schema_temporal: SchemaTemporalQuery | None = None
