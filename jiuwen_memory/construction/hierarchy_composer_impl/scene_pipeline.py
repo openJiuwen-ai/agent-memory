@@ -29,6 +29,7 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
     validate_ref,
 )
+from jiuwen_memory.construction.dedup import is_credential_unit
 from jiuwen_memory.construction.message_role import format_role_line
 
 from .grouping_support import adjacent_similarities, semantic_text
@@ -202,6 +203,8 @@ def build_scene_parent(
                                     + options.carry_metadata_keys))
     for transient in NON_PROPAGATED_SYSTEM_METADATA_KEYS:
         metadata.pop(transient, None)
+    if any(is_credential_unit(child) for child in children):
+        metadata["is_credential"] = "true"
     return MemoryUnit(
         id=str(uuid.uuid4()), scope=deepcopy(tree_home_scope), tier=MemoryTier.EPISODIC,
         segments=[Segment(content=header), Segment(content="\n".join(lines))],

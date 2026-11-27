@@ -36,6 +36,7 @@ from jiuwen_memory.construction.common import (
     merge_unit_tags,
     reject_deprecated_llm_attempt_keys,
 )
+from jiuwen_memory.construction.dedup import is_credential_unit
 from jiuwen_memory.construction.entity_schema import EntitySchemaCatalog
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.extractor_impl.llm_extractor import (
@@ -1449,6 +1450,8 @@ def _inherited_schema_system_metadata(
         if key.startswith("schema_") or key.startswith("property_merge_"):
             continue
         result[key] = value
+    if any(is_credential_unit(src) for src in sources):
+        result["is_credential"] = "true"
     return result
 
 

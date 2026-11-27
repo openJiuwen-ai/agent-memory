@@ -85,7 +85,15 @@ from jiuwen_memory.construction.common import (
     resolve_message_store,
 )
 from jiuwen_memory.construction.curator import Curator, CuratorProducer
-from jiuwen_memory.construction.dedup import Dedup, DedupProducer, same_scope
+from jiuwen_memory.construction.dedup import (
+    Dedup,
+    DedupProducer,
+    is_credential_dedup_isolated,
+    is_credential_unit,
+    prioritize_exact_identifier_hits,
+    same_scope,
+    shares_exact_identifier,
+)
 from jiuwen_memory.construction.evolver import (
     EvolveMode,
     Evolver,
@@ -543,7 +551,10 @@ class OrchestratingEvolver(Evolver):
             raw_leaf_count = len(leaves)
             filtered_leaves: list[MemoryUnit] = []
             for leaf in leaves:
-                if leaf.hierarchy.parent_id or filter_effective_units([leaf], procedural=False):
+                if leaf.hierarchy.parent_id or (
+                    filter_effective_units([leaf], procedural=False)
+                    and not is_credential_unit(leaf)
+                ):
                     filtered_leaves.append(leaf)
             leaves = filtered_leaves
             if raw_leaf_count > 0 and not leaves and not parents:
@@ -662,20 +673,31 @@ class OrchestratingEvolver(Evolver):
                 direct_add.append((candidate, None, 0.0))
                 continue
 
+            # 凭据与非凭据、凭据与 user_profile/daily_memory 禁止互判，防止凭据被合并进 USER.md
+            # 或被普通条目触发 NOOP 吞并。
+            hit_units = [
+                (unit, score)
+                for unit, score in hit_units
+                if not is_credential_dedup_isolated(candidate, unit)
+            ]
+            if not hit_units:
+                direct_add.append((candidate, None, 0.0))
+                continue
+
             best_unit, best_score = max(hit_units, key=lambda x: x[1])
-            if best_score < self._dedup_medium_similarity:
-                # 低相似 → 直接 ADD（不调 LLM）
+            if best_score < self._dedup_medium_similarity and not shares_exact_identifier(
+                candidate, hit_units
+            ):
+                # 低相似且无共享精确标识 → 直接 ADD（不调 LLM）
                 direct_add.append((candidate, best_unit, best_score))
-            elif best_score >= self._dedup_high_similarity:
-                if should_direct_noop(
-                    best_score, self._dedup_high_similarity, candidate, best_unit
-                ):
-                    direct_noop.append((candidate, best_unit, best_score))
-                else:
-                    need_llm.append((candidate, best_unit, best_score, hit_units))
+            elif best_score >= self._dedup_high_similarity and should_direct_noop(
+                best_score, self._dedup_high_similarity, candidate, best_unit
+            ):
+                direct_noop.append((candidate, best_unit, best_score))
             else:
-                # medium ~ high → 需 LLM 判定
-                need_llm.append((candidate, best_unit, best_score, hit_units))
+                # 需 LLM 判定（含低分共享精确标识兜底）：统一前置共享精确标识命中，防窗口外截断漏判
+                prioritized_hits = prioritize_exact_identifier_hits(candidate, hit_units)
+                need_llm.append((candidate, best_unit, best_score, prioritized_hits))
 
         # ---- 第二段：批量 LLM 判定 ----
         decisions: dict[str, DedupDecision] = {}
@@ -778,6 +800,14 @@ class OrchestratingEvolver(Evolver):
         if decision == DedupDecision.ADD and result.created_units:
             # Initial batch recall ran before writes. A new indexed peer may now exist.
             decision, existing_unit, similarity = self._recheck_candidate(candidate)
+        if (
+            decision == DedupDecision.NOOP
+            and existing_unit is not None
+            and is_credential_dedup_isolated(candidate, existing_unit)
+        ):
+            decision = DedupDecision.ADD
+            existing_unit = None
+            candidate = deepcopy(candidate)
         boundary = _now()
         if decision in (DedupDecision.UPDATE, DedupDecision.SUPERSEDE):
             if existing_unit is not None:
@@ -810,12 +840,14 @@ class OrchestratingEvolver(Evolver):
                     existing_unit = fresh[0] if fresh else None
                 else:
                     existing_unit = None
-            if (
-                existing_unit is None
-                or existing_unit.lifecycle != LifecycleState.ACTIVE
-                or not same_scope(candidate.scope, existing_unit.scope)
-            ):
+            target_active = (
+                existing_unit is not None
+                and existing_unit.lifecycle == LifecycleState.ACTIVE
+                and same_scope(candidate.scope, existing_unit.scope)
+            )
+            if not target_active or is_credential_dedup_isolated(candidate, existing_unit):
                 decision = DedupDecision.ADD
+                existing_unit = None
                 candidate.system_metadata["dedup_temporal_reason"] = "target_unavailable"
             else:
                 verdict = compare_validity(candidate, existing_unit, now=boundary)
@@ -938,6 +970,7 @@ class OrchestratingEvolver(Evolver):
                 for key, value in existing_unit.system_metadata.items()
                 if key in {"sync_created_by", "sync_initial_digest"}
             }
+            merged_credential = is_credential_unit(existing_unit) or is_credential_unit(candidate)
             existing_unit.system_metadata = inherited_system_metadata([existing_unit, candidate])
             existing_unit.system_metadata.update(sync_attribution)
             # 标题描述本次更新后的事实，不是新旧记忆共有的属性。
@@ -951,6 +984,8 @@ class OrchestratingEvolver(Evolver):
                 existing_unit.system_metadata[IMPORTANCE_KEY] = importance
             if origin not in (None, ""):
                 existing_unit.system_metadata[ORIGIN_KEY] = origin
+            if merged_credential:
+                existing_unit.system_metadata["is_credential"] = "true"
             existing_unit.system_metadata["dedup_decision"] = "update"
             existing_unit.system_metadata["dedup_similarity"] = str(similarity)
             existing_unit.system_metadata["dedup_merged_from"] = candidate.id
@@ -1083,7 +1118,11 @@ class OrchestratingEvolver(Evolver):
         其他目标时，返回该目标自身在本次召回中的分数。
         """
         # Step A+B: 召回已有相似记忆（已滤自身、已按 min_similarity 过滤、已聚合取 max）
-        hit_units: list[tuple[MemoryUnit, float]] = self._dedup.recall(candidate)
+        hit_units: list[tuple[MemoryUnit, float]] = [
+            (unit, score)
+            for unit, score in self._dedup.recall(candidate)
+            if not is_credential_dedup_isolated(candidate, unit)
+        ]
         if not hit_units:
             logger.debug("Evolver._dedup_single: no hits for candidate %s → ADD", candidate.id[:8])
             return (DedupDecision.ADD, None, 0.0)
@@ -1095,9 +1134,14 @@ class OrchestratingEvolver(Evolver):
         if should_direct_noop(best_score, self._dedup_high_similarity, candidate, best_unit):
             return (DedupDecision.NOOP, best_unit, best_score)
 
-        # 低相似 → ADD（新事实，不值得深度判定）
-        if best_score < self._dedup_medium_similarity:
+        # 低相似 → ADD（新事实，不值得深度判定）；共享精确标识（邮箱/URL）仍交 LLM 复核
+        if best_score < self._dedup_medium_similarity and not shares_exact_identifier(
+            candidate, hit_units
+        ):
             return (DedupDecision.ADD, best_unit, best_score)
+
+        # 所有进 LLM 判定分支统一前置共享精确标识命中，确保落入 hits[:3] 窗口
+        hit_units = prioritize_exact_identifier_hits(candidate, hit_units)
 
         # 中/高相似 → LLM 语义判定
         try:

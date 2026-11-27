@@ -57,7 +57,7 @@ JiuwenSwarm 的 ContinuityRail、用户候选确认和 metadata.json 激活指�
 
 Team 的项目、团队和 Group 坐标由宿主绑定。工具使用同一绑定的读写客户端。项目日记及记忆文件的文档边界由 Memory 校验，项目或团队的预取兜底使用已授权文档。
 
-Work 给定项目时，自动召回与搜索工具使用 project 等值过滤；画像独立读取 USER.md。
+Work 给定项目时，自动召回与搜索工具使用 project 等值过滤；画像独立读取 USER.md，并在超出预取条数/字数上限截断时补一次仅限 `user_profile` 且排除已注入条目、受独立字数预算约束的按需检索（不混入无项目 `MEMORY.md` / daily；单 agent 范围检索，跨 agent 共享 USER.md 补召回与 Team 场景暂维持有界画像直读）。Work/Coding/Team 通用预取均过滤 `is_credential="true"` 凭据，显式搜索保持按需可查；手工修改含凭据的 `MEMORY.md` 块触发 `LocalWatchdog` 重建时，由于 Markdown 正文不内嵌元数据标记，重建条目将失去 `is_credential` 标记（已知边界；`TeamLlmExtractor` 凭据分流与静态加密归属后续演进/F04）。
 Team 预取画像、项目和团队文档及语义召回并行且分别限时。项目和团队独立采用召回或文档兜底，单段异常保留其他结果。
 
 普通文档自动同步（`sync_turn` 对 `user` 剥壳并校验双方非空白后按 `message_role="user"`/`"assistant"` 走 `batch_add`）和显式写入工具统一调用场景 write_route；pipeline/infer 不暴露为工具参数。

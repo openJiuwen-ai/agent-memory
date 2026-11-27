@@ -18,6 +18,7 @@ from jiuwen_memory.common.type_def import (
     MemoryUnit,
     validate_ref,
 )
+from jiuwen_memory.construction.dedup import is_credential_unit
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.construction.message_role import filter_effective_units
 from jiuwen_memory.control.evolution.validation import scope_contains
@@ -98,7 +99,9 @@ def collect_incremental(
     for selected_scope in scopes.values():
         for unit in read_scope_units(kv, selected_scope, limits.page_size):
             if options.leaf_role is HierarchyRole.SNAPSHOT and has_incomplete_leaf_time(unit):
-                if filter_effective_units([unit], procedural=False):
+                if filter_effective_units([unit], procedural=False) and not is_credential_unit(
+                    unit
+                ):
                     selection.skip(unit, "incomplete_time")
                 continue
             if not _active(unit) or unit.hierarchy.role is not options.leaf_role:
@@ -110,7 +113,10 @@ def collect_incremental(
                 continue
             if (
                 unit.hierarchy.role is HierarchyRole.SNAPSHOT
-                and not filter_effective_units([unit], procedural=False)
+                and (
+                    not filter_effective_units([unit], procedural=False)
+                    or is_credential_unit(unit)
+                )
             ):
                 continue
             if options.leaf_role is not HierarchyRole.SNAPSHOT and unit.scope != home:

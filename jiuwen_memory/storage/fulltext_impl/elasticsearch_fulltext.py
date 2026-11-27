@@ -33,6 +33,7 @@ from jiuwen_memory.common.type_def import (
     Scope,
     filter_field_metadata_key,
 )
+from jiuwen_memory.common.type_def.memory_filter import normalize_is_credential_clause_value
 from jiuwen_memory.storage.fulltext import FulltextProducer
 
 from .._support import (
@@ -150,20 +151,21 @@ class ElasticsearchFulltextStore(FulltextStore):
     @classmethod
     def _filter_clause(cls, fc: FilterClause) -> dict[str, Any]:
         key = filter_field_metadata_key(fc.field)
+        value = normalize_is_credential_clause_value(key, fc.op, fc.value)
         field = f"metadata.{key}"
         if fc.op == FilterOp.EQ:
-            return cls._scalar_match(key, {"term": {field: fc.value}})
+            return cls._scalar_match(key, {"term": {field: value}})
         if fc.op == FilterOp.NE:
-            return {"bool": {"must_not": [cls._scalar_match(key, {"term": {field: fc.value}})]}}
+            return {"bool": {"must_not": [cls._scalar_match(key, {"term": {field: value}})]}}
         if fc.op == FilterOp.IN:
-            return cls._scalar_match(key, {"terms": {field: fc.value}})
+            return cls._scalar_match(key, {"terms": {field: value}})
         if fc.op == FilterOp.NOT_IN:
-            return {"bool": {"must_not": [cls._scalar_match(key, {"terms": {field: fc.value}})]}}
+            return {"bool": {"must_not": [cls._scalar_match(key, {"terms": {field: value}})]}}
         if fc.op == FilterOp.CONTAINS:
             return {
                 "bool": {
                     "filter": [
-                        {"term": {field: fc.value}},
+                        {"term": {field: value}},
                         cls._array_marker(key),
                     ]
                 }
@@ -172,7 +174,7 @@ class ElasticsearchFulltextStore(FulltextStore):
             # Lucene 的 range 对多值字段是「任一成员命中即匹配」，会让数组字段被范围
             # 谓词选中；真源复核与 pg 编译器都判否（pg 用 jsonb_typeof='number' 守卫）。
             # 此处同样限定标量，避免同一谓词在不同后端给出不同候选集。
-            return cls._scalar_match(key, {"range": {field: {_RANGE_OPS[fc.op]: fc.value}}})
+            return cls._scalar_match(key, {"range": {field: {_RANGE_OPS[fc.op]: value}}})
         raise ValidationError(f"unsupported filter op for fulltext: {fc.op}")
 
     @classmethod

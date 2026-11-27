@@ -15,6 +15,8 @@ from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.dedup import (
     Dedup,
     DedupProducer,
+    credential_filter_clause,
+    is_credential_dedup_isolated,
     memory_type_filter_clauses,
     memory_type_matches,
     same_scope,
@@ -84,7 +86,10 @@ class VectorDedup(Dedup):
         # Step B: 召回已有相似记忆。类型隔离谓词（mem2.0 §2.3）恒下推——不加时
         # 同空间的高相似经验条目会占满 top_k 名额，对话候选因此漏召回同类。后端
         # 不消费 filters 时由聚合阶段的 memory_type_matches 复核兜底（见下）。
-        filters: list[FilterClause] = memory_type_filter_clauses(candidate)
+        filters: list[FilterClause] = [
+            *memory_type_filter_clauses(candidate),
+            credential_filter_clause(candidate),
+        ]
         if self._tier_filter:
             filters.append(FilterClause(field="tier", op=FilterOp.EQ, value=candidate.tier.value))
 
@@ -128,6 +133,8 @@ class VectorDedup(Dedup):
             # 时这些部署的隔离静默失效。tier 过滤不复核（失效方向是多召回几个
             # 候选、危害低）；类型跨判会污染复现计数，加载后必须再兜一层。
             if not memory_type_matches(candidate, unit):
+                continue
+            if is_credential_dedup_isolated(candidate, unit):
                 continue
             # scope_filter：只保留与候选同 scope 的 unit
             if self._scope_filter and not same_scope(unit.scope, candidate.scope):

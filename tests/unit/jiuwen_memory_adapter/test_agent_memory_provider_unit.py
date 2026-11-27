@@ -258,6 +258,7 @@ class TestRecallFilters:
         assert _recall_filters() == {
             "tier": {"in": ["semantic", "core", "procedural"]},
             "system_metadata.memory_class": {"ne": "team_memory"},
+            "system_metadata.is_credential": {"ne": "true"},
         }
 
     def test_filters_exclude_episodic_and_working(self):
@@ -269,13 +270,14 @@ class TestRecallFilters:
     def test_filters_with_project_add_equal_predicate(self):
         filters = _recall_filters("proj-a")
         assert filters["system_metadata.project"] == {"eq": "proj-a"}, filters
+        assert filters["system_metadata.is_credential"] == {"ne": "true"}, filters
         assert filters["tier"] == {"in": ["semantic", "core", "procedural"]}, filters
 
     def test_filters_without_project_carry_no_project_predicate(self):
         assert "system_metadata.project" not in _recall_filters(""), "空 project 不应带项目谓词"
 
     def test_filters_with_project_normalize_to_and_clauses(self):
-        # 层级、项目和排除团队类别由 API 边界统一解析为 AND。
+        # 层级、项目、排除团队类别与排除凭据由 API 边界统一解析为 AND。
         expr = normalize_filters(_recall_filters("proj-a"))
         assert expr.logic is FilterLogic.AND, expr
         clauses = {(c.field, c.op.value): c.value for c in expr.children}
@@ -283,6 +285,7 @@ class TestRecallFilters:
             ("tier", "in"): ["semantic", "core", "procedural"],
             ("system_metadata.project", "eq"): "proj-a",
             ("system_metadata.memory_class", "ne"): "team_memory",
+            ("system_metadata.is_credential", "ne"): "true",
         }, clauses
 
 
@@ -2674,3 +2677,1119 @@ def test_experience_document_sync_from_markdown(tmp_path):
     assert restored.system_metadata["category"] == "other"
     assert watcher._sync_one(path, True)
     assert not shadow.units
+
+
+class TestCredentialIsolationAndProfileOverflow:
+    """凭据预取隔离、截断画像补召回、工具描述与提示词约束回归。"""
+
+    @staticmethod
+    def test_schemas_and_work_prompt_reflect_contracts():
+        from jiuwen_memory_adapter.jiuwenswarm.memory_tools import (
+            CONCLUDE_SCHEMA,
+            EDIT_MD_SCHEMA,
+            READ_MD_SCHEMA,
+            SEARCH_SCHEMA,
+        )
+
+        search_desc = SEARCH_SCHEMA["description"]
+        assert "搜索长期记忆" in search_desc and "凭据与授权码" in search_desc
+        assert "读取记忆文档" in READ_MD_SCHEMA["description"]
+        assert "修改或更正已有记忆" in EDIT_MD_SCHEMA["description"]
+
+        project_desc = SEARCH_SCHEMA["parameters"]["properties"]["project"]["description"]
+        assert "plus cross-project memories" not in project_desc
+        assert "searches only that project's memories" in project_desc
+        assert "Omit to search unbound/global memories" in project_desc
+
+        conclude_desc = CONCLUDE_SCHEMA["description"]
+        assert "directly stated or explicitly confirmed by the user" in conclude_desc
+        assert "historical session logs" in conclude_desc
+        assert "记录新的长期记忆" in conclude_desc
+
+        provider = AgentMemoryMemoryProvider()
+        prompt = provider.system_prompt_block()
+        assert "Reusable identifiers:" in prompt
+        assert "agent_memory_search" in prompt
+        assert "excluded from general prefetch" in prompt
+        assert "synced to memory automatically in the background" in prompt
+        assert "never claim that a user-provided credential was not saved" in prompt
+        assert "rather than hardcoding them into scripts or files" in prompt
+        assert "historical session logs" in prompt
+
+    @staticmethod
+    def test_work_prefetch_skips_credentials_and_recalls_overflow_profile():
+        from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemorySceneContext
+        from jiuwen_memory_adapter.jiuwenswarm.work_memory import WorkMemoryScene
+
+        search_calls: list[dict] = []
+
+        class _StubClient:
+            @staticmethod
+            async def search(query, scope, *, top_k=10, filters=None):
+                _ = (query, scope)
+                search_calls.append({"top_k": top_k, "filters": filters})
+                if (filters or {}).get("system_metadata.memory_class") == {"eq": "user_profile"}:
+                    return [
+                        {"item_id": "p0", "content": "用户最早的常用邮箱是 early@example.com"},
+                        {
+                            "item_id": "p_cred",
+                            "content": "泄露的凭据",
+                            "is_credential": True,
+                        },
+                    ]
+                return [
+                    {"item_id": "m1", "content": "项目部署在杭州"},
+                    {"item_id": "m_cred", "content": "密码是 secret123", "is_credential": True},
+                ]
+
+            @staticmethod
+            async def read_md_file(md_filename, scope, **_kwargs):
+                _ = (md_filename, scope)
+                items = [
+                    {"item_id": f"p{i}", "content": f"画像条目 {i}"} for i in range(25)
+                ]
+                items.append(
+                    {"item_id": "u_cred", "content": "授权码 abcd1234", "is_credential": True}
+                )
+                return items
+
+        ctx = MemorySceneContext(
+            client=_StubClient(),
+            scope=object(),
+            prepare=lambda text: text,
+            video_enabled=lambda: False,
+            continuity_enabled=False,
+            continuity_mode="",
+        )
+        block = asyncio.run(WorkMemoryScene().prefetch(ctx, "常用邮箱", project="proj-a"))
+
+        assert "项目部署在杭州" in block
+        assert "用户最早的常用邮箱是 early@example.com" in block
+        assert "密码是 secret123" not in block
+        assert "授权码 abcd1234" not in block
+        assert "泄露的凭据" not in block
+        assert len(search_calls) == 2
+        assert search_calls[0]["filters"]["system_metadata.project"] == {"eq": "proj-a"}
+        assert search_calls[0]["filters"]["system_metadata.is_credential"] == {"ne": "true"}
+        assert search_calls[1]["filters"] == {
+            "tier": {"in": ["semantic", "core", "procedural"]},
+            "system_metadata.memory_class": {"eq": "user_profile"},
+            "system_metadata.is_credential": {"ne": "true"},
+            "unit_id": {"not_in": [f"p{i}" for i in range(5, 25)]},
+        }
+
+    @staticmethod
+    def test_work_prefetch_skips_overflow_search_when_profile_within_budget():
+        from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemorySceneContext
+        from jiuwen_memory_adapter.jiuwenswarm.work_memory import WorkMemoryScene
+
+        search_calls: list[dict] = []
+
+        class _StubClient:
+            @staticmethod
+            async def search(query, scope, *, top_k=10, filters=None):
+                _ = (query, scope, top_k)
+                search_calls.append(filters or {})
+                return [{"item_id": "m1", "content": "项目事实"}]
+
+            @staticmethod
+            async def read_md_file(md_filename, scope, **_kwargs):
+                _ = (md_filename, scope)
+                return [{"item_id": "p1", "content": "用户偏好中文回复"}]
+
+        ctx = MemorySceneContext(
+            client=_StubClient(),
+            scope=object(),
+            prepare=lambda text: text,
+            video_enabled=lambda: False,
+            continuity_enabled=False,
+            continuity_mode="",
+        )
+        block = asyncio.run(WorkMemoryScene().prefetch(ctx, "项目事实", project="proj-a"))
+
+        assert "用户偏好中文回复" in block
+        assert "项目事实" in block
+        assert len(search_calls) == 1, "画像未超预算时不应触发额外的画像补召回"
+
+    @staticmethod
+    def test_coding_and_team_prefetch_exclude_credentials_while_explicit_search_keeps_them():
+        from jiuwen_memory_adapter.jiuwenswarm.coding_memory import CodingMemoryScene
+        from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemorySceneContext
+        from jiuwen_memory_adapter.jiuwenswarm.team_memory import TeamMemoryScene
+
+        coding_filters: list[dict | None] = []
+        coding_writes: list[dict] = []
+
+        class _CodingClient:
+            @staticmethod
+            async def add(content, scope, *, tags=None, system_metadata=None):
+                _ = (content, scope, tags)
+                coding_writes.append(system_metadata or {})
+                return type("R", (), {"item_id": "u1"})()
+
+            @staticmethod
+            async def search(query, scope, *, top_k=10, filters=None):
+                _ = (query, scope, top_k)
+                coding_filters.append(filters)
+                return [
+                    {"item_id": "c1", "content": "项目构建命令"},
+                    {"item_id": "c2", "content": "密钥 sk-test", "is_credential": True},
+                ]
+
+            @staticmethod
+            async def read_md_file(md_filename, scope, **_kwargs):
+                _ = (md_filename, scope)
+                return [
+                    {"item_id": "d1", "content": "普通条目"},
+                    {"item_id": "d2", "content": "凭据条目", "is_credential": True},
+                ]
+
+        coding = CodingMemoryScene("repo-a")
+        coding_ctx = MemorySceneContext(
+            client=_CodingClient(),
+            scope=object(),
+            prepare=lambda text: text,
+            video_enabled=lambda: False,
+            continuity_enabled=False,
+            continuity_mode="",
+        )
+        asyncio.run(coding.write(coding_ctx.client, coding_ctx.scope, {"content": "fact"}))
+        assert coding_writes[0]["project"] == "repo-a"
+
+        prefetched = asyncio.run(coding.prefetch(coding_ctx, "构建"))
+        assert "项目构建命令" in prefetched
+        assert "密钥 sk-test" not in prefetched
+        assert "凭据条目" not in prefetched
+        assert coding_filters[0]["system_metadata.is_credential"] == {"ne": "true"}
+
+        searched = json.loads(asyncio.run(coding.search_tool(coding_ctx, {"query": "密钥"})))
+        assert any("密钥 sk-test" in item["memory"] for item in searched["results"])
+        assert "system_metadata.is_credential" not in coding_filters[1]
+
+        team_filters: list[dict | None] = []
+
+        class _TeamClient:
+            @staticmethod
+            async def search(query, scope, *, top_k=10, filters=None):
+                _ = (query, scope, top_k)
+                team_filters.append(filters)
+                return [
+                    {"item_id": "t1", "content": "团队规范"},
+                    {"item_id": "t2", "content": "团队密钥", "is_credential": True},
+                ]
+
+            @staticmethod
+            async def read_md_file(md_filename, scope, **_kwargs):
+                _ = (md_filename, scope)
+                return [
+                    {"item_id": "p1", "content": "团队画像"},
+                    {"item_id": "p2", "content": "个人授权码", "is_credential": True},
+                ]
+
+        team = TeamMemoryScene("repo-a")
+        team_ctx = MemorySceneContext(
+            client=_TeamClient(),
+            scope=type("S", (), {"agent": "main_agent"})(),
+            prepare=lambda text: text,
+            video_enabled=lambda: False,
+            continuity_enabled=False,
+            continuity_mode="",
+            collective={"project": "repo-a", "team": "core"},
+        )
+        team_prefetched = asyncio.run(team.prefetch(team_ctx, "规范"))
+        assert "团队规范" in team_prefetched
+        assert "团队画像" in team_prefetched
+        assert "团队密钥" not in team_prefetched
+        assert "个人授权码" not in team_prefetched
+        assert all(
+            (flt or {}).get("system_metadata.is_credential") == {"ne": "true"}
+            for flt in team_filters
+        )
+
+    @staticmethod
+    def test_evolver_update_preserves_credential_and_isolates_user_profile(tmp_path):
+        """凭据与 USER.md 不得 UPDATE/NOOP 合并，且凭据 UPDATE 合并保留 is_credential="true"。"""
+        from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
+            WhitespaceTokenizer,
+        )
+        from jiuwen_memory.common.type_def import (
+            DedupDecision,
+            MemoryTier,
+            MemoryUnit,
+            RetrievalPipeline,
+            Scope,
+            Segment,
+            Temporal,
+        )
+        from jiuwen_memory.construction.dedup import is_credential_dedup_isolated
+        from jiuwen_memory.construction.evolver import EvolveResult
+        from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
+            OrchestratingEvolver,
+        )
+        from jiuwen_memory.storage.domain_store_impl.composite_domain_store import (
+            CompositeDomainStore,
+        )
+        from jiuwen_memory.storage.markdown_impl.local_markdown_store import LocalMarkdownStore
+        from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import (
+            SqliteDocumentShadowIndex,
+        )
+        from jiuwen_memory.storage.store_manager_impl.composite_store_manager import (
+            CompositeStoreManager,
+        )
+        from jiuwen_memory.storage.types import TextQuery
+        from tests.unit.construction.fixtures import MockLLM
+
+        scope = Scope(org="acme", user="u1")
+        profile_unit = MemoryUnit(
+            id="u-profile",
+            scope=scope,
+            tier=MemoryTier.SEMANTIC,
+            segments=[Segment(content="用户常用发件邮箱是 ops@example.com")],
+            system_metadata={"memory_class": "user_profile", "project": ""},
+        )
+        cred_candidate = MemoryUnit(
+            id="u-cred",
+            scope=scope,
+            tier=MemoryTier.SEMANTIC,
+            segments=[Segment(content="用户邮箱 ops@example.com 的授权码是 abcd1234")],
+            temporal=Temporal(t_message=datetime(2026, 11, 20, 12, 0, tzinfo=UTC)),
+            system_metadata={
+                "memory_class": "long_term_memory",
+                "project": "",
+                "is_credential": "true",
+            },
+        )
+        assert is_credential_dedup_isolated(cred_candidate, profile_unit)
+
+        class _FakeDomain:
+            def __init__(self, units):
+                self._units = {u.id: u for u in units}
+
+            def get(self, _scope, unit_ids):
+                return [self._units[uid] for uid in unit_ids if uid in self._units]
+
+        class _FakeIndex:
+            def __init__(self, domain):
+                self._domain = domain
+                self.built: list[MemoryUnit] = []
+                self.updated: list[MemoryUnit] = []
+
+            def read_domain_store(self):
+                return self._domain
+
+            def build(self, units):
+                self.built.extend(units)
+
+            def update(self, units):
+                self.updated.extend(units)
+
+        fake_storage = type("S", (), {"has_graph": staticmethod(lambda _n: False)})()
+        domain = _FakeDomain([profile_unit])
+        index = _FakeIndex(domain)
+        evolver = OrchestratingEvolver(
+            extractor=None,
+            abstractor=None,
+            associator=None,
+            index_builder=index,
+            storage=fake_storage,
+            message_store=None,
+            dedup=None,
+            llm=MockLLM(responses=["合并后的内容"]),
+            domain_store=domain,
+        )
+        # 1) 即使误判 UPDATE 把凭据合并到 USER.md，也必须降级 ADD，不污染 USER.md
+        result = EvolveResult()
+        evolver._apply_decision(
+            cred_candidate, DedupDecision.UPDATE, profile_unit, 0.95, result
+        )
+        assert result.created_ids == ["u-cred"]
+        assert result.updated_ids == []
+        assert index.updated == []
+
+        # 2) 同为凭据触发 UPDATE 时，即便交集键不一致仍保留 is_credential="true"
+        existing_cred = MemoryUnit(
+            id="u-cred-old",
+            scope=scope,
+            tier=MemoryTier.SEMANTIC,
+            segments=[Segment(content="用户邮箱 ops@example.com 的授权码是 old1234")],
+            temporal=Temporal(t_message=datetime(2026, 11, 19, 12, 0, tzinfo=UTC)),
+            system_metadata={
+                "memory_class": "long_term_memory",
+                "project": "",
+                "is_credential": True,
+            },
+        )
+        domain2 = _FakeDomain([existing_cred])
+        index2 = _FakeIndex(domain2)
+        evolver2 = OrchestratingEvolver(
+            extractor=None,
+            abstractor=None,
+            associator=None,
+            index_builder=index2,
+            storage=fake_storage,
+            message_store=None,
+            dedup=None,
+            llm=MockLLM(responses=["用户邮箱 ops@example.com 的新授权码是 abcd1234"]),
+            domain_store=domain2,
+        )
+        result2 = EvolveResult()
+        evolver2._apply_decision(
+            cred_candidate, DedupDecision.UPDATE, existing_cred, 0.9, result2
+        )
+        assert result2.updated_ids == ["u-cred-old"]
+        assert index2.updated[0].system_metadata.get("is_credential") == "true"
+
+        # 3) SQLite Shadow 原生下推 is_credential != "true" 与 = "true"，兼容 bool True / "TRUE"
+        bool_cred = MemoryUnit(
+            id="u-cred-bool",
+            scope=scope,
+            tier=MemoryTier.SEMANTIC,
+            segments=[Segment(content="ops@example.com bool 凭据 token1")],
+            system_metadata={
+                "memory_class": "long_term_memory",
+                "project": "",
+                "is_credential": True,
+            },
+        )
+        upper_cred = MemoryUnit(
+            id="u-cred-upper",
+            scope=scope,
+            tier=MemoryTier.SEMANTIC,
+            segments=[Segment(content="ops@example.com upper 凭据 token2")],
+            system_metadata={
+                "memory_class": "long_term_memory",
+                "project": "",
+                "is_credential": "TRUE",
+            },
+        )
+        shadow = SqliteDocumentShadowIndex(
+            db_path=str(tmp_path / "shadow.db"), tokenizer=WhitespaceTokenizer()
+        )
+        md = LocalMarkdownStore(root=str(tmp_path))
+        manager = CompositeStoreManager(markdown=md, shadow_index=shadow)
+        store = CompositeDomainStore(
+            manager=manager,
+            preferred_pipeline=RetrievalPipeline.RECALL_GET_RANK,
+            write_document=True,
+        )
+        store.add(scope, [profile_unit, cred_candidate, bool_cred, upper_cred])
+        hits = shadow.search_fulltext(
+            scope,
+            TextQuery(
+                text="ops@example.com",
+                top_k=10,
+                filters=normalize_filters({"system_metadata.is_credential": {"ne": "true"}}),
+            ),
+        )
+        assert [h.id for h in hits] == ["u-profile"]
+        cred_hits = shadow.search_fulltext(
+            scope,
+            TextQuery(
+                text="ops@example.com",
+                top_k=10,
+                filters=normalize_filters({"system_metadata.is_credential": {"eq": "true"}}),
+            ),
+        )
+        assert {h.id for h in cred_hits} == {"u-cred", "u-cred-bool", "u-cred-upper"}
+
+        # 4) edit_md_file 降级兜底路径（跨块拆分）保守继承 is_credential="true"
+        edited = store.edit_md_file(
+            scope,
+            "MEMORY.md",
+            old_text="用户邮箱 ops@example.com 的授权码是 abcd1234",
+            new_text="第一段授权码 abcd\n\n# 标题2\n第二段授权码 1234",
+        )
+        assert len(edited) == 2
+        assert all(u.system_metadata.get("is_credential") == "true" for u in edited)
+
+    @staticmethod
+    def test_kernel_boundary_dedup_dynamic_evolver_and_abstractor_credential_isolation():
+        """覆盖内核保留键校验、各 Dedup 实现、DynamicEvolver 与 Abstractor 凭据隔离。"""
+        from jiuwen_memory.api.memory_api_impl.local_support import _reject_kernel_system_metadata
+        from jiuwen_memory.common.type_def import (
+            DedupDecision,
+            MemoryTier,
+            MemoryUnit,
+            Scope,
+            Segment,
+            Temporal,
+        )
+        from jiuwen_memory.construction.abstractor_impl.concat_abstractor import ConcatAbstractor
+        from jiuwen_memory.construction.abstractor_impl.llm_abstractor import LLMAbstractor
+        from jiuwen_memory.construction.dedup_impl.keyword_dedup import KeywordDedup
+        from jiuwen_memory.construction.dedup_impl.project_team_dedup import ProjectTeamDedup
+        from jiuwen_memory.construction.dedup_impl.shadow_dedup import ShadowDedup
+        from jiuwen_memory.construction.dedup_impl.vector_dedup import VectorDedup
+        from jiuwen_memory.construction.evolver_impl.dynamic_evolver import DynamicEvolver
+        from jiuwen_memory.construction.prompt_registry import PromptRegistry
+        from jiuwen_memory.storage.types import ScoredID
+        from tests.unit.construction.fixtures import MockLLM
+
+        # 1) 外部入参禁止写入或篡改 is_credential
+        with pytest.raises(ValidationError):
+            _reject_kernel_system_metadata({"is_credential": "false"})
+
+        scope = Scope(org="acme", user="u1")
+        normal_unit = MemoryUnit(
+            id="u-normal",
+            scope=scope,
+            tier=MemoryTier.SEMANTIC,
+            segments=[Segment(content="ops@example.com 发件邮箱")],
+            system_metadata={"memory_class": "long_term_memory"},
+        )
+        cred_unit = MemoryUnit(
+            id="u-cred",
+            scope=scope,
+            tier=MemoryTier.SEMANTIC,
+            segments=[Segment(content="ops@example.com 授权码 secret999")],
+            temporal=Temporal(t_message=datetime(2026, 11, 20, 12, 0, tzinfo=UTC)),
+            system_metadata={"memory_class": "long_term_memory", "is_credential": "true"},
+        )
+
+        # 2) VectorDedup / KeywordDedup / ShadowDedup / ProjectTeamDedup 隔离凭据与非凭据
+        from jiuwen_memory.common.type_def.memory_codec import dumps
+        from jiuwen_memory.storage.kv import memory_key
+        from jiuwen_memory.storage.kv_impl.in_memory_kv_store import InMemoryKVStore
+
+        kv_store = InMemoryKVStore()
+        kv_store.insert(scope, memory_key(normal_unit.id), dumps(normal_unit))
+
+        class _MiniVec:
+            def __init__(self, ids):
+                self._ids = ids
+                self.last_filters = None
+
+            def search(self, _scope, query):
+                self.last_filters = query.filters
+                return [ScoredID(id=f"{uid}-0", score=0.95) for uid in self._ids]
+
+        class _MiniFT:
+            def __init__(self, ids):
+                self._ids = ids
+
+            def search(self, _scope, _query):
+                return [ScoredID(id=uid, score=0.95) for uid in self._ids]
+
+        class _MiniShadow:
+            vec_enabled = False
+
+            def __init__(self, units):
+                self._map = {u.id: u for u in units}
+
+            def search_fulltext(self, _scope, _query):
+                return [ScoredID(id=uid, score=-1.0) for uid in self._map]
+
+            def get_units(self, _scope, unit_ids):
+                return [self._map[uid] for uid in unit_ids if uid in self._map]
+
+        class _MiniStorage:
+            def __init__(self, units):
+                self._kv = kv_store
+                self._vec = _MiniVec([u.id for u in units])
+                self._ft = _MiniFT([u.id for u in units])
+                self._shadow = _MiniShadow(units)
+
+            def kv(self, _name="default"):
+                return self._kv
+
+            def vector(self, _name="default"):
+                return self._vec
+
+            def fulltext(self, _name="default"):
+                return self._ft
+
+            def shadow_index(self, _name="default"):
+                return self._shadow
+
+            @staticmethod
+            def has_shadow_index():
+                return True
+
+            @staticmethod
+            def has_graph(_name="default"):
+                return False
+
+        class _ConstEmbedder:
+            @staticmethod
+            def embed(texts):
+                return [[1.0, 0.0] for _ in texts]
+
+        storage = _MiniStorage([normal_unit])
+        vdedup = VectorDedup(storage, _ConstEmbedder(), min_similarity=0.5, tier_filter=False)
+        kdedup = KeywordDedup(storage, min_similarity=0.5, tier_filter=False)
+        sdedup = ShadowDedup(storage, _ConstEmbedder(), min_similarity=0.5, tier_filter=False)
+        other_normal = MemoryUnit(
+            id="u-normal-2",
+            scope=scope,
+            tier=MemoryTier.SEMANTIC,
+            segments=[Segment(content="ops@example.com 发件邮箱")],
+            system_metadata={"memory_class": "long_term_memory"},
+        )
+        assert [u.id for u, _ in vdedup.recall(other_normal)] == ["u-normal"]
+        assert [u.id for u, _ in kdedup.recall(other_normal)] == ["u-normal"]
+        assert [u.id for u, _ in sdedup.recall(other_normal)] == ["u-normal"]
+        assert vdedup.recall(cred_unit) == []
+        assert kdedup.recall(cred_unit) == []
+        assert sdedup.recall(cred_unit) == []
+
+        # ProjectTeamDedup.recall_filter 覆盖三路分支并排除 daily_memory
+        cred_dest = MemoryUnit(
+            id="u-cred-dest",
+            scope=scope,
+            tier=MemoryTier.SEMANTIC,
+            segments=[Segment(content="团队凭据")],
+            system_metadata={
+                "collective_destination": "team-a",
+                "memory_class": "long_term_memory",
+                "is_credential": "true",
+            },
+        )
+        assert "is_credential" in str(ProjectTeamDedup.recall_filter(cred_dest))
+        assert "daily_memory" in str(ProjectTeamDedup.recall_filter(cred_unit))
+
+        # 3) DynamicEvolver 隔离跨类命中且禁止缺 existing_id 的 NOOP 静默吞并凭据
+        class _StubDedup:
+            def __init__(self, hits):
+                self._hits = hits
+
+            def recall(self, _candidate):
+                return list(self._hits)
+
+        dyn = DynamicEvolver(
+            extractor=None,
+            abstractor=None,
+            associator=None,
+            index_builder=None,
+            storage=storage,
+            message_store=None,
+            dedup=_StubDedup([(normal_unit, 0.99)]),
+            llm=MockLLM(responses=['{"decision": "noop"}']),
+            prompt_registry=PromptRegistry({"consolidate": {"p": "judge"}}),
+        )
+        # pylint: disable=protected-access
+        decisions = dyn._consolidate_step([cred_unit])
+        assert decisions[0].decision is DedupDecision.ADD
+
+        cred_with_prompt = MemoryUnit(
+            id="u-cred-2",
+            scope=scope,
+            tier=MemoryTier.SEMANTIC,
+            segments=[Segment(content="ops@example.com 新授权码 secret888")],
+            system_metadata={
+                "memory_class": "long_term_memory",
+                "is_credential": "true",
+                "consolidation_prompt_default": "p",
+            },
+        )
+        dyn2 = DynamicEvolver(
+            extractor=None,
+            abstractor=None,
+            associator=None,
+            index_builder=None,
+            storage=storage,
+            message_store=None,
+            dedup=_StubDedup([(cred_unit, 0.85)]),
+            llm=MockLLM(responses=['{"decision": "noop"}']),
+            prompt_registry=PromptRegistry({"consolidate": {"p": "judge"}}),
+        )
+        decisions2 = dyn2._consolidate_step([cred_with_prompt])
+        assert decisions2[0].decision is DedupDecision.ADD
+
+        # 4) ConcatAbstractor 与 LLMAbstractor 均排除凭据参与常规归纳
+        assert ConcatAbstractor().abstract([normal_unit, cred_unit]) == []
+        llm_abs = LLMAbstractor(llm=MockLLM(responses=[]), feature_extractor=None)
+        accepted = llm_abs._preprocess([normal_unit, cred_unit])
+        # pylint: enable=protected-access
+        assert [u.id for u in accepted] == ["u-normal"]
+
+    @staticmethod
+    def test_work_prefetch_overflow_profile_respects_char_budget():
+        """截断画像补召回条目受独立字数上限守卫，超长条目不会绕过预算被注回。"""
+        from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemorySceneContext
+        from jiuwen_memory_adapter.jiuwenswarm.work_memory import WorkMemoryScene
+
+        scene = WorkMemoryScene()
+        huge_item = {"item_id": "u_huge", "content": "x" * 2500}
+        normal_item = {"item_id": "u_ok", "content": "用户偏好英文邮件"}
+        small_old = {"item_id": "u_old", "content": "用户常用发件邮箱是 ops@example.com"}
+
+        class _BudgetClient:
+            @staticmethod
+            async def search(_query, _scope, top_k=10, filters=None):
+                _ = top_k
+                if (filters or {}).get("system_metadata.memory_class") == {"eq": "user_profile"}:
+                    return [huge_item, small_old]
+                return []
+
+            @staticmethod
+            async def read_md_file(_filename, _scope):
+                return [huge_item, normal_item]
+
+        ctx = MemorySceneContext(
+            client=_BudgetClient(),
+            scope=object(),
+            prepare=lambda s: s,
+            video_enabled=lambda: False,
+            continuity_enabled=False,
+            continuity_mode="",
+        )
+        out = asyncio.run(scene.prefetch(ctx, "发邮件"))
+        assert "ops@example.com" in out
+        assert "用户偏好英文邮件" in out
+        assert "x" * 100 not in out
+
+    @staticmethod
+    def test_work_default_project_roundtrip_finds_recipient_and_credential(monkeypatch, tmp_path):
+        """端到端回归：project='default' 会话写出的收件人与凭据可在本项目预取/显式检索命中。"""
+        import agent_memory_provider as adapter
+
+        # pylint: disable=protected-access
+        offline_config = adapter._agent_default_config
+        # pylint: enable=protected-access
+
+        def config():
+            result = offline_config()
+            result["extractor"]["document_fact"] = {"target": "document_fact"}
+            result["markdown_store"]["default"]["params"]["root"] = str(tmp_path)
+            result["shadow_index"]["default"]["params"]["db_path"] = str(tmp_path / "shadow.db")
+            return result
+
+        def extract(_self, messages):
+            source_id = re.search(r"\[ID: ([^\]]+)\]", messages[1].content).group(1)
+            return json.dumps([
+                {
+                    "source_id": source_id,
+                    "content": "用户使用的发件邮箱地址是 1033994658@qq.com。",
+                    "memory_class": "user_profile",
+                    "project_fact": False,
+                    "is_credential": False,
+                    "tier": "semantic",
+                    "confidence": 1.0,
+                },
+                {
+                    "source_id": source_id,
+                    "content": "用户指定的华为收件人邮箱地址是 chenruikai@huawei.com。",
+                    "memory_class": "long_term_memory",
+                    "project_fact": False,
+                    "is_credential": False,
+                    "tier": "semantic",
+                    "confidence": 1.0,
+                },
+                {
+                    "source_id": source_id,
+                    "content": "QQ 邮箱 1033994658@qq.com 的 SMTP 授权码是 hyibknyybqspbeff。",
+                    "memory_class": "long_term_memory",
+                    "project_fact": False,
+                    "is_credential": True,
+                    "tier": "semantic",
+                    "confidence": 1.0,
+                },
+            ])
+
+        monkeypatch.setattr(adapter, "_agent_default_config", config)
+        monkeypatch.setattr(AgentLlmExtractor, "_call_llm_with_retry", extract)
+
+        async def run():
+            provider = AgentMemoryMemoryProvider(
+                security_provider=_security_provider(
+                    ApiScope(org="tenant-work", user="work-user"), role=Role.ROOT
+                ),
+            )
+            await provider.initialize(user_id="work-user", scope_id="tenant-work")
+            try:
+                await provider.sync_turn(
+                    "用 1033994658@qq.com 发到 chenruikai@huawei.com，授权码 hyibknyybqspbeff",
+                    "已记录。",
+                    project="default",
+                )
+                prefetched = await provider.prefetch("华为收件人邮箱", project="default")
+                assert "1033994658@qq.com" in prefetched
+                assert "chenruikai@huawei.com" in prefetched
+                assert "hyibknyybqspbeff" not in prefetched
+
+                searched = json.loads(
+                    await provider.handle_tool_call(
+                        "agent_memory_search",
+                        {"query": "SMTP 授权码 1033994658@qq.com", "project": "default"},
+                    )
+                )
+                memories = [item["memory"] for item in searched.get("results", [])]
+                assert any("hyibknyybqspbeff" in m for m in memories), memories
+            finally:
+                await provider.shutdown()
+
+        asyncio.run(run())
+
+    @staticmethod
+    def test_coding_search_supplement_forwards_exclude_credentials():
+        """CodingMemoryScene.search(supplement=True, exclude_credentials=True) 须透传凭据过滤。"""
+        from contextlib import nullcontext
+
+        from jiuwen_memory_adapter.jiuwenswarm.coding_memory import CodingMemoryScene
+        from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemorySceneContext
+
+        captured_filters: list[dict] = []
+
+        class _SupplementClient:
+            @staticmethod
+            def collective_request(_coords):
+                return nullcontext()
+
+            @staticmethod
+            async def search(_query, _scope, *, top_k=5, filters=None):
+                _ = top_k
+                captured_filters.append(dict(filters or {}))
+                if (filters or {}).get("system_metadata.collective_destination") == {
+                    "eq": "project"
+                }:
+                    return [
+                        {"content": "项目普通规范", "score": 0.9},
+                        {"content": "项目共享密钥", "score": 0.95, "is_credential": True},
+                    ]
+                return [
+                    {"content": "本地普通记录", "score": 0.8},
+                    {"content": "本地泄漏密钥", "score": 0.99, "is_credential": True},
+                ]
+
+        scene = CodingMemoryScene("proj-alpha")
+        ctx = MemorySceneContext(
+            client=_SupplementClient(),
+            scope=ApiScope(org="o", user="u"),
+            prepare=lambda s: s,
+            video_enabled=lambda: False,
+            continuity_enabled=False,
+            continuity_mode="",
+            collective={"project": "proj-alpha"},
+        )
+        hits = asyncio.run(
+            scene.search(ctx, "密钥", top_k=5, supplement=True, exclude_credentials=True)
+        )
+        assert len(captured_filters) == 2
+        assert all(
+            flt.get("system_metadata.is_credential") == {"ne": "true"}
+            for flt in captured_filters
+        ), captured_filters
+        contents = [hit["content"] for hit in hits]
+        assert contents == ["项目普通规范", "本地普通记录"], contents
+
+    @staticmethod
+    def test_work_prefetch_skips_overflow_search_when_stripped_query_empty():
+        """剥除 TUI 信封后 search_query 为空时，不触发无意义的截断画像补召回。"""
+        from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemorySceneContext
+        from jiuwen_memory_adapter.jiuwenswarm.work_memory import WorkMemoryScene
+
+        search_calls: list[dict] = []
+
+        class _EmptyQueryClient:
+            @staticmethod
+            async def search(query, _scope, *, top_k=5, filters=None):
+                search_calls.append({"query": query, "top_k": top_k, "filters": filters})
+                return []
+
+            @staticmethod
+            async def read_md_file(_filename, _scope):
+                return [{"item_id": f"u{i}", "content": f"画像条目 {i}"} for i in range(25)]
+
+        scene = WorkMemoryScene()
+        ctx = MemorySceneContext(
+            client=_EmptyQueryClient(),
+            scope=ApiScope(org="o", user="u"),
+            prepare=lambda _s: "   ",
+            video_enabled=lambda: False,
+            continuity_enabled=False,
+            continuity_mode="",
+        )
+        out = asyncio.run(scene.prefetch(ctx, "<envelope></envelope>"))
+        assert "画像条目 24" in out
+        # 仅主召回 1 次，截断画像补召回因剥壳后空 query 短路而不触发
+        assert len(search_calls) == 1, search_calls
+
+    @staticmethod
+    def test_shadow_project_of_and_update_clear_user_profile_project(tmp_path):
+        """ShadowIndex._project_of 与缺省 memory_class 更新对 user_profile 均归空串。"""
+        from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
+            WhitespaceTokenizer,
+        )
+        from jiuwen_memory.common.type_def import MemoryUnit, Segment
+        from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import (
+            SqliteDocumentShadowIndex,
+        )
+
+        scope = ApiScope(org="o", user="u")
+        unit = MemoryUnit(
+            id="profile-u1",
+            scope=scope,
+            segments=[Segment(content="用户喜欢暗色主题")],
+            system_metadata={"memory_class": "user_profile", "project": "default"},
+        )
+        assert SqliteDocumentShadowIndex._project_of(unit) == ""
+
+        shadow = SqliteDocumentShadowIndex(
+            db_path=str(tmp_path / "profile_proj.db"),
+            tokenizer=WhitespaceTokenizer(),
+        )
+        try:
+            shadow.insert_units(scope, [unit])
+            # 模拟历史遗留非空 project 列 + 更新对象丢了 memory_class
+            conn = shadow._ensure_conn()
+            conn.execute(
+                "UPDATE memory_unit SET project='default' WHERE unit_id=?",
+                (unit.id,),
+            )
+            conn.commit()
+            patched = MemoryUnit(
+                id=unit.id,
+                scope=scope,
+                segments=[Segment(content="用户喜欢高对比度暗色主题")],
+                system_metadata={},
+            )
+            shadow.update_units(scope, [patched])
+            row = conn.execute(
+                "SELECT project, category FROM memory_unit WHERE unit_id=?",
+                (unit.id,),
+            ).fetchone()
+            assert row == ("", "user_profile"), row
+        finally:
+            shadow.close()
+
+    @staticmethod
+    def test_hierarchy_pipeline_isolates_credentials_and_marks_parents():
+        """建树入口过滤未挂父凭据叶；若父节点含凭据子节点则逐层回写 is_credential='true'。"""
+        from datetime import timedelta
+
+        from jiuwen_memory.common.type_def import (
+            HierarchyKind,
+            HierarchyRef,
+            HierarchyRole,
+            MemoryTier,
+            MemoryUnit,
+            Segment,
+        )
+        from jiuwen_memory.construction.evolver import EvolveMode, EvolveRequest
+        from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
+            OrchestratingEvolver,
+        )
+        from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
+        from jiuwen_memory.construction.hierarchy_composer_impl.event_pipeline import (
+            EventBuilderOptions,
+            build_event_parent,
+        )
+        from jiuwen_memory.construction.hierarchy_composer_impl.scene_pipeline import (
+            SceneSegmenterOptions,
+            build_scene_parent,
+        )
+        from jiuwen_memory.construction.hierarchy_composer_impl.time_pipeline import (
+            TimeSpanMergerOptions,
+            build_time_span_parent,
+        )
+        from jiuwen_memory.control.jobs_impl.hierarchy_candidates import (
+            HierarchyCandidates,
+            _select,
+        )
+
+        scope = ApiScope(org="o", user="u")
+        t0 = datetime(2026, 3, 14, 10, 0, tzinfo=UTC)
+        t1 = t0 + timedelta(minutes=5)
+        cred_leaf = MemoryUnit(
+            id="leaf-cred",
+            scope=scope,
+            tier=MemoryTier.EPISODIC,
+            segments=[Segment(content="SMTP 授权码是 secret-xyz")],
+            system_metadata={"is_credential": "true"},
+            hierarchy=HierarchyRef(
+                kind=HierarchyKind.TIME,
+                role=HierarchyRole.SNAPSHOT,
+                span_start=t0,
+                span_end=t1,
+            ),
+        )
+        normal_leaf = MemoryUnit(
+            id="leaf-normal",
+            scope=scope,
+            tier=MemoryTier.EPISODIC,
+            segments=[Segment(content="用户决定周五发版")],
+            hierarchy=HierarchyRef(
+                kind=HierarchyKind.TIME,
+                role=HierarchyRole.SNAPSHOT,
+                span_start=t0,
+                span_end=t1,
+            ),
+        )
+        opts = HierarchyComposeOptions(
+            kind=HierarchyKind.TIME,
+            leaf_role=HierarchyRole.SNAPSHOT,
+            parent_roles=[HierarchyRole.TIME_SPAN, HierarchyRole.SCENE, HierarchyRole.EVENT],
+            tree_home_scope=scope,
+            span_start=t0 - timedelta(hours=1),
+            span_end=t1 + timedelta(hours=1),
+        )
+
+        # 1) 候选收集过滤未挂父凭据叶
+        collected = HierarchyCandidates()
+        _select(cred_leaf, collected, opts)
+        _select(normal_leaf, collected, opts)
+        assert [u.id for u in collected.leaves.values()] == ["leaf-normal"]
+
+        # 2) _evolve_hierarchy 遇全未挂父凭据叶早退，不调用 composer
+        class _FailComposer:
+            @staticmethod
+            def build(_req):
+                raise AssertionError("unattached credential leaves must not enter composer")
+
+            @staticmethod
+            def replace_in_span(_req):
+                raise AssertionError("unattached credential leaves must not enter composer")
+
+        evolver = OrchestratingEvolver(
+            extractor=object(),
+            abstractor=object(),
+            associator=object(),
+            index_builder=object(),
+            storage=SimpleNamespace(has_graph=lambda _n: False),
+            message_store=object(),
+            dedup=object(),
+            llm=object(),
+            hierarchy_composer=_FailComposer(),
+        )
+        res = evolver.evolve(
+            EvolveRequest(
+                units=[cred_leaf],
+                mode=EvolveMode.HIERARCHY,
+                hierarchy_options=opts,
+            )
+        )
+        assert res.hierarchy_result is not None
+        assert res.hierarchy_result.created_parent_ids == []
+
+        # 3) 纵深防线：即使凭据叶直接进入建树父构造，TIME_SPAN -> SCENE -> EVENT 逐层带标
+        span = build_time_span_parent(
+            [cred_leaf], tree_home_scope=scope, options=TimeSpanMergerOptions()
+        )
+        assert span.system_metadata.get("is_credential") == "true"
+        scene_parent = build_scene_parent(
+            [span], tree_home_scope=scope, options=SceneSegmenterOptions()
+        )
+        assert scene_parent.system_metadata.get("is_credential") == "true"
+        event_parent = build_event_parent(
+            [scene_parent], tree_home_scope=scope, options=EventBuilderOptions()
+        )
+        assert event_parent.tier is MemoryTier.PROCEDURAL
+        assert event_parent.system_metadata.get("is_credential") == "true"
+
+    @staticmethod
+    def test_provider_prefetch_collective_project_excludes_credentials():
+        from contextlib import contextmanager
+
+        from jiuwen_memory_adapter.jiuwenswarm.base_document_scene import (
+            _excludes_credentials,
+        )
+
+        # 1) _excludes_credentials 兼容嵌套 AND / NOT / not_in，且不误判 OR / NOT(AND)
+        assert _excludes_credentials({"system_metadata.is_credential": {"ne": "TRUE"}}) is True
+        assert _excludes_credentials({"system_metadata.is_credential": {"not_in": [True]}}) is True
+        assert (
+            _excludes_credentials(
+                {
+                    "AND": [
+                        {"tier": {"in": ["semantic"]}},
+                        {"NOT": {"system_metadata.is_credential": "true"}},
+                    ]
+                }
+            )
+            is True
+        )
+        assert (
+            _excludes_credentials(
+                {
+                    "NOT": {
+                        "OR": [
+                            {"system_metadata.is_credential": {"eq": True}},
+                            {"tier": {"eq": "episodic"}},
+                        ]
+                    }
+                }
+            )
+            is True
+        )
+        assert (
+            _excludes_credentials(
+                {
+                    "OR": [
+                        {"system_metadata.is_credential": {"ne": "true"}},
+                        {"tier": {"eq": "semantic"}},
+                    ]
+                }
+            )
+            is False
+        )
+        assert (
+            _excludes_credentials(
+                {
+                    "OR": [
+                        {"system_metadata.is_credential": {"ne": "true"}},
+                        {"NOT": {"system_metadata.is_credential": "true"}},
+                    ]
+                }
+            )
+            is True
+        )
+        assert (
+            _excludes_credentials(
+                {
+                    "NOT": {
+                        "AND": [
+                            {"system_metadata.is_credential": "true"},
+                            {"tier": "semantic"},
+                        ]
+                    }
+                }
+            )
+            is False
+        )
+
+        # 2) provider.prefetch 调 BaseDocumentScene.project_recall 排除凭据并兜底过滤
+        captured_filters: list[dict] = []
+
+        class _CollectiveStubClient:
+            @staticmethod
+            @contextmanager
+            def collective_request(_coords):
+                yield
+
+            @staticmethod
+            async def search(_query, _scope, *, top_k=10, filters=None):
+                _ = top_k
+                captured_filters.append(dict(filters or {}))
+                if (filters or {}).get("system_metadata.collective_destination") == {
+                    "eq": "project"
+                }:
+                    return [
+                        {"content": "项目共享架构约定"},
+                        {"content": "项目部署口令 leaked-secret", "is_credential": True},
+                    ]
+                return [{"content": "普通工作记忆"}]
+
+            @staticmethod
+            async def read_md_file(_md_filename, _scope, **_kwargs):
+                return []
+
+        provider = AgentMemoryMemoryProvider(
+            collective_coordinates={"project": "alpha"},
+        )
+        # pylint: disable=protected-access
+        provider._session_id = ""
+        provider._initialized = True
+        provider._client = _CollectiveStubClient()
+        # pylint: enable=protected-access
+
+        rendered = asyncio.run(provider.prefetch("部署说明", project="alpha"))
+
+        assert "项目共享架构约定" in rendered
+        assert "leaked-secret" not in rendered
+        project_filters = [
+            f
+            for f in captured_filters
+            if f.get("system_metadata.collective_destination") == {"eq": "project"}
+        ]
+        assert len(project_filters) == 1
+        assert project_filters[0].get("system_metadata.is_credential") == {"ne": "true"}

@@ -12,7 +12,12 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.common.type_def.filter import and_merge
 from jiuwen_memory.common.type_def.memory_filter import matches_memory_unit
-from jiuwen_memory.construction.dedup import DedupProducer
+from jiuwen_memory.construction.dedup import (
+    DedupProducer,
+    credential_filter_clause,
+    is_credential_dedup_isolated,
+    is_credential_unit,
+)
 from jiuwen_memory.construction.dedup_impl.shadow_dedup import (
     ShadowDedup,
     build_shadow_dedup,
@@ -31,14 +36,20 @@ class ProjectTeamDedup(ShadowDedup):
         ids = shadow.find_unit_ids_by_content_hash(candidate.scope, content_hash(content))
         filters = cls.recall_filter(candidate)
         return any(
-            old.content == content and matches_memory_unit(old, filters)
+            old.content == content
+            and matches_memory_unit(old, filters)
+            and not is_credential_dedup_isolated(candidate, old)
             for old in shadow.get_units(candidate.scope, ids)
         )
 
     @staticmethod
     def recall_filter(candidate: MemoryUnit) -> FilterExpr | None:
         project = candidate_project(candidate)
-        clauses = [FilterClause("lifecycle", FilterOp.IN, [LifecycleState.ACTIVE.value])]
+        is_credential = is_credential_unit(candidate)
+        clauses = [
+            FilterClause("lifecycle", FilterOp.IN, [LifecycleState.ACTIVE.value]),
+            credential_filter_clause(candidate),
+        ]
         metadata = candidate.system_metadata or {}
         destination = metadata.get("collective_destination")
         memory_class = metadata.get("memory_class", "")
@@ -46,14 +57,20 @@ class ProjectTeamDedup(ShadowDedup):
         class_field = "system_metadata.memory_class"
         if destination:
             clauses.extend(
-                FilterClause(f"system_metadata.collective.{dimension}", FilterOp.EQ, metadata.get(dimension, ""))
+                FilterClause(
+                    f"system_metadata.collective.{dimension}",
+                    FilterOp.EQ,
+                    metadata.get(dimension, ""),
+                )
                 for dimension in ("project", "team", "group")
             )
             clauses.append(FilterClause(class_field, FilterOp.EQ, memory_class))
             if memory_class == "daily_memory":
                 clauses.append(FilterClause(destination_field, FilterOp.EQ, destination))
             clauses.append(FilterClause(
-                "system_metadata.collective.shareable", FilterOp.EQ, metadata.get("shareable", False),
+                "system_metadata.collective.shareable",
+                FilterOp.EQ,
+                metadata.get("shareable", False),
             ))
         elif metadata.get("memory_class") == "team_memory":
             clauses.extend([
@@ -69,6 +86,10 @@ class ProjectTeamDedup(ShadowDedup):
                     FilterClause(destination_field, FilterOp.EQ, ""),
                 ]),
             ])
+            if is_credential:
+                clauses.append(
+                    FilterClause(class_field, FilterOp.NOT_IN, ["user_profile", "daily_memory"])
+                )
             if project:
                 clauses.append(FilterClause("system_metadata.project", FilterOp.IN, ["", project]))
         return and_merge(None, clauses)

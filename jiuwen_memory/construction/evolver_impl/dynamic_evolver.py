@@ -32,7 +32,13 @@ from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction.abstractor import AbstractorProducer
 from jiuwen_memory.construction.associator import AssociatorProducer
-from jiuwen_memory.construction.dedup import DedupProducer
+from jiuwen_memory.construction.dedup import (
+    DedupProducer,
+    is_credential_dedup_isolated,
+    is_credential_unit,
+    prioritize_exact_identifier_hits,
+    shares_exact_identifier,
+)
 from jiuwen_memory.construction.evolver import EvolveResult, EvolverProducer
 from jiuwen_memory.construction.evolver_impl.dedup_direct_noop import should_direct_noop
 from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import (
@@ -160,7 +166,12 @@ class DynamicEvolver(OrchestratingEvolver):
         decisions: list[ConsolidateDecision] = []
         for candidate in candidates:
             try:
-                hits = self._dedup.recall(candidate)
+                raw_hits = self._dedup.recall(candidate)
+                hits = [
+                    (unit, score)
+                    for unit, score in raw_hits
+                    if not is_credential_dedup_isolated(candidate, unit)
+                ]
             except Exception as exc:
                 logger.warning(
                     "DynamicEvolver recall failed for %s, fallback ADD: %s",
@@ -189,11 +200,15 @@ class DynamicEvolver(OrchestratingEvolver):
         existing, score = max(hits, key=lambda item: item[1])
         if should_direct_noop(score, self._dedup_high_similarity, candidate, existing):
             return DedupDecision.NOOP, existing, score
-        if score < self._dedup_medium_similarity:
+        if score < self._dedup_medium_similarity and not shares_exact_identifier(
+            candidate, hits
+        ):
             return DedupDecision.ADD, existing, score
         prompt = self._resolve_consolidate_prompt(candidate)
         if prompt is None:
             return DedupDecision.ADD, existing, score
+        # 所有进 LLM 判定分支统一前置共享精确标识命中，确保落入 hits[:5] 窗口
+        hits = prioritize_exact_identifier_hits(candidate, hits)
         try:
             return self._llm_judge(candidate, hits, prompt)
         except Exception as exc:
@@ -283,6 +298,8 @@ class DynamicEvolver(OrchestratingEvolver):
         existing, score = hit_map.get(existing_id, (None, 0.0))
         if decision in {DedupDecision.UPDATE, DedupDecision.SUPERSEDE} and existing is None:
             raise ValueError("修改型决策必须引用本次召回中的 existing_id")
+        if decision == DedupDecision.NOOP and existing is None and is_credential_unit(candidate):
+            return DedupDecision.ADD, None, 0.0
         return decision, existing, score
 
     # ------------------------------------------------------------------
@@ -322,7 +339,12 @@ class DynamicEvolver(OrchestratingEvolver):
         self, candidate: MemoryUnit
     ) -> tuple[DedupDecision, MemoryUnit | None, float]:
         try:
-            return self._judge(candidate, self._dedup.recall(candidate))
+            hits = [
+                (unit, score)
+                for unit, score in self._dedup.recall(candidate)
+                if not is_credential_dedup_isolated(candidate, unit)
+            ]
+            return self._judge(candidate, hits)
         except Exception as exc:
             logger.warning("DynamicEvolver batch recheck failed: %s", type(exc).__name__)
             return DedupDecision.ADD, None, 0.0

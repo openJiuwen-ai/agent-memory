@@ -207,9 +207,18 @@ def test_elasticsearch_compiles_complete_boolean_tree() -> None:
     "op,value,fragment",
     [
         (FilterOp.EQ, "x", 'metadata["user_metadata.f"] == "x"'),
-        (FilterOp.NE, "x", 'metadata["user_metadata.f"] != "x"'),
+        (
+            FilterOp.NE,
+            "x",
+            '((not exists metadata["user_metadata.f"]) || (metadata["user_metadata.f"] != "x"))',
+        ),
         (FilterOp.IN, ["x", "y"], 'metadata["user_metadata.f"] in ["x", "y"]'),
-        (FilterOp.NOT_IN, ["x"], 'metadata["user_metadata.f"] not in ["x"]'),
+        (
+            FilterOp.NOT_IN,
+            ["x"],
+            '((not exists metadata["user_metadata.f"]) || '
+            '(metadata["user_metadata.f"] not in ["x"]))',
+        ),
         (FilterOp.GT, 1, 'metadata["user_metadata.f"] > 1'),
         (FilterOp.GTE, 1, 'metadata["user_metadata.f"] >= 1'),
         (FilterOp.LT, 1, 'metadata["user_metadata.f"] < 1'),
@@ -373,3 +382,246 @@ def test_postgres_hierarchical_scope_keeps_empty_space_boundary() -> None:
 
     assert fragment == "scope_org = %s AND scope_space = %s"
     assert params == ["acme", ""]
+
+
+def test_milvus_handles_empty_in_and_not_in_defensively() -> None:
+    # pylint: disable=protected-access
+    assert (
+        MilvusVectorStore._filter_clause(FilterClause("user_metadata.f", FilterOp.IN, []))
+        == 'id == ""'
+    )
+    assert (
+        MilvusVectorStore._filter_clause(FilterClause("user_metadata.f", FilterOp.NOT_IN, []))
+        == 'id != ""'
+    )
+    # pylint: enable=protected-access
+
+
+def test_is_credential_filter_semantics_unified_across_memory_and_sqlite(tmp_path) -> None:
+    from jiuwen_memory.common.tokenizer.tokenizer_impl.whitespace_tokenizer import (
+        WhitespaceTokenizer,
+    )
+    from jiuwen_memory.common.type_def import MemoryUnit, Segment, matches_memory_unit
+    from jiuwen_memory.storage.fulltext_impl.in_memory_fulltext_store import (
+        InMemoryFulltextStore,
+    )
+    from jiuwen_memory.storage.fusion_impl.in_memory_fusion_store import InMemoryFusionStore
+    from jiuwen_memory.storage.shadow_impl.sqlite_shadow_index import (
+        SqliteDocumentShadowIndex,
+    )
+    from jiuwen_memory.storage.types import FusionQuery, FusionRecord, VectorRecord
+    from jiuwen_memory.storage.vector_impl.in_memory_vector_store import InMemoryVectorStore
+
+    scope = Scope(org="o", user="u")
+    units = [
+        MemoryUnit(
+            id="cred-bool",
+            scope=scope,
+            segments=[Segment(content="shared token alpha")],
+            system_metadata={"is_credential": True},
+        ),
+        MemoryUnit(
+            id="cred-upper",
+            scope=scope,
+            segments=[Segment(content="shared token beta")],
+            system_metadata={"is_credential": " \tTRUE\r\n "},
+        ),
+        MemoryUnit(
+            id="plain-false",
+            scope=scope,
+            segments=[Segment(content="shared token gamma")],
+            system_metadata={"is_credential": False},
+        ),
+        MemoryUnit(
+            id="plain-missing",
+            scope=scope,
+            segments=[Segment(content="shared token delta")],
+            system_metadata={},
+        ),
+    ]
+
+    tokenizer = WhitespaceTokenizer()
+    vec_store = InMemoryVectorStore()
+    ft_store = InMemoryFulltextStore(tokenizer=tokenizer)
+    fusion_store = InMemoryFusionStore(tokenizer=tokenizer)
+    shadow = SqliteDocumentShadowIndex(
+        db_path=str(tmp_path / "cred_filter.db"),
+        tokenizer=tokenizer,
+    )
+    try:
+        for unit in units:
+            meta = {f"system_metadata.{k}": v for k, v in unit.system_metadata.items()}
+            vec_store.insert(scope, [VectorRecord(id=unit.id, vector=[1.0, 0.0], metadata=meta)])
+            ft_store.insert(scope, [Document(id=unit.id, text=unit.content, metadata=meta)])
+            fusion_store.insert(
+                scope,
+                [
+                    FusionRecord(
+                        id=unit.id,
+                        vector=[1.0, 0.0],
+                        text=unit.content,
+                        scalars=meta,
+                    )
+                ],
+            )
+        shadow.insert_units(scope, units)
+
+        cases = [
+            (FilterClause("system_metadata.is_credential", FilterOp.NE, "true"),
+             {"plain-false", "plain-missing"}),
+            (FilterClause("system_metadata.is_credential", FilterOp.NE, True),
+             {"plain-false", "plain-missing"}),
+            (FilterClause("system_metadata.is_credential", FilterOp.EQ, "true"),
+             {"cred-bool", "cred-upper"}),
+            (FilterClause("system_metadata.is_credential", FilterOp.EQ, True),
+             {"cred-bool", "cred-upper"}),
+            (FilterClause("system_metadata.is_credential", FilterOp.EQ, ""), set()),
+            (FilterClause("system_metadata.is_credential", FilterOp.IN, [True]),
+             {"cred-bool", "cred-upper"}),
+            (FilterClause("system_metadata.is_credential", FilterOp.NOT_IN, ["TRUE"]),
+             {"plain-false", "plain-missing"}),
+        ]
+        for clause, expected in cases:
+            truth_ids = {u.id for u in units if matches_memory_unit(u, clause)}
+            vec_hits = vec_store.search(
+                scope, VectorQuery(vector=[1.0, 0.0], top_k=10, filters=clause)
+            )
+            ft_hits = ft_store.search(
+                scope, TextQuery(text="shared token", top_k=10, filters=clause)
+            )
+            fusion_hits = fusion_store.search(
+                scope,
+                FusionQuery(
+                    vector=[1.0, 0.0], text="shared token", top_k=10, scalar_filters=clause
+                ),
+            )
+            shadow_hits = shadow.search_fulltext(
+                scope, TextQuery(text="shared token", top_k=10, filters=clause)
+            )
+            vec_ids = {h.id for h in vec_hits}
+            ft_ids = {h.id for h in ft_hits}
+            fusion_ids = {h.id for h in fusion_hits}
+            shadow_ids = {h.id for h in shadow_hits}
+            assert truth_ids == expected, f"memory_filter mismatch for {clause}: {truth_ids}"
+            assert vec_ids == expected, f"InMemoryVectorStore mismatch for {clause}: {vec_ids}"
+            assert ft_ids == expected, f"InMemoryFulltextStore mismatch for {clause}: {ft_ids}"
+            assert fusion_ids == expected, (
+                f"InMemoryFusionStore mismatch for {clause}: {fusion_ids}"
+            )
+            assert shadow_ids == expected, f"SqliteShadowIndex mismatch for {clause}: {shadow_ids}"
+    finally:
+        shadow.close()
+
+
+def test_is_credential_projection_and_remote_compilers_normalize_truthy_targets() -> None:
+    from jiuwen_memory.common.type_def import MemoryUnit, Segment
+    from jiuwen_memory.construction.index_builder_impl._index_ops import index_metadata
+    from jiuwen_memory.storage._opengauss import compile_filter as compile_opengauss_filter
+
+    scope = Scope(org="o", user="u")
+    cred_bool = MemoryUnit(
+        id="u-bool",
+        scope=scope,
+        segments=[Segment(content="secret")],
+        system_metadata={"is_credential": True},
+    )
+    cred_ws = MemoryUnit(
+        id="u-ws",
+        scope=scope,
+        segments=[Segment(content="secret")],
+        system_metadata={"is_credential": " \tTRUE\n"},
+    )
+    plain_false = MemoryUnit(
+        id="u-false",
+        scope=scope,
+        segments=[Segment(content="plain")],
+        system_metadata={"is_credential": False},
+    )
+    plain_str_false = MemoryUnit(
+        id="u-str-false",
+        scope=scope,
+        segments=[Segment(content="plain")],
+        system_metadata={"is_credential": "false"},
+    )
+
+    assert index_metadata(cred_bool, layer="l2")["system_metadata.is_credential"] == "true"
+    assert index_metadata(cred_ws, layer="l2")["system_metadata.is_credential"] == "true"
+    assert "system_metadata.is_credential" not in index_metadata(plain_false, layer="l2")
+    assert "system_metadata.is_credential" not in index_metadata(plain_str_false, layer="l2")
+
+    ne_bool = normalize(FilterClause("system_metadata.is_credential", FilterOp.NE, True))
+    in_upper = normalize(
+        FilterClause("system_metadata.is_credential", FilterOp.IN, [" \tTRUE\n"])
+    )
+
+    # Milvus
+    assert _milvus_filter(ne_bool) == (
+        '((not exists metadata["system_metadata.is_credential"]) || '
+        '(metadata["system_metadata.is_credential"] != "true"))'
+    )
+    assert _milvus_filter(in_upper) == 'metadata["system_metadata.is_credential"] in ["true"]'
+
+    # Elasticsearch
+    assert _elasticsearch_filter(ne_bool) == {
+        "bool": {
+            "must_not": [
+                _es_scalar_match(
+                    "metadata.system_metadata.is_credential",
+                    {"term": {"metadata.system_metadata.is_credential": "true"}},
+                )
+            ]
+        }
+    }
+    assert _elasticsearch_filter(in_upper) == _es_scalar_match(
+        "metadata.system_metadata.is_credential",
+        {"terms": {"metadata.system_metadata.is_credential": ["true"]}},
+    )
+
+    # PostgreSQL
+    pg_ne_sql, pg_ne_params = compile_pg_filter(ne_bool)
+    assert "NOT COALESCE" in pg_ne_sql
+    assert pg_ne_params == ["system_metadata.is_credential", "true"]
+    _, pg_in_params = compile_pg_filter(in_upper)
+    assert pg_in_params == ["system_metadata.is_credential", "true"]
+
+    # openGauss
+    og_ne_sql, og_ne_params = compile_opengauss_filter(ne_bool)
+    assert og_ne_sql.startswith("(NOT ")
+    assert og_ne_params == [
+        "system_metadata.is_credential",
+        '{"system_metadata.is_credential":"true"}',
+    ]
+    _, og_in_params = compile_opengauss_filter(in_upper)
+    assert og_in_params == [
+        "system_metadata.is_credential",
+        '{"system_metadata.is_credential":"true"}',
+    ]
+
+    # IN/NOT_IN [True, False] 归约为同构 ["true"]，避免 Milvus/ES 异构数组报错；
+    # 纯非真值列表 [False] 保留原同类型，不触发空数组语法错误。
+    in_bool_pair = normalize(
+        FilterClause("system_metadata.is_credential", FilterOp.IN, [True, False])
+    )
+    not_in_bool_pair = normalize(
+        FilterClause("system_metadata.is_credential", FilterOp.NOT_IN, [True, False])
+    )
+    in_only_false = normalize(
+        FilterClause("system_metadata.is_credential", FilterOp.IN, [False])
+    )
+    assert _milvus_filter(in_bool_pair) == 'metadata["system_metadata.is_credential"] in ["true"]'
+    assert _milvus_filter(not_in_bool_pair) == (
+        '((not exists metadata["system_metadata.is_credential"]) || '
+        '(metadata["system_metadata.is_credential"] not in ["true"]))'
+    )
+    assert _milvus_filter(in_only_false) == 'metadata["system_metadata.is_credential"] in [false]'
+    assert _elasticsearch_filter(in_bool_pair) == _es_scalar_match(
+        "metadata.system_metadata.is_credential",
+        {"terms": {"metadata.system_metadata.is_credential": ["true"]}},
+    )
+    _, pg_pair_params = compile_pg_filter(in_bool_pair)
+    assert pg_pair_params == ["system_metadata.is_credential", "true"]
+    _, og_pair_params = compile_opengauss_filter(not_in_bool_pair)
+    assert og_pair_params == [
+        "system_metadata.is_credential",
+        '{"system_metadata.is_credential":"true"}',
+    ]

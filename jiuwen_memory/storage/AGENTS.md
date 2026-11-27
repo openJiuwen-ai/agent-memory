@@ -90,7 +90,7 @@
 1. **scope 原生隔离**  
    `scope: Scope` 为每个 Store 方法的显式第一入参，物理约束在该 scope 内。写入按 scope 落库，检索/点查/删除绝不跨 scope 返回或影响。`org/space/user/agent/session` 五段 scope 必须参与命名空间或过滤；空 `space` 只匹配空 space 兼容域。隔离必须在存储层强制，上层不依赖调用纪律。
    **文档影子索引（F08）已同构落地**：`memory_unit` 表加 org/space/user/agent/session 五列，scope 入参拼 WHERE AND 等值下推（对齐 KV 五段等值），与 project（收窄维 `IN ['', value]`）隔离正交。`list_units_by_md`（看门狗跨 scope 诊断）/`delete_units`（幂等按 unit_id）例外不限 scope。
-   显式 `unit_id` / `id` 候选过滤与可空 `system_metadata.message_role`（仅编译 `EQ`/`NE`/`IN`/`NOT_IN`，`NE`/`NOT_IN` 补 `IS NULL OR`，纳入向量预过滤）由 SQLite 编译器下推。文档编辑 `edit_md_file` 改写正文块对齐替代时清除 `message_role`（F16）。全文召回在 LIMIT 前过滤；向量的 ID、类别与团队约束通常先筛选系统谓词和 Scope，再计算 L2 距离并截断。`_requires_vector_prefilter` 仅豁免单独或 AND 中的 `memory_class != team_memory`；无其他此类约束时走 KNN 四倍过采样后 SQL 过滤，不补取。OR/NOT 保留原路径。
+   显式 `unit_id` / `id` 候选过滤与可空 `system_metadata.message_role`、`system_metadata.is_credential`（真值归一为 `"true"`，仅编译 `EQ`/`NE`/`IN`/`NOT_IN`，`NE`/`NOT_IN` 补 `IS NULL OR`，纳入向量预过滤）由 SQLite 编译器下推。文档编辑 `edit_md_file` 改写正文块对齐替代时清除 `message_role`（F16），跨块不对齐退化兜底新建块在任一被替换旧块为凭据时保守继承 `is_credential="true"`。全文召回在 LIMIT 前过滤；向量的 ID、类别与团队约束通常先筛选系统谓词和 Scope，再计算 L2 距离并截断。`_requires_vector_prefilter` 仅豁免单独或 AND 中的 `memory_class != team_memory` 与 `is_credential != true`（含真值变体）；无其他此类约束时走 KNN 四倍过采样后 SQL 过滤，不补取。OR/NOT 保留原路径。
    **ENTITY 端口（F09 起）**：`EntityStore` 方法首参同样是 `scope: Scope`；后端内部用 `space_id_from_scope(scope)` 计算 routing，`EntityStoreFilters` 的 `actor_id` / `assistant_id` / `session_id` 仍是显式过滤维度。授权代理 `_AuthorizedEntityStoreProxy` 直接用真实 Scope 判定，不再做有损近似。旧签名实现经 `LegacyEntityStoreAdapter` 过渡一个发布周期。
 
 2. **记录 id 在 scope 内唯一**

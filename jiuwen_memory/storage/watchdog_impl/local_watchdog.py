@@ -104,6 +104,26 @@ def _is_watched_md(path: str) -> bool:
     return _DAILY_NAME_RE.match(base) is not None
 
 
+def _realpath_in_root(markdown_root: str, abs_path: str) -> tuple[str, str] | None:
+    """统一 ``realpath`` + ``commonpath`` 边界校验；越界或等于 root 本身返回 None。"""
+    real_root = os.path.realpath(markdown_root)
+    real_path = os.path.realpath(abs_path)
+    try:
+        if os.path.commonpath([real_root, real_path]) != real_root:
+            return None
+    except ValueError:
+        return None
+    if real_path == real_root:
+        return None
+    return real_root, real_path
+
+
+def _resolve_in_root(markdown_root: str, md_filename: str) -> str | None:
+    """将相对 ``md_filename`` 解析为受限于 ``markdown_root`` 内的真实路径；越界返回 None。"""
+    pair = _realpath_in_root(markdown_root, os.path.join(markdown_root, md_filename))
+    return pair[1] if pair is not None else None
+
+
 class LocalWatchdog(Watchdog):
     """本地文件 md 看门狗：Observer 监听 → 桥接主循环 → unit 粒度增量同步。
 
@@ -223,6 +243,8 @@ class LocalWatchdog(Watchdog):
         watch_dir = self._markdown_root
         if not os.path.isdir(watch_dir):
             os.makedirs(watch_dir, exist_ok=True)
+        # 归一符号链接（如 macOS /tmp → /private/tmp），使监听路径与 FSEvents 回调同口径。
+        watch_dir = os.path.realpath(watch_dir)
 
         self._observer = Observer()
         handler = _MdFileHandler(self)
@@ -449,16 +471,22 @@ class LocalWatchdog(Watchdog):
         delete, file blocks the index never saw mean an insert. History rows
         (superseded/archived/forgotten) do not count as drift by themselves.
         """
+        resolved_path = _resolve_in_root(self._markdown_root, md_filename)
+        if resolved_path is None:
+            logger.warning(
+                "LocalWatchdog: skip out-of-root path during drift check: %s",
+                md_filename,
+            )
+            return False
         all_pairs = self._shadow.list_units_by_md(self._scope, md_filename)
         known_hashes = {ch for _, ch in all_pairs}
         active_pairs = self._shadow.list_units_by_md(
             self._scope, md_filename, lifecycle=LifecycleState.ACTIVE.value
         )
         active_hashes = {ch for _, ch in active_pairs}
-        abs_path = os.path.join(self._markdown_root, md_filename)
-        if not os.path.isfile(abs_path):
+        if not os.path.isfile(resolved_path):
             return bool(active_hashes)
-        new_hashes = {h for h, _, _ in collect_md_blocks(abs_path)}
+        new_hashes = {h for h, _, _ in collect_md_blocks(resolved_path)}
         return bool(active_hashes - new_hashes or new_hashes - known_hashes)
 
     # -- 内部：同步逻辑（在 to_thread 线程跑） ------------------------------- #
@@ -466,32 +494,25 @@ class LocalWatchdog(Watchdog):
     def _to_rel_path(self, abs_path: str) -> str | None:
         """绝对路径 → 相对 markdown_root 的路径（与 shadow 的 md_filename 列同口径）。
 
-        不在 root 下的路径返回 None（忽略）。用 ``os.path.relpath`` 归一，
-        返回值含 ``memory/...`` 前缀，与 ``LocalMarkdownStore._md_path`` 产出一致。
+        先对 ``markdown_root`` 与 ``abs_path`` 统一做 ``os.path.realpath`` 归一
+        （消除 macOS ``/tmp`` → ``/private/tmp`` 等目录软链差异，并防止目录内软链逃逸），
+        再用 ``os.path.commonpath`` 校验边界；不在 root 下或等于 root 本身返回 None。
         """
-        try:
-            rel = os.path.relpath(abs_path, self._markdown_root)
-        except ValueError:
-            # Windows 跨盘符 relpath 报错
-            logger.warning(
-                "LocalWatchdog: path outside markdown_root ignored: %s",
-                abs_path,
-            )
+        pair = _realpath_in_root(self._markdown_root, abs_path)
+        if pair is None:
+            if os.path.realpath(abs_path) != os.path.realpath(self._markdown_root):
+                logger.warning(
+                    "LocalWatchdog: path outside markdown_root ignored: %s",
+                    abs_path,
+                )
             return None
-        # 越界（含 ..）忽略
-        if rel.startswith(".."):
-            logger.warning(
-                "LocalWatchdog: path outside markdown_root ignored: %s",
-                abs_path,
-            )
-            return None
-        return rel.replace("\\", "/")
+        real_root, real_path = pair
+        return os.path.relpath(real_path, real_root).replace("\\", "/")
 
     def _sync_experience(self, path: str, deleted: bool) -> bool:
         source = ""
-        absolute = os.path.realpath(os.path.join(self._markdown_root, path))
-        root = os.path.realpath(self._markdown_root)
-        if os.path.commonpath([root, absolute]) != root:
+        absolute = _resolve_in_root(self._markdown_root, path)
+        if absolute is None:
             raise ValueError("Experience document is outside the Markdown root")
         if not deleted:
             with open(absolute, encoding="utf-8") as handle:
@@ -551,9 +572,15 @@ class LocalWatchdog(Watchdog):
         new_pairs: list[tuple[str, str]] = []  # (hash, content) 保序、去重
         new_hash_set: set[str] = set()
         if not deleted:
-            abs_path = os.path.join(self._markdown_root, md_filename)
-            if os.path.isfile(abs_path):
-                new_pairs = [(h, c) for h, c, _ in collect_md_blocks(abs_path)]
+            resolved_path = _resolve_in_root(self._markdown_root, md_filename)
+            if resolved_path is None:
+                logger.warning(
+                    "LocalWatchdog: skip out-of-root path during sync: %s",
+                    md_filename,
+                )
+                return False
+            if os.path.isfile(resolved_path):
+                new_pairs = [(h, c) for h, c, _ in collect_md_blocks(resolved_path)]
                 new_hash_set = {h for h, _ in new_pairs}
 
         # ④ diff

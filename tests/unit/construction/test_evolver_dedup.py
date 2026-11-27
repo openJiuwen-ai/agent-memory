@@ -1679,3 +1679,340 @@ def test_persist_graph_skips_only_bad_edge() -> None:
     )
 
     assert graph.edges == [("e-good", "e-other")]
+
+
+class _FixedRecallDedup:
+    """返回预置 (unit, score) 命中的去重召回桩，便于精确测试低分共享标识分支。"""
+
+    def __init__(self, hits: list[tuple[MemoryUnit, float]]) -> None:
+        self._hits = hits
+
+    def recall(self, _candidate: MemoryUnit) -> list[tuple[MemoryUnit, float]]:
+        return list(self._hits)
+
+
+def _make_fixed_recall_evolver(
+    hits: list[tuple[MemoryUnit, float]],
+    llm: _MockLLM,
+    *,
+    dedup_medium_similarity: float = 0.7,
+) -> tuple[OrchestratingEvolver, dict]:
+    stores = _create_stores()
+    storage = make_storage(kv=stores["kv"], vector=stores["vector"], graph=NoopGraphStore())
+    for unit, _ in hits:
+        storage.domain_store().add(unit.scope, [unit])
+    evolver = OrchestratingEvolver(
+        extractor=NoopExtractor(),
+        abstractor=NoopAbstractor(),
+        associator=NoopAssociator(),
+        index_builder=NoopIndexBuilder(storage.domain_store()),
+        storage=storage,
+        message_store=storage.kv(),
+        dedup=_FixedRecallDedup(hits),  # type: ignore[arg-type]
+        llm=llm,
+        dedup_medium_similarity=dedup_medium_similarity,
+    )
+    return evolver, stores
+
+
+class TestExactIdentifierLowSimilarityFallback:
+    """词面稀释导致 score < dedup_medium_similarity 时，共享精确邮箱/URL 仍交 LLM 判重。"""
+
+    @staticmethod
+    def test_batch_shared_email_below_medium_routes_to_llm_and_updates() -> None:
+        existing = _make_unit("e-464ccb0e", "用户提到的收件人邮箱地址是 chenruikai@huawei.com。")
+        candidate = _make_unit(
+            "c-543fa1b0",
+            "用户提到的收件人“华为邮箱”具体地址为 "
+            "chenruikai@huawei.com（基于上下文及助手执行结果确认）。",
+        )
+        llm = _MockLLM(
+            responses=[
+                json.dumps(
+                    [
+                        {
+                            "candidate_id": candidate.id,
+                            "decision": "update",
+                            "existing_id": existing.id,
+                            "reason": "same recipient email with alias",
+                        }
+                    ]
+                ),
+                "用户的华为邮箱收件人地址是 chenruikai@huawei.com。",
+            ]
+        )
+        evolver, stores = _make_fixed_recall_evolver([(existing, 0.639)], llm)
+
+        result = private(evolver, "_dedup_batch")([candidate])
+
+        assert result.updated_ids == [existing.id]
+        assert result.created_ids == []
+        assert private(llm, "_call_count") == 2
+        merged = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key(existing.id)))
+        assert merged.content == "用户的华为邮箱收件人地址是 chenruikai@huawei.com。"
+
+    @staticmethod
+    def test_batch_distinct_email_below_medium_keeps_direct_add_without_llm() -> None:
+        existing = _make_unit("e1", "用户提到的收件人邮箱地址是 alice@example.com。")
+        candidate = _make_unit("c1", "用户提到的收件人“测试邮箱”地址是 bob@example.com。")
+        llm = _MockLLM(responses=[])
+        evolver, _ = _make_fixed_recall_evolver([(existing, 0.63)], llm)
+
+        result = private(evolver, "_dedup_batch")([candidate])
+
+        assert result.created_ids == [candidate.id]
+        assert private(llm, "_call_count") == 0
+
+    @staticmethod
+    def test_single_shared_url_below_medium_routes_to_llm() -> None:
+        existing = _make_unit("e1", "生产发布接口是 https://Deploy.Example.com/api/v1/。")
+        candidate = _make_unit(
+            "c1", "这次使用的发布端点地址为 https://deploy.example.com/api/v1（附说明）。"
+        )
+        llm = _MockLLM(
+            responses=[
+                json.dumps({"decision": "noop", "existing_id": None, "reason": "same endpoint"})
+            ]
+        )
+        evolver, _ = _make_fixed_recall_evolver([(existing, 0.55)], llm)
+
+        decision, hit, score = private(evolver, "_dedup_single")(candidate)
+
+        assert decision == DedupDecision.NOOP
+        assert hit is not None and hit.id == existing.id
+        assert score == pytest.approx(0.55)
+        assert private(llm, "_call_count") == 1
+
+    @staticmethod
+    def test_batch_credential_isolation_blocks_shared_email_fallback() -> None:
+        existing = _make_unit("e1", "用户常用的发件邮箱地址是 1033994658@qq.com。")
+        existing.system_metadata["memory_class"] = "user_profile"
+        candidate = _make_unit("c1", "用户邮箱 1033994658@qq.com 的授权码是 secret-code-1234。")
+        candidate.system_metadata["memory_class"] = "long_term_memory"
+        candidate.system_metadata["is_credential"] = "true"
+        llm = _MockLLM(responses=[])
+        evolver, _ = _make_fixed_recall_evolver([(existing, 0.62)], llm)
+
+        result = private(evolver, "_dedup_batch")([candidate])
+
+        assert result.created_ids == [candidate.id]
+        assert private(llm, "_call_count") == 0
+
+    @staticmethod
+    def test_dynamic_evolver_judge_routes_shared_email_below_medium_to_llm() -> None:
+        from jiuwen_memory.construction.evolver_impl.dynamic_evolver import DynamicEvolver
+
+        evolver = object.__new__(DynamicEvolver)
+        set_private(evolver, "_dedup_high_similarity", 1.0)
+        set_private(evolver, "_dedup_medium_similarity", 0.7)
+        llm_calls: list[str] = []
+        set_private(evolver, "_resolve_consolidate_prompt", lambda _cand: "prompt")
+        set_private(
+            evolver,
+            "_llm_judge",
+            lambda cand, hits, _prompt: (
+                llm_calls.append(cand.id) or (DedupDecision.UPDATE, hits[0][0], hits[0][1])
+            ),
+        )
+        existing = _make_unit("e1", "收件邮箱是 ops@example.com。")
+        shared_cand = _make_unit("c1", "运维通知使用的邮箱为 OPS@EXAMPLE.COM（备注）。")
+        distinct_cand = _make_unit("c2", "另一收件邮箱是 dev@example.com。")
+
+        d1, h1, _ = private_method(evolver, "_judge")(shared_cand, [(existing, 0.58)])
+        d2, _, _ = private_method(evolver, "_judge")(distinct_cand, [(existing, 0.58)])
+
+        assert d1 == DedupDecision.UPDATE
+        assert h1 is existing
+        assert d2 == DedupDecision.ADD
+        assert llm_calls == ["c1"]
+
+    @staticmethod
+    def test_batch_and_single_prioritize_shared_identifier_into_top3_window() -> None:
+        distractors = [
+            (_make_unit("e1", "第一条无关低分记录。"), 0.65),
+            (_make_unit("e2", "第二条无关低分记录。"), 0.62),
+            (_make_unit("e3", "第三条无关低分记录。"), 0.60),
+        ]
+        target = _make_unit("e-target", "收件人邮箱是 target@example.com。")
+        hits = [*distractors, (target, 0.55)]
+        candidate = _make_unit("c1", "华为联系人邮箱具体为 target@example.com（附说明）。")
+        llm = _MockLLM(
+            responses=[
+                json.dumps(
+                    [
+                        {
+                            "candidate_id": candidate.id,
+                            "decision": "update",
+                            "existing_id": target.id,
+                            "reason": "matched fourth hit",
+                        }
+                    ]
+                ),
+                "华为联系人收件人邮箱是 target@example.com。",
+            ]
+        )
+        evolver, stores = _make_fixed_recall_evolver(hits, llm)
+
+        result = private(evolver, "_dedup_batch")([candidate])
+
+        assert result.updated_ids == [target.id]
+        merged = loads(stores["kv"].get(_DEFAULT_SCOPE, memory_key(target.id)))
+        assert merged.content == "华为联系人收件人邮箱是 target@example.com。"
+
+        single_llm = _MockLLM(
+            responses=[
+                json.dumps(
+                    {
+                        "decision": "update",
+                        "existing_id": target.id,
+                        "reason": "matched in single path",
+                    }
+                )
+            ]
+        )
+        single_evolver, _ = _make_fixed_recall_evolver(hits, single_llm)
+        decision, selected, score = private(single_evolver, "_dedup_single")(candidate)
+        assert decision == DedupDecision.UPDATE
+        assert selected is not None and selected.id == target.id
+        assert score == pytest.approx(0.55)
+
+    @staticmethod
+    def test_dynamic_evolver_prioritizes_shared_identifier_into_top5_window() -> None:
+        from jiuwen_memory.construction.evolver_impl.dynamic_evolver import DynamicEvolver
+
+        evolver = object.__new__(DynamicEvolver)
+        set_private(evolver, "_dedup_high_similarity", 1.0)
+        set_private(evolver, "_dedup_medium_similarity", 0.7)
+        seen_top5: list[list[str]] = []
+        set_private(evolver, "_resolve_consolidate_prompt", lambda _cand: "prompt")
+        set_private(
+            evolver,
+            "_llm_judge",
+            lambda _cand, hits, _prompt: (
+                seen_top5.append([u.id for u, _ in hits[:5]])
+                or (DedupDecision.UPDATE, hits[0][0], hits[0][1])
+            ),
+        )
+        distractors = [(_make_unit(f"e{i}", f"无关记录 {i}"), 0.68 - i * 0.01) for i in range(5)]
+        target = _make_unit("e-target", "目标邮箱 ops@example.com。")
+        cand = _make_unit("c1", "补充说明的运维邮箱 ops@example.com。")
+
+        decision, selected, _ = private_method(evolver, "_judge")(
+            cand, [*distractors, (target, 0.52)]
+        )
+
+        assert decision == DedupDecision.UPDATE
+        assert selected is target
+        assert seen_top5 and seen_top5[0][0] == "e-target"
+
+    @staticmethod
+    def test_exact_url_distinguishes_ports_and_preserves_query_delimiters() -> None:
+        from jiuwen_memory.construction.dedup import extract_exact_identifiers
+
+        existing = _make_unit("e1", "测试服务地址是 http://10.0.0.1:8080/api/a。")
+        candidate = _make_unit("c1", "备用服务地址是 http://10.0.0.1:9090/api/b。")
+        llm = _MockLLM(responses=[])
+        evolver, _ = _make_fixed_recall_evolver([(existing, 0.61)], llm)
+
+        result = private(evolver, "_dedup_batch")([candidate])
+
+        assert result.created_ids == [candidate.id]
+        assert private(llm, "_call_count") == 0
+        assert extract_exact_identifiers(
+            "查询接口 https://api.example.com/v1?a=1,2;b=3。"
+        ) == frozenset({"https://api.example.com/v1?a=1,2;b=3"})
+        # 退化占位 URL 不应剥离成裸 "https"/"http" 造成假碰撞
+        assert extract_exact_identifiers("参考 https://... 待定，或 http:///") == frozenset()
+        # 紧贴中文时应止步于 ASCII URL 末尾，不吞入后续 CJK 字符
+        assert extract_exact_identifiers(
+            "访问https://example.com/v1后确认"
+        ) == frozenset({"https://example.com/v1"})
+
+    @staticmethod
+    def test_exact_email_regex_avoids_quadratic_backtracking() -> None:
+        import time
+
+        from jiuwen_memory.construction.dedup import extract_exact_identifiers
+
+        adversarial = "a" * 3000 + "@" + "b." * 1500 + "!"
+        start = time.monotonic()
+        result = extract_exact_identifiers(adversarial)
+        elapsed = time.monotonic() - start
+
+        assert result == frozenset()
+        assert elapsed < 0.05, f"email regex backtracking too slow: {elapsed:.3f}s"
+
+    @staticmethod
+    def test_medium_score_branches_also_prioritize_out_of_window_shared_identifier() -> None:
+        from jiuwen_memory.construction.evolver_impl.dynamic_evolver import DynamicEvolver
+
+        distractors = [
+            (_make_unit("e1", "第一条中高分无关记录。"), 0.85),
+            (_make_unit("e2", "第二条中高分无关记录。"), 0.82),
+            (_make_unit("e3", "第三条中高分无关记录。"), 0.80),
+        ]
+        target = _make_unit("e-target", "目标收件邮箱是 ops@example.com。")
+        hits = [*distractors, (target, 0.52)]
+        candidate = _make_unit("c1", "补充别名后的运维邮箱 ops@example.com。")
+
+        # 1) _dedup_batch 中高分分支（best_score >= medium）仍前置第 4 条共享邮箱命中
+        batch_llm = _MockLLM(
+            responses=[
+                json.dumps(
+                    [
+                        {
+                            "candidate_id": candidate.id,
+                            "decision": "update",
+                            "existing_id": target.id,
+                            "reason": "matched fourth hit above medium",
+                        }
+                    ]
+                ),
+                "运维收件邮箱是 ops@example.com。",
+            ]
+        )
+        batch_evolver, _ = _make_fixed_recall_evolver(hits, batch_llm)
+        batch_result = private(batch_evolver, "_dedup_batch")([candidate])
+        assert batch_result.updated_ids == [target.id]
+
+        # 2) _dedup_single 中高分分支同样前置第 4 条共享邮箱命中
+        single_llm = _MockLLM(
+            responses=[
+                json.dumps(
+                    {
+                        "decision": "update",
+                        "existing_id": target.id,
+                        "reason": "matched in single above medium",
+                    }
+                )
+            ]
+        )
+        single_evolver, _ = _make_fixed_recall_evolver(hits, single_llm)
+        decision, selected, score = private(single_evolver, "_dedup_single")(candidate)
+        assert decision == DedupDecision.UPDATE
+        assert selected is not None and selected.id == target.id
+        assert score == pytest.approx(0.52)
+
+        # 3) DynamicEvolver._judge 中高分分支同样前置第 6 条共享邮箱命中进 top-5
+        dyn = object.__new__(DynamicEvolver)
+        set_private(dyn, "_dedup_high_similarity", 1.0)
+        set_private(dyn, "_dedup_medium_similarity", 0.7)
+        seen_top5: list[list[str]] = []
+        set_private(dyn, "_resolve_consolidate_prompt", lambda _cand: "prompt")
+        set_private(
+            dyn,
+            "_llm_judge",
+            lambda _cand, cur_hits, _prompt: (
+                seen_top5.append([u.id for u, _ in cur_hits[:5]])
+                or (DedupDecision.UPDATE, cur_hits[0][0], cur_hits[0][1])
+            ),
+        )
+        high_distractors = [
+            (_make_unit(f"e-hi-{i}", f"高分无关 {i}"), 0.90 - i * 0.02) for i in range(5)
+        ]
+        dyn_decision, dyn_selected, _ = private_method(dyn, "_judge")(
+            candidate, [*high_distractors, (target, 0.52)]
+        )
+        assert dyn_decision == DedupDecision.UPDATE
+        assert dyn_selected is target
+        assert seen_top5 and seen_top5[0][0] == "e-target"

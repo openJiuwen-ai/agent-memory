@@ -42,6 +42,7 @@ from jiuwen_memory.common.type_def import (
     Scope,
     filter_field_metadata_key,
 )
+from jiuwen_memory.common.type_def.memory_filter import normalize_is_credential_clause_value
 
 from ._support import scope_dims
 
@@ -91,19 +92,20 @@ def compile_pg_filter(expr: FilterExpr | None) -> tuple[str, list[Any]]:
         return "", []
     if isinstance(expr, FilterClause):
         key = filter_field_metadata_key(expr.field)
+        value = normalize_is_credential_clause_value(key, expr.op, expr.value)
         if expr.op in (FilterOp.EQ, FilterOp.NE):
-            base, params = _scalar_clause(key, expr.value)
+            base, params = _scalar_clause(key, value)
             if expr.op is FilterOp.NE:
                 return f"(NOT COALESCE({base}, FALSE))", params
             return f"(COALESCE({base}, FALSE))", params
         if expr.op is FilterOp.CONTAINS:
-            base, params = _array_contains_clause(key, expr.value)
+            base, params = _array_contains_clause(key, value)
             return f"(COALESCE({base}, FALSE))", params
         if expr.op in (FilterOp.IN, FilterOp.NOT_IN):
             parts: list[str] = []
             params: list[Any] = []
-            for value in expr.value:
-                part, part_params = _scalar_clause(key, value)
+            for item in value:
+                part, part_params = _scalar_clause(key, item)
                 parts.append(part)
                 params.extend(part_params)
             base = f"({' OR '.join(parts)})"
@@ -115,7 +117,7 @@ def compile_pg_filter(expr: FilterExpr | None) -> tuple[str, list[Any]]:
             return (
                 "(CASE WHEN jsonb_typeof(metadata->%s) = 'number' "
                 f"THEN (metadata->>%s)::numeric {op} %s::numeric ELSE FALSE END)",
-                [key, key, expr.value],
+                [key, key, value],
             )
         raise ValidationError(f"unsupported filter op for pgvector: {expr.op}")
     if not isinstance(expr, FilterGroup):

@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-26 |
+| 最近一次修订日期 | 2026-11-28 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-postgres-backend.md，docs/features/storage/F03-storage-ssl.md，docs/features/storage/F04-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Markdown 块更新契约
@@ -21,7 +21,7 @@ new_title=None, old_title=None) -> bool` 定位并替换首个符合条件的块
 `edit_content` 要求 old_text 在文件全文中唯一，支持任意子串及跨块编辑。
 USER.md/MEMORY.md 单行正文变化时，可同步替换未显式编辑标题中的唯一旧事实片段；
 概括性标题、daily 团队标题及跨块编辑标题不自动改写。
-文件编辑后标题同步到 shadow，重复正文结合块位置和旧标题定位，不仅按哈希覆盖。
+文件编辑后标题同步到 shadow，重复正文结合块位置和旧标题定位，不仅按哈希覆盖；跨块编辑降级新建条目时若任一被替换旧块带 `is_credential`，新块保守继承 `is_credential="true"`。
 标题与正文同次文件写入，shadow 更新失败时恢复文件快照并补偿索引。
 
 ## 显式明文维护增量能力
@@ -101,9 +101,9 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
 11. **metadata 原生类型入库**：Document / VectorRecord 的 metadata 保留 JSON 标量
     原生类型，不统一字符串化；不同类型之间不做隐式比较转换。
 12. **metadata 过滤区分标量与数组**：`EQ` / `IN` 的正向匹配只命中标量，
-    `CONTAINS` 只命中数组成员；`NE` / `NOT_IN` 是对应正向谓词的逻辑否定；范围算子
+    `CONTAINS` 只命中数组成员；`NE` / `NOT_IN` 是对应正向谓词的逻辑否定（含缺失字段命中——Milvus 须显式并入 `not exists`，空 `IN` / `NOT_IN` 分别编译为恒假/恒真，避免空数组语法错误）；范围算子
     只作用于标量，数组字段不按「任一成员命中」判定。后端若原生不保留单值/数组形态，
-    必须用内部派生字段恢复语义。
+    必须用内部派生字段恢复语义。`system_metadata.is_credential` 在内存过滤、SQLite 影子索引下推、`_index_ops.index_metadata` 写入投影以及 Milvus / Elasticsearch / PostgreSQL / openGauss 四个远端后端查询目标编译中统一归一为 `"true"` 与 `None`/`NULL`（兼容布尔 `True` 与大小写/空白不敏感 `"true"`；`IN`/`NOT_IN` 含真值时归约为同构 `["true"]`）。
 13. **所有 Store 必须实现 `store_type()` 和 `health()`**：继承自 `BaseStore`。
 14. **多租户隔离默认依赖逻辑 scope 边界**：当前不要求物理分库/分 collection，但要求同一逻辑 key/id 在不同 scope 下严格命名空间隔离。
 15. **EncryptedKVStore 只装饰 KV，不实现算法**：写前加密、读后解密通过注入的 `CryptographyProvider` 完成；`list` 在解密后执行 MemoryUnit 过滤，不能把过滤下推到密文 raw KV。

@@ -52,7 +52,12 @@ from jiuwen_memory.common.type_def import (
     iter_clauses,
 )
 from jiuwen_memory.common.type_def.memory_codec import dumps, loads
-from jiuwen_memory.common.type_def.memory_filter import COLLECTIVE_DOCUMENT_PREFIXES
+from jiuwen_memory.common.type_def.memory_filter import (
+    COLLECTIVE_DOCUMENT_PREFIXES,
+    IS_CREDENTIAL_FILTER_FIELD,
+    normalize_is_credential_clause_value,
+    normalize_is_credential_value,
+)
 from jiuwen_memory.config.encryption import AtRestLocation
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.shadow import DocumentShadowIndex, ShadowIndexProducer
@@ -134,6 +139,15 @@ _COLLECTIVE_SHAREABLE_SQL = (
     "'$.system_metadata.collective_destination') = 'text' "
     f"AND {_COLLECTIVE_DESTINATION_SQL} != '') OR ({_COLLECTIVE_PATH_SQL}) "
     "THEN 0 ELSE 1 END END"
+)
+_IS_CREDENTIAL_SQL = (
+    "CASE "
+    "WHEN json_type(CAST(unit_json AS TEXT), '$.system_metadata.is_credential') = 'true' "
+    "THEN 'true' "
+    "WHEN lower(trim(COALESCE(json_extract(CAST(unit_json AS TEXT), "
+    "'$.system_metadata.is_credential'), ''), ' ' || char(9) || char(10) || char(13))) = 'true' "
+    "THEN 'true' "
+    "ELSE NULL END"
 )
 
 
@@ -263,6 +277,7 @@ _SYSTEM_PREDICATE_COLUMNS = {
     # team 读取单元 JSON，保留既有表结构；缺失值按空串参与过滤，无需新增物理列。
     "system_metadata.team": "COALESCE(json_extract(CAST(unit_json AS TEXT), "
     "'$.system_metadata.team'), '')",
+    "system_metadata.is_credential": _IS_CREDENTIAL_SQL,
     "system_metadata.memory_type": _MEMORY_TYPE_SQL,
     # message_role 为可空字符串键（F16）：不套 COALESCE，避免 NE "" / NOT_IN ["", ...] 误杀缺值行
     # 及 EQ "" 捞出无角色行占满 top_k；仅编译 EQ/NE/IN/NOT_IN，NE/NOT_IN 显式补 IS NULL OR。
@@ -271,7 +286,9 @@ _SYSTEM_PREDICATE_COLUMNS = {
     ),
 }
 
-_NULLABLE_SYSTEM_PREDICATE_FIELDS = frozenset({"system_metadata.message_role"})
+_NULLABLE_SYSTEM_PREDICATE_FIELDS = frozenset(
+    {"system_metadata.message_role", IS_CREDENTIAL_FILTER_FIELD}
+)
 
 
 def _compile_clause(
@@ -337,10 +354,11 @@ def _compile_system_filters(expr) -> tuple[str | None, list]:
         col = _SYSTEM_PREDICATE_COLUMNS.get(expr.field)
         if col is None:
             return None, []
+        clause_value = normalize_is_credential_clause_value(expr.field, expr.op, expr.value)
         return _compile_clause(
             col,
             expr.op,
-            expr.value,
+            clause_value,
             nullable_string=expr.field in _NULLABLE_SYSTEM_PREDICATE_FIELDS,
         )
     if expr.logic is FilterLogic.AND:
@@ -374,11 +392,12 @@ def _compile_system_filters(expr) -> tuple[str | None, list]:
 def _requires_vector_prefilter(
     expr: FilterExpr | None, *, ignore_default_visibility: bool = False,
 ) -> bool:
-    """Keep selective constraints ahead of truncation; team exclusion alone uses KNN."""
+    """Keep selective constraints ahead of truncation; team/credential exclusion uses KNN."""
     if expr is None:
         return False
     scoped_fields = {
         "unit_id", "id", "system_metadata.memory_class", "system_metadata.team",
+        "system_metadata.is_credential",
         "system_metadata.collective.project", "system_metadata.collective.team",
         "system_metadata.collective.group", "system_metadata.collective.shareable",
         "system_metadata.message_role",
@@ -389,12 +408,19 @@ def _requires_vector_prefilter(
             and expr.op is FilterOp.NE
             and expr.value == "team_memory"
         )
+        excludes_credential = (
+            expr.field == IS_CREDENTIAL_FILTER_FIELD
+            and expr.op is FilterOp.NE
+            and normalize_is_credential_value(expr.value) == "true"
+        )
         default_visibility = (
             ignore_default_visibility
             and expr.field == "system_metadata.collective.shareable"
             and expr.op is FilterOp.EQ and expr.value is True
         )
-        return expr.field in scoped_fields and not (excludes_team or default_visibility)
+        return expr.field in scoped_fields and not (
+            excludes_team or excludes_credential or default_visibility
+        )
     if expr.logic is FilterLogic.AND:
         return any(
             _requires_vector_prefilter(child, ignore_default_visibility=ignore_default_visibility)
@@ -624,18 +650,20 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
 
     @staticmethod
     def _project_of(unit: MemoryUnit) -> str:
-        """取 project：``system_metadata.project``（agent 场景标量直传）优先，
-        ``coords.project``（router 场景 ``_route`` 回写）兜底，空落空串
+        """取 project：显式 ``system_metadata.project``（含显式空串 ``""``）优先，
+        缺失时回落 ``coords.project``（router 场景 ``_route`` 回写），空落空串
         （``_DEFAULT_PROJECT``，跨项目可见；文档记忆根设计 §1.2/§3）。与召回侧
         ``_PROJECT_FILTER_FIELD`` 同 key 口径一致——
         召回按 ``system_metadata.project`` 谓词下推，写入侧同此 key 取值。
         """
         metadata = unit.system_metadata or {}
-        if metadata.get("memory_type") == "experience":
+        if (
+            metadata.get("memory_type") == "experience"
+            or metadata.get(MEMORY_CLASS_KEY) == "user_profile"
+        ):
             return _DEFAULT_PROJECT
-        project = metadata.get("project")
-        if isinstance(project, str) and project.strip():
-            return project.strip()
+        if "project" in metadata and isinstance(metadata["project"], str):
+            return metadata["project"].strip()
         coords = metadata.get(COORDS_KEY) or {}
         return coords.get("project") or _DEFAULT_PROJECT
 
@@ -939,16 +967,16 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         # （SUPERSEDE 改的就是它们），且 t_valid=None 是合法值非兜底。
         if project == _DEFAULT_PROJECT and old_project:
             project = old_project
-        # user_profile 无 project 归属，project 列恒落空串（与 insert_units 同口径，
-        # 见写入侧守卫）。放兜底守卫之后，覆盖其结果——防旧数据 user_profile 的
-        # old_project 为具体值时被兜底守卫错误保留。
-        if category == "user_profile":
-            project = _DEFAULT_PROJECT
-        self._sync_project_metadata(unit, project)
         if not md_filename and old_md_filename:
             md_filename = old_md_filename
         if category == _DEFAULT_CLASS and old_category:
             category = old_category
+        # user_profile 无 project 归属，project 列恒落空串（与 insert_units 同口径，
+        # 见写入侧守卫）。放 category/project 兜底守卫之后，覆盖其结果——防旧数据
+        # user_profile 的 old_project 为具体值或更新入参缺省 memory_class 时被错误保留。
+        if category == "user_profile":
+            project = _DEFAULT_PROJECT
+        self._sync_project_metadata(unit, project)
         # md_filename 回填进 unit.system_metadata：守卫只把旧值兜进投影列局部变量，
         # 不回填会让 dumps(unit) 序列化的 unit_json 丢键 → get_units 读回不带键 →
         # 下一轮 read-modify-write 的 old 也不带键（传染性丢失）。MD_FILENAME_KEY 是
@@ -1312,11 +1340,11 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
         按 distance 排序截断到目标 k）。无 project 谓词兜底 ``project = ''``（只召回
         跨项目可见空串行，与 search_fulltext 同口径）。
 
-        显式 ID、memory_class 或 team 约束通常先筛选满足系统条件及 Scope
+        显式 ID、memory_class、is_credential 或 team 约束通常先筛选满足系统条件及 Scope
         的候选，再计算 L2 距离排序截断；避免高分无关记录挤占候选。
-        单独或 AND 中的 memory_class != team_memory 不触发此路径；若无其他
-        ID/类别/团队约束，则复用 KNN 过采样后 SQL 过滤，不足时不补取。
-        OR/NOT 中的类别或团队约束保留原路径。先筛选路径的距离计算量取决于
+        单独或 AND 中的 memory_class != team_memory 与 is_credential != true 不触发此路径；
+        若无其他 ID/类别/凭据/团队约束，则复用 KNN 过采样后 SQL 过滤，不足时不补取。
+        OR/NOT 中的类别、凭据或团队约束保留原路径。先筛选路径的距离计算量取决于
         过滤后的候选数，top_k 只限制返回数量。
 
         **降级模式**（``vec_enabled=False``）：返回空列表，不抛错——让上层检索编排照常运行，
