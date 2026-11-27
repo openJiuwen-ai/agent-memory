@@ -259,6 +259,10 @@ existing/score；未声明策略或未配置时不限定。范围外结论在校
 权限放行，contributor 不能凭本人所写的附加 UPDATE 绕过。原因是直接读取不经
 检索选取算子的复现要求与隔离期，普通取用应走 `search`。
 
+个人空间中，成员表为空且只登记一个用户归属主体时，该用户本人可用 `get` 查看本空间
+由 `system:experience` 写入的经验，使点读与该用户已有的列表可见范围一致。
+共享空间仍按原有内容权限裁决。
+
 该限制目前只覆盖 `get/list`，`inspect/trace` 仍按 READ 返回经验条目，未经过
 Selector。此查看权限覆盖缺口统一记录在 [F04 安全能力](../common/F04-security-interfaces-and-encryption.md)
 的「空间、内容与返回快照隔离」中。

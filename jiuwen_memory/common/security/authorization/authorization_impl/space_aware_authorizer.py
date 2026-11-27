@@ -253,6 +253,9 @@ class SpaceAwareAuthorizer(Authorizer):
                     rule.own_actions_apply, resource.attributes
                 ),
                 delegation=delegation,
+                memory_type=resource.attributes.get("memory_type", "")
+                if resource.action is Action.READ
+                else "",
             )
             if outcome.allowed:
                 return self._decision(outcome)
