@@ -857,6 +857,10 @@ MemoryAPI 返回用户终端；不把原文附加到 MemoryUnit、普通 get/rec
 - 段 = 输入中相邻、锁 key 相同的 infer 条目；任何时刻只持有一把锁，混合用户的批次
   不会死锁。`sequential` 与 `continue_on_error=false` 的段覆盖整段连续 infer 条目，
   `grouped` 的段是一批（受 `max_items` / `max_tokens` 约束）。
+- 普通 `document_fact` infer 段允许并发生成候选。摄入、原文维护和上下文读取受用户锁保护；
+  候选返回后须重新取得同一把锁，按当前状态去重并提交。不同请求可按抽取完成顺序提交。
+  逐条回退沿用相同锁边界。提交前取锁超时按受影响的条目返回，不重放模型调用。
+  空候选直接成功返回。等待提交锁时可取消；已经开始提交时须等落盘与 ID 记账完成再释放锁。
 - `LockTimeoutError` 按条归集为该批条目的失败（`error_type="LockTimeoutError"`），
   不跳过锁；锁后端不可用按后端错误失败，不降级为无锁。
 - 合批段仅含一条输入，且 `ExtractNotCommittedError` 的直接原因为 `LLMTimeoutError` 时，
