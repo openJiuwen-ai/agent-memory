@@ -36,6 +36,7 @@ from jiuwen_memory.construction.common import (
     inferred_attribution,
     merge_unit_tags,
 )
+from jiuwen_memory.construction.dedup import is_credential_unit
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
 from jiuwen_memory.construction.message_role import (
     filter_effective_units,
@@ -103,8 +104,10 @@ class KeywordExtractor(Extractor):
                 d.provenance = [unit.id]
                 d.supersedes = ""
                 d.hierarchy = HierarchyRef()
-                d.system_metadata = inherited_system_metadata([unit]) | inferred_attribution(
-                    None, self._importance_category_map
+                d.system_metadata = (
+                    inherited_system_metadata([unit])
+                    | inferred_attribution(None, self._importance_category_map)
+                    | ({"is_credential": "true"} if is_credential_unit(unit) else {})
                 )
                 d.user_metadata = inherited_user_metadata([unit])
                 if "extracted" not in d.tags:
@@ -154,7 +157,8 @@ class KeywordExtractor(Extractor):
             # 合并 write tags（engine 已写到源 unit）+ 系统标记 procedural
             tags=merge_unit_tags(source.tags, ["procedural"]),
             system_metadata=inherited_system_metadata(units)
-            | inferred_attribution(None, self._importance_category_map),
+            | inferred_attribution(None, self._importance_category_map)
+            | ({"is_credential": "true"} if any(is_credential_unit(u) for u in units) else {}),
             user_metadata=inherited_user_metadata(units),
             lifecycle=LifecycleState.ACTIVE,
         )

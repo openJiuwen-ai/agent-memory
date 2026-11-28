@@ -227,6 +227,38 @@ def test_to_rel_path_rejects_escape(tmp_path) -> None:
     assert wd._to_rel_path(outside) is None
 
 
+def test_to_rel_path_normalizes_symlinked_root_and_rejects_symlink_escape(tmp_path) -> None:
+    """根路径经软链传入（如 macOS /tmp → /private/tmp）时，与真实路径回调同口径归一。"""
+    real_root = tmp_path / "real_root"
+    (real_root / "memory" / "p1").mkdir(parents=True)
+    md_file = real_root / "memory" / "p1" / "MEMORY.md"
+    md_file.write_text("# t\nhello\n", encoding="utf-8")
+
+    link_root = tmp_path / "link_root"
+    os.symlink(real_root, link_root)
+
+    wd = LocalWatchdog(
+        shadow=SqliteDocumentShadowIndex(
+            db_path=str(tmp_path / "shadow.db"), tokenizer=WhitespaceTokenizer()
+        ),
+        markdown_root=str(link_root),
+        scope=SCOPE,
+    )
+    # 回调传入 realpath（模拟 macOS FSEvents 返回 /private/tmp/...）
+    assert wd._to_rel_path(str(md_file.resolve())) == "memory/p1/MEMORY.md"
+    # 删除事件叶文件已不存在时，父目录软链仍正确归一
+    deleted_path = str((real_root / "USER.md").resolve())
+    assert wd._to_rel_path(deleted_path) == "USER.md"
+    # 根目录自身不是文件，应忽略
+    assert wd._to_rel_path(str(real_root.resolve())) is None
+    # 目录内指向外部文件的软链应被拒绝
+    outside = tmp_path / "outside.md"
+    outside.write_text("# t\nsecret\n", encoding="utf-8")
+    escape_link = real_root / "USER.md"
+    os.symlink(outside, escape_link)
+    assert wd._to_rel_path(str(escape_link)) is None
+
+
 # -- _sync_one 增量同步 ------------------------------------------------------ #
 
 
@@ -582,3 +614,53 @@ def test_team_manual_edit_preserves_partition(tmp_path):
         assert units[0].system_metadata[MEMORY_CLASS_KEY] == "team_memory"
     finally:
         watcher._shadow.close()
+
+
+def test_sync_one_rejects_out_of_root_symlink_and_path_traversal(tmp_path):
+    """_sync_one 读取前复核 realpath，拒绝根外软链与越界 md_filename。"""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text("# secret\noutside line\n", encoding="utf-8")
+    escape_link = root / "USER.md"
+    escape_link.symlink_to(outside)
+
+    watcher = _watchdog(root)
+    # pylint: disable=protected-access
+    try:
+        assert watcher._sync_one("USER.md", False) is False
+        assert watcher._sync_one("../outside.md", False) is False
+        assert watcher._shadow.list_units(SCOPE) == []
+    finally:
+        watcher._shadow.close()
+    # pylint: enable=protected-access
+
+
+def test_reconcile_and_has_drift_skip_out_of_root_symlink_without_deleting_shadow(tmp_path):
+    """停机期间已登记文件被替换为根外软链时，_has_drift 不读根外内容且不误删原 shadow 索引。"""
+    root = tmp_path / "root"
+    root.mkdir()
+    user_md = root / "USER.md"
+    user_md.write_text("# profile\noriginal user fact\n", encoding="utf-8")
+    outside = tmp_path / "outside_secret.md"
+    outside.write_text("# secret\noutside secret fact\n", encoding="utf-8")
+
+    watcher = _watchdog(root)
+    # pylint: disable=protected-access
+    try:
+        assert watcher._sync_one("USER.md", False) is True
+        before_entries = watcher._shadow.list_units(SCOPE)
+        assert len(before_entries) == 1
+
+        user_md.unlink()
+        user_md.symlink_to(outside)
+
+        assert watcher._has_drift("USER.md") is False
+        assert watcher.reconcile_all() == 0
+        after_entries = watcher._shadow.list_units(SCOPE)
+        assert [uid for uid, _ in after_entries] == [uid for uid, _ in before_entries]
+        units = watcher._shadow.get_units(SCOPE, [uid for uid, _ in after_entries])
+        assert [u.content for u in units] == ["original user fact"]
+    finally:
+        watcher._shadow.close()
+    # pylint: enable=protected-access

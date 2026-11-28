@@ -43,6 +43,7 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
 )
 from jiuwen_memory.construction.abstractor import AbstractorProducer
+from jiuwen_memory.construction.dedup import is_credential_unit
 from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 from jiuwen_memory.construction.message_role import (
     fence_role_content,
@@ -366,6 +367,9 @@ class LLMAbstractor(Abstractor):
         for u in effective_units:
             if u.lifecycle != LifecycleState.ACTIVE:
                 skipped_reasons["lifecycle"] = skipped_reasons.get("lifecycle", 0) + 1
+                continue
+            if is_credential_unit(u):
+                skipped_reasons["credential"] = skipped_reasons.get("credential", 0) + 1
                 continue
             if not u.content.strip():
                 skipped_reasons["empty_content"] = skipped_reasons.get("empty_content", 0) + 1
@@ -734,6 +738,15 @@ class LLMAbstractor(Abstractor):
                 metadata["portrait_category"] = c.portrait_category
             metadata.update(c.metadata)
 
+            source_units = [source_map[source_id] for source_id in valid_source_ids]
+            sys_meta = (
+                inherited_system_metadata(source_units)
+                | metadata
+                # 重要度 F12：抽象产物写 origin=inferred，重要度取 default 类别值（覆盖继承值）
+                | inferred_attribution(None, self._importance_category_map)
+            )
+            if any(is_credential_unit(src) for src in source_units):
+                sys_meta["is_credential"] = "true"
             unit = MemoryUnit(
                 id=str(uuid.uuid4()),
                 scope=primary_source.scope,
@@ -747,15 +760,8 @@ class LLMAbstractor(Abstractor):
                 ),
                 provenance=valid_source_ids,
                 tags=c.keywords,
-                system_metadata=inherited_system_metadata(
-                    [source_map[source_id] for source_id in valid_source_ids]
-                )
-                | metadata
-                # 重要度 F12：抽象产物写 origin=inferred，重要度取 default 类别值（覆盖继承值）
-                | inferred_attribution(None, self._importance_category_map),
-                user_metadata=inherited_user_metadata(
-                    [source_map[source_id] for source_id in valid_source_ids]
-                ),
+                system_metadata=sys_meta,
+                user_metadata=inherited_user_metadata(source_units),
                 lifecycle=LifecycleState.ACTIVE,
             )
             result.append(unit)

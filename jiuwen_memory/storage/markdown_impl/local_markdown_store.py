@@ -650,8 +650,8 @@ class LocalMarkdownStore(MarkdownStore):
 
     @staticmethod
     def _project_of(unit: MemoryUnit) -> str:
-        """取 project：``system_metadata.project``（agent 场景标量直传）优先，
-        ``coords.project``（router 场景 ``_route`` 回写）兜底，空落空串。
+        """取 project：显式 ``system_metadata.project``（含显式空串 ``""``）优先，
+        缺失时回落 ``coords.project``（router 场景 ``_route`` 回写），空落空串。
 
         project 不入 KERNEL / TRANSIENT / NON_PROPAGATED 保留集——agent 场景无
         router，coords 是 dict 会被 ``_reject_non_scalar_metadata`` 拒，故 project
@@ -659,9 +659,8 @@ class LocalMarkdownStore(MarkdownStore):
         unit。两路同 key 取值，与召回侧 shadow ``_PROJECT_FILTER_FIELD`` 口径一致。
         """
         metadata = unit.system_metadata or {}
-        project = str(metadata.get("project") or "").strip()
-        if project:
-            return project
+        if "project" in metadata and isinstance(metadata["project"], str):
+            return metadata["project"].strip()
         coords = metadata.get(COORDS_KEY)
         if isinstance(coords, dict):
             project = str(coords.get("project") or "").strip()

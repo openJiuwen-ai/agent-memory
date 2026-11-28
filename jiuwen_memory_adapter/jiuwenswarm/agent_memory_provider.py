@@ -30,11 +30,12 @@
 - ``prefetch`` 与 ``sync_turn`` 共用 ``_prepare`` 剥 TUI 信封（§6.2-E），保证检索
   query 与落盘内容形态一致。
 - 工作场景 prefetch 召回统一过滤 ``tier in (semantic, core, procedural)``（§6.2-F），排除
-  EPISODIC 对话原文；``agent_memory_search`` 工具不过滤（显式检索允许命中原文）。
-  过滤器是 dict DSL，两模式共用（HTTP 直接下发；进程内经 RetrievalQuery 边界
-  normalize）。rail 传入 ``project`` 时 prefetch 追加
-  ``system_metadata.project IN ['', project]``，与 ``agent_memory_search`` 同口径。
-  prefetch 另用 ``read_md_file`` 读取 ``USER.md`` 的条目直接注入，不经相关度筛选，
+  EPISODIC 对话原文与 ``is_credential="true"`` 凭据条目；``agent_memory_search`` 工具不过滤
+  tier 与凭据（显式检索允许命中原文及按需查凭据）。过滤器是 dict DSL，两模式共用（HTTP 直接下发；
+  进程内经 RetrievalQuery 边界 normalize）。rail 传入 ``project`` 时 prefetch 与
+  ``agent_memory_search`` 均追加 ``system_metadata.project = project`` 等值过滤（不混入空项目
+  ``MEMORY.md`` / daily，F06/F09 项目隔离）；prefetch 另用 ``read_md_file`` 读取 ``USER.md``
+  的非凭据条目直接注入（超出条数/字数上限截断时，补一次仅限 ``user_profile`` 的按需检索），
   与检索命中去重后一并返回。
 - HTTP 客户端带熔断器（连续 5 次失败冷却 120s）、分操作超时（读 30s / 写 300s，
   infer=true 的 add 含真实 LLM 抽取）、可选 Bearer 认证（§6.2-B/C）、healthz 探活。
@@ -126,6 +127,14 @@ logger = logging.getLogger(
     "jiuwenswarm.agents.harness.common.memory.external.agent_memory_provider"
 )
 install_privacy_filter(logger)
+
+
+def _is_credential_metadata(metadata: object) -> bool:
+    """判断 system_metadata 映射是否标记为凭据（兼容 bool True 与大小写不敏感 'true'）。"""
+    if not isinstance(metadata, Mapping):
+        return False
+    value = metadata.get("is_credential")
+    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
 
 # HTTP 客户端：分操作超时（秒）。infer=true 的 add 触发真实 LLM 抽取 + dedup，
 # 写路径超时须长于读路径（§6.2-C，对齐 mem2_provider）。
@@ -1646,16 +1655,25 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         if kwargs.get("background") or not isinstance(query, str) or not query.strip():
             return await ordinary_recall
         supplement = BaseDocumentScene.project_recall(
-            context, query, self._scene.resolve_project(kwargs), top_k=5,
+            context,
+            query,
+            self._scene.resolve_project(kwargs),
+            top_k=5,
+            exclude_credentials=True,
         )
         if supplement is None:
             return await ordinary_recall
         ordinary, hits = await asyncio.gather(ordinary_recall, supplement)
-        shared = dict.fromkeys(
-            item["content"]
-            for item in hits
-            if item.get("content") and item["content"] not in ordinary
-        )
+        shared: list[str] = []
+        seen_shared: set[str] = set()
+        for item in hits:
+            content = item.get("content")
+            if not content or item.get("is_credential"):
+                continue
+            if content in ordinary or content in seen_shared:
+                continue
+            seen_shared.add(content)
+            shared.append(content)
         return "\n\n".join(text for text in (ordinary, "\n".join(shared)) if text)
 
     # -- MemoryProvider: 每轮回写（after_invoke，非心跳/cron） --------------- #
@@ -2922,6 +2940,7 @@ class _HttpClient(_AgentMemoryClient):
                 "item_id": it.get("unit_id", ""),
                 "content": it.get("content", ""),
                 "score": it.get("score", 0),
+                "is_credential": _is_credential_metadata(it.get("system_metadata")),
             }
             for it in items
             if isinstance(it, dict)
@@ -2972,9 +2991,10 @@ class _HttpClient(_AgentMemoryClient):
             "item_id": unit.get("id", ""),
             "content": cls._content_view(unit),
             "tier": unit.get("tier", ""),
+            "is_credential": _is_credential_metadata(unit.get("system_metadata")),
         }
 
-    async def read_md_file(
+    async def read_md_file(  # pylint: disable=too-many-arguments
         self, md_filename, scope, *, project="", line_range=None, team="", target=None
     ) -> list[dict[str, Any]] | None:
         """读 md 文件（md文件接口 F08）。响应是 ``list[MemoryUnit]`` 序列化顶层数组（与 add 同构）。
@@ -3009,7 +3029,7 @@ class _HttpClient(_AgentMemoryClient):
             return []
         return [self._unit_view(u) for u in units if isinstance(u, dict)]
 
-    async def edit_md_file(
+    async def edit_md_file(  # pylint: disable=too-many-arguments
         self, md_filename, scope, old_text, new_text, *, project="", team="", target=None
     ) -> list[dict[str, Any]] | None:
         """md 文件内唯一替换（md文件接口 F08）。响应是受影响**新** unit 的顶层数组。
@@ -3787,7 +3807,13 @@ class _InProcessClient(_AgentMemoryClient):
             )
             return []
         return [
-            {"content": it.content, "score": it.score, "item_id": it.unit_id} for it in result.items
+            {
+                "content": it.content,
+                "score": it.score,
+                "item_id": it.unit_id,
+                "is_credential": _is_credential_metadata(getattr(it, "system_metadata", None)),
+            }
+            for it in result.items
         ]
 
     async def list_semantic(self, scope) -> list[dict[str, Any]]:
@@ -3826,7 +3852,7 @@ class _InProcessClient(_AgentMemoryClient):
             extensions.setdefault("coords", {})["team"] = team
         return Context(scope=api_scope, extensions=extensions)
 
-    async def read_md_file(
+    async def read_md_file(  # pylint: disable=too-many-arguments
         self, md_filename, scope, *, project="", line_range=None, team="", target=None
     ) -> list[dict[str, Any]] | None:
         api_scope = self._to_api_scope(scope)
@@ -3850,11 +3876,12 @@ class _InProcessClient(_AgentMemoryClient):
                 "item_id": unit.id,
                 "content": unit.content,
                 "tier": getattr(getattr(unit, "tier", None), "value", ""),
+                "is_credential": _is_credential_metadata(unit.system_metadata),
             }
             for unit in units
         ]
 
-    async def edit_md_file(
+    async def edit_md_file(  # pylint: disable=too-many-arguments
         self, md_filename, scope, old_text, new_text, *, project="", team="", target=None
     ) -> list[dict[str, Any]] | None:
         api_scope = self._to_api_scope(scope)
@@ -3878,6 +3905,7 @@ class _InProcessClient(_AgentMemoryClient):
                 "item_id": unit.id,
                 "content": unit.content,
                 "tier": getattr(getattr(unit, "tier", None), "value", ""),
+                "is_credential": _is_credential_metadata(unit.system_metadata),
             }
             for unit in units
         ]

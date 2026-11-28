@@ -66,7 +66,10 @@ def test_code_tools_bind_project_and_report_actual_write_result(code_provider, m
             if outcome is not None:
                 assert result["stored"] is bool(outcome.item_id)
             assert client.add.call_args.kwargs["system_metadata"] == {
-                "infer": "true", "project": "repo-a", "pipeline": "document_fact"}
+                "infer": "true",
+                "project": "repo-a",
+                "pipeline": "document_fact",
+            }
         for name in (
             "agent_memory_conclude", "agent_memory_video_submit", "agent_memory_video_status",
         ):

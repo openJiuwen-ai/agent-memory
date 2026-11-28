@@ -24,7 +24,7 @@ _MAX_MESSAGE_ROLE_LEN = 64
 _MAX_MASKED_MESSAGE_ROLE_LEN = 256
 _PRIVACY_PLACEHOLDER_RE = re.compile(r"\[JW-PRIVATE:[0-9a-f]{48}\]")
 NON_PROPAGATED_SYSTEM_METADATA_KEYS = frozenset(
-    {"infer", "procedural", "middle", MESSAGE_ROLE_KEY, "role"}
+    {"infer", "procedural", "middle", MESSAGE_ROLE_KEY, "role", "is_credential"}
 )
 _NON_PROPAGATED_SYSTEM_METADATA_KEYS = NON_PROPAGATED_SYSTEM_METADATA_KEYS
 
@@ -399,6 +399,8 @@ KERNEL_SYSTEM_METADATA_KEYS = frozenset(
         # 未启用判定的写入路径不写该键。它是落点断言的唯一稳定判据——派生记忆的
         # content 是模型产物、措辞不保证逐次一致，按内容等值匹配不成立
         "memory_class",
+        # 凭据隔离标记（#313）：仅由内核抽取/合并路径写入 "true"，禁止外部通过入参伪造或改写撤销隔离
+        "is_credential",
         # -- 冲突巩固（F10）：settled 判据与巩固轮次对账依据，由内核写入 ---------
         CONSOLIDATION_RUN_ID_KEY,
         CONSOLIDATION_DONE_AT_KEY,

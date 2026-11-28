@@ -202,24 +202,209 @@ def test_memory_class_missing_falls_back():
 
 
 def test_reusable_identifier_rule_in_prompts():
-    """两版 prompt 都含可复用标识规则：另出稳定事实、归 user_profile、适用于回答提问。"""
+    """两版 prompt 都含可复用标识三层分流与凭据隔离规则。"""
     cn, en = _EXTRACT_SYSTEM_PROMPT_CN, _EXTRACT_SYSTEM_PROMPT_EN
     assert "可复用标识" in cn, "CN 版应含可复用标识规则"
     assert "另为它输出一条不带日期的稳定事实" in cn, "CN 版应要求另出稳定事实"
-    assert '"memory_class" 一律为 "user_profile"' in cn, "CN 版应写明一律归 user_profile"
-    assert "用户在回答助手提问时给出的标识同样适用" in cn, "CN 版应覆盖回答提问的情形"
+    assert '"memory_class" 用 "user_profile"' in cn, "CN 版应写明本人常用非凭据标识归 user_profile"
+    assert (
+        '"memory_class" 用 "long_term_memory"' in cn
+    ), "CN 版应写明首次外部标识归 long_term_memory"
+    assert '"is_credential" 用 true' in cn, "CN 版应要求凭据标 is_credential=true"
+    assert '绝不写进 "user_profile"' in cn, "CN 版应禁止凭据写进 user_profile"
+    assert "在回答助手提问时给出的凭据" in cn, "CN 版应覆盖回答提问的情形"
+    assert "不要保存或不要记住，则跳过不记录" in cn, "CN 版应尊重用户明确要求不保存"
+    assert "不要附加“结合上下文”" in cn, "CN 版应禁止省略句补全附带元注释"
     assert "为复用而提供" not in cn, "CN 版不应给授权码附加「为复用而提供」的条件"
     assert "Reusable identifiers" in en, "EN 版应含可复用标识规则"
     assert "also output one undated stable fact" in en, "EN 版应要求另出稳定事实"
-    assert 'always "user_profile"' in en, "EN 版应写明一律归 user_profile"
+    assert '"memory_class" is "user_profile"' in en, "EN 版应写明本人常用非凭据标识归 user_profile"
+    assert (
+        'set "memory_class" to "long_term_memory"' in en
+    ), "EN 版应写明首次外部标识与凭据归 long_term_memory"
+    assert '"is_credential" to true' in en, "EN 版应要求凭据标 is_credential=true"
+    assert 'never\n"user_profile"' in en, "EN 版应禁止凭据写进 user_profile"
     assert "answering the assistant's question" in en, "EN 版应覆盖回答提问的情形"
-    assert "过后即失效的取值不算" in cn, "CN 版应排除一次性取值"
+    assert "explicitly asks not to save or remember it" in en, "EN 版应尊重用户明确要求不保存"
+    assert "without\nmeta-commentary" in en, "EN 版应禁止省略句补全附带元注释"
+    assert "过后即失效的取值本身不算可复用标识" in cn, "CN 版应排除一次性取值"
     assert "SMS verification codes" in en, "EN 版应排除一次性取值"
-    assert "属于用户本人且跨项目适用" in cn
-    assert "belong to the user and apply across projects" in en
     for prompt in (cn, en):
         assert '"project_fact": true | false' in prompt
+        assert '"is_credential": true | false' in prompt
         assert "/work/paper/final" in prompt
+
+
+@pytest.mark.parametrize("raw_flag", [True, "true", "TRUE", " True "])
+def test_credential_is_coerced_to_long_term_memory_and_keeps_source_project(raw_flag):
+    """凭据（布尔或字符串 true）统一收口到 long_term_memory，保留来源 project 与 !472 查侧对齐。"""
+    item = json.loads(_candidate_json(memory_class="user_profile"))[0]
+    item.update(
+        content="用户邮箱 ops@example.com 的授权码是 abcd1234efgh",
+        project_fact=False,
+        is_credential=raw_flag,
+    )
+    ext, _ = _make(responses=[json.dumps([item])])
+    source = create_test_unit("u1", "授权码是 abcd1234efgh")
+    source.system_metadata["project"] = "default"
+
+    result = ext.extract([source])
+
+    assert len(result) == 1
+    assert result[0].system_metadata[MEMORY_CLASS_KEY] == "long_term_memory"
+    assert result[0].system_metadata["is_credential"] == "true"
+    assert result[0].system_metadata["project"] == "default"
+
+
+def test_credential_in_daily_memory_is_also_coerced_to_long_term_memory():
+    """模型把凭据误标成 daily_memory 时，同样强制收口到 long_term_memory。"""
+    item = json.loads(_candidate_json(memory_class="daily_memory"))[0]
+    item.update(
+        content="用户邮箱 ops@example.com 的授权码是 abcd1234efgh",
+        project_fact=False,
+        is_credential=True,
+    )
+    ext, _ = _make(responses=[json.dumps([item])])
+
+    result = ext.extract([create_test_unit("u1", "授权码是 abcd1234efgh")])
+
+    assert len(result) == 1
+    assert result[0].system_metadata[MEMORY_CLASS_KEY] == "long_term_memory"
+    assert result[0].system_metadata["is_credential"] == "true"
+
+
+def test_non_credential_profile_keeps_user_profile_and_clears_project():
+    """is_credential=False 的用户画像保留 user_profile 且清空来源项目坐标（含 coords.project）。"""
+    item = json.loads(_candidate_json(memory_class="user_profile"))[0]
+    item.update(
+        content="用户常用发件邮箱是 ops@example.com，收件邮箱是 lead@example.org",
+        project_fact=False,
+        is_credential=False,
+    )
+    ext, _ = _make(responses=[json.dumps([item])])
+    source = create_test_unit("u1", "我平时用 ops@example.com 给 lead@example.org 发周报")
+    source.system_metadata["project"] = "proj-a"
+    source.system_metadata["coords"] = {"project": "proj-a", "team": "core"}
+
+    result = ext.extract([source])
+
+    assert len(result) == 1
+    assert result[0].system_metadata[MEMORY_CLASS_KEY] == "user_profile"
+    assert result[0].system_metadata["project"] == ""
+    assert "project" not in result[0].system_metadata.get("coords", {})
+    assert result[0].system_metadata["coords"]["team"] == "core"
+    assert "is_credential" not in result[0].system_metadata
+
+
+def test_first_time_external_identifier_keeps_source_project():
+    """首次外部标识（long_term_memory）保留来源 project，避免与 Work project==X 查侧错配。"""
+    item = json.loads(_candidate_json(memory_class="long_term_memory"))[0]
+    item.update(
+        content="用户为这次测试文件发送指定了收件邮箱 dest@example.org。",
+        project_fact=False,
+        is_credential=False,
+    )
+    ext, _ = _make(responses=[json.dumps([item])])
+    source = create_test_unit("u1", "把 /tmp/test.txt 发给 dest@example.org")
+    source.system_metadata["project"] = "default"
+
+    result = ext.extract([source])
+
+    assert len(result) == 1
+    assert result[0].system_metadata[MEMORY_CLASS_KEY] == "long_term_memory"
+    assert result[0].system_metadata["project"] == "default"
+    assert "is_credential" not in result[0].system_metadata
+
+
+def test_extractor_handles_invalid_class_and_coerces_episodic_credential_to_semantic():
+    """验证抽取边界：非法 memory_class 兜底 long_term_memory、凭据 episodic 收口 semantic。"""
+    cred_item = json.loads(_candidate_json(memory_class="daily_memory", tier="episodic"))[0]
+    cred_item.update(
+        content="用户邮箱 ops@example.com 的授权码是 abcd1234",
+        is_credential=True,
+    )
+    fallback_class_item = json.loads(_candidate_json(memory_class="invalid_cls"))[0]
+    fallback_class_item.update(
+        content="用户为测试发送指定了收件邮箱 dest@example.org",
+        project_fact="false",
+    )
+    ext, _ = _make(responses=[json.dumps([cred_item, fallback_class_item])])
+    source = create_test_unit("u1", "授权码与收件邮箱")
+    source.system_metadata["project"] = "default"
+
+    result = ext.extract([source])
+
+    assert len(result) == 2
+    cred_unit, fallback_unit = result
+    assert cred_unit.tier is MemoryTier.SEMANTIC, "凭据标成 episodic 应收口为 semantic"
+    assert cred_unit.system_metadata[MEMORY_CLASS_KEY] == "long_term_memory"
+    assert cred_unit.system_metadata["is_credential"] == "true"
+    assert cred_unit.system_metadata["project"] == "default"
+
+    assert fallback_unit.system_metadata[MEMORY_CLASS_KEY] == "long_term_memory"
+    assert fallback_unit.system_metadata["project"] == "default"
+
+
+def test_source_is_credential_not_propagated_to_non_credential_profile():
+    """源单元自带 is_credential=true 时，不得经继承污染非凭据 user_profile 派生记忆。"""
+    item = json.loads(_candidate_json(memory_class="user_profile"))[0]
+    item.update(
+        content="用户常用发件邮箱是 ops@example.com",
+        project_fact=False,
+        is_credential=False,
+    )
+    ext, _ = _make(responses=[json.dumps([item])])
+    source = create_test_unit("u1", "我的常用发件邮箱是 ops@example.com")
+    source.system_metadata.update(infer="true", is_credential="true")
+
+    result = ext.extract([source])
+
+    assert len(result) == 1
+    assert result[0].system_metadata[MEMORY_CLASS_KEY] == "user_profile"
+    assert "is_credential" not in result[0].system_metadata
+
+
+def test_non_reclassifying_extractors_preserve_source_is_credential():
+    """不做凭据重判的抽取路径（Keyword/ExtractorImpl/Schema）保留源凭据标记。"""
+    from jiuwen_memory.common.chunker.chunker_impl.fixed_window_chunker import FixedWindowChunker
+    from jiuwen_memory.construction.extractor_impl.entity_schema_extractor import (
+        _inherited_schema_system_metadata,
+    )
+    from jiuwen_memory.construction.extractor_impl.keyword_extractor import KeywordExtractor
+
+    cred_source = create_test_unit("u-cred", "SMTP 授权码是 secret-token-xyz")
+    cred_source.system_metadata.update(infer="true", is_credential="true")
+    normal_source = create_test_unit("u-norm", "普通记录")
+    normal_source.system_metadata.update(infer="true")
+
+    kw = KeywordExtractor(chunker=FixedWindowChunker(size=200))
+    kw_derived = kw.extract([cred_source])
+    assert len(kw_derived) == 1
+    assert kw_derived[0].system_metadata.get("is_credential") == "true"
+
+    proc_cred = create_test_unit("u-proc-cred", "步骤 1：使用密钥 secret-token-xyz")
+    proc_cred.system_metadata.update(procedural="true", is_credential="true")
+    kw_proc = kw.extract([proc_cred, normal_source])
+    assert len(kw_proc) == 1
+    assert kw_proc[0].system_metadata.get("is_credential") == "true"
+
+    base_item = json.loads(_candidate_json())[0]
+    base_item["source_id"] = "u-cred"
+    base_ext = ExtractorImpl(llm=RecordingLLM(responses=[json.dumps([base_item])]))
+    base_derived = base_ext.extract([cred_source])
+    assert len(base_derived) == 1
+    assert base_derived[0].system_metadata.get("is_credential") == "true"
+
+    proc_ext, _ = _make(
+        responses=[json.dumps({"content": "使用凭证完成操作", "title": "凭证流程"})],
+        extractor_type=AgentLlmExtractor,
+    )
+    proc_derived = proc_ext.extract([proc_cred, normal_source])
+    assert len(proc_derived) == 1
+    assert proc_derived[0].system_metadata.get("is_credential") == "true"
+
+    schema_meta = _inherited_schema_system_metadata([normal_source, cred_source])
+    assert schema_meta.get("is_credential") == "true"
 
 
 @pytest.mark.parametrize("project", ["", "   ", "KVCache"])

@@ -5,7 +5,7 @@
 | 项 | 值           |
 |---|-------------|
 | 关联模块 | jiuwen_memory/common/ |
-| 最近一次修订日期 | 2026-11-27 |
+| 最近一次修订日期 | 2026-11-28 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F09-sdk-runtime-logging.md |
 | 规划中的变更 | 见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)「metadata 键」与「空间事实的传入通道」 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F16-dialogue-message-roles.md，docs/features/common/F01-memory-layer.md，docs/features/common/F02-dashscope-llm-provider.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/common/F05-model-service-ssl.md，docs/features/common/F06-distributed-lock.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/construction/F12-importance-and-source-attribution.md，docs/features/common/F10-llm-reranker.md，docs/features/common/F11-new-trace.md，docs/features/common/F12-absolute-date-recall.md |
@@ -39,7 +39,7 @@ true 仅表示格式可识别，仍须 decrypt 认证；false 表示拒绝非信
 
 不修改 `Segment` 结构、不升级 `memory_codec` 版本号（沿用 `_v=4`；`TreeFact` 增可选 `message_role: str = ""` 仅在非空时序列化，无角色树事实序列化字节级不变）、不向 `_BUILTIN_FIELDS` 新增裸名。在 `common.type_def` 定义统一常量 `MESSAGE_ROLE_KEY = "message_role"`，对话消息发言人标识作为标量字符串落于 `MemoryUnit.system_metadata[MESSAGE_ROLE_KEY]`：不限制为封闭枚举，开放为任意非空单行字符串（长度 `1..64`、无首尾空白、不含换行及控制字符，内置推荐标准值与校验规则见 [S02](S02-memory-api.md#对话消息角色)）；无角色时**不写该键**（绝不写 `""` 或 `None`），普通非对话记忆与派生事实缺省不含该键。`message_role` 表示发言角色，与实体抽取使用的发言人姓名字段（`speaker`）互补，与 `hierarchy_role` / `memory_role` / `entity_vector_role` 正交。
 
-`message_role` 与历史兼容键 `"role"` 统一纳入公开导出的 `NON_PROPAGATED_SYSTEM_METADATA_KEYS`（`inherited_system_metadata`、建树流水线及 `VideoMemoryExtractor` 统一复用并自动剥离，防止派生事实、建树父节点与去重合并结果继承发言人角色）；写入（`add` / `batch_add`）由 API 边界校验格式与 `continuity` 互斥，更新（`update` / `batch_update`）及 `evolve(HIERARCHY)` 的 `hierarchy_options.metadata` 禁止写入或篡改该键，且实质改写正文（`patch.content is not None and patch.content != old.content`）时由 `apply_memory_patch`（在 `system_metadata.update` 之后）自动清除。设计取舍见 [F16](../features/construction/F16-dialogue-message-roles.md)。
+`message_role`、历史兼容键 `"role"` 与凭据隔离键 `"is_credential"` 统一纳入公开导出的 `NON_PROPAGATED_SYSTEM_METADATA_KEYS`（`inherited_system_metadata`、建树流水线及 `VideoMemoryExtractor` 统一复用并自动剥离，防止派生事实、建树父节点与去重合并结果盲继承发言人角色或源单元凭据标记；不做逐条重判的抽取、凭据合并、抽象与建树需保留隔离时由对应算子显式回写 `is_credential="true"`）；写入（`add` / `batch_add`）由 API 边界校验 `message_role` 格式与 `continuity` 互斥，更新（`update` / `batch_update`）及 `evolve(HIERARCHY)` 的 `hierarchy_options.metadata` 禁止写入或篡改该键，且实质改写正文（`patch.content is not None and patch.content != old.content`）时由 `apply_memory_patch`（在 `system_metadata.update` 之后）自动清除。设计取舍见 [F16](../features/construction/F16-dialogue-message-roles.md)。
 
 ## 范围 / 边界
 
@@ -598,7 +598,7 @@ tree_memory: TreeMemoryData | None = None
 两键都不在不传播清单内，也不是内核保留键——调用方可显式传入，派生 unit 由产出算子
 自行重写。
 
-> control/F07 起：前者增六键——内核按调用方身份写入的两个作者标记键、判定算子写入的命中类别名（`memory_class`），以及三个后续阶段才写入、提前占位以防存量数据占用的溯源键；后者增判定上下文的透传键。两份清单均为扩充，条目结构与序列化版本不变。
+> control/F07 起：前者增六键——内核按调用方身份写入的两个作者标记键、判定算子写入的命中类别名（`memory_class`），以及三个后续阶段才写入、提前占位以防存量数据占用的溯源键；后者增判定上下文的透传键。此外，`is_credential` 纳入 `KERNEL_SYSTEM_METADATA_KEYS`（仅内核抽取/合并/抽象/建树与文档编辑兜底路径写入 `"true"`，外部入参禁止伪造或改写撤销隔离），并在 `memory_filter` 中与 `SqliteDocumentShadowIndex` 保持统一归一化语义：真值（布尔 `True` 或大小写/空白不敏感 `"true"`）归一为 `"true"`，非真值与缺失统一投影为 `None`/`NULL`（匹配 `NE`/`NOT_IN`、不匹配 `EQ`/`IN`）。两份清单均为扩充，条目结构与序列化版本不变。
 >
 > 其中作者主体是判定与检索谓词的判据，作者代理只是记录项。两者与全部收窄维标签键一律恒写入、取值为空也不省略键：过滤算子在字段缺失时的行为按算子而异，集合谓词判为不匹配即静默收窄，因此语义可预期的前提是键恒存在。判定标签键不是静态保留键，而是装配期由判定表配置解析得出的运行时集合。
 

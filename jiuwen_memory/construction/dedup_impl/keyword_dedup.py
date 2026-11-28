@@ -17,6 +17,7 @@ from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.dedup import (
     Dedup,
     DedupProducer,
+    is_credential_dedup_isolated,
     memory_type_matches,
     same_scope,
 )
@@ -92,6 +93,8 @@ class KeywordDedup(Dedup):
             # 经验不互判为重复。倒排路的 filters 不被内存后端消费，类型过滤与
             # tier 过滤同在加载后做。
             if not memory_type_matches(candidate, unit):
+                continue
+            if is_credential_dedup_isolated(candidate, unit):
                 continue
             # scope_filter: 只保留与候选同 scope 的 unit
             if self._scope_filter and not same_scope(unit.scope, candidate.scope):

@@ -54,7 +54,9 @@ _TEAM_SCHEMAS = [
     },
     {
         "name": "team_memory_edit",
-        "description": "Correct a unique passage within one memory block after reading the document.",
+        "description": (
+            "Correct a unique passage within one memory block after reading the document."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -87,14 +89,17 @@ class TeamMemoryScene(BaseDocumentScene):
         return schemas
 
     @staticmethod
-    def _filter(target, project=""):
-        if not target:
-            return None
+    def _filter(target, project="", *, exclude_credentials: bool = False):
+        filters: dict[str, Any] = {}
         if target == "profile":
-            return {"system_metadata.memory_class": {"eq": "user_profile"}}
-        if target == "project" and project:
-            return {"system_metadata.collective.project": {"eq": project}}
-        return {"system_metadata.collective_destination": {"eq": target}}
+            filters["system_metadata.memory_class"] = {"eq": "user_profile"}
+        elif target == "project" and project:
+            filters["system_metadata.collective.project"] = {"eq": project}
+        elif target:
+            filters["system_metadata.collective_destination"] = {"eq": target}
+        if exclude_credentials:
+            filters["system_metadata.is_credential"] = {"ne": "true"}
+        return filters or None
 
     async def handle_tool_call(
         self,
@@ -179,11 +184,24 @@ class TeamMemoryScene(BaseDocumentScene):
             ]
             recalls.append(self._bounded(context.client.search(
                 query, context.scope, top_k=5,
-                filters={"system_metadata.collective_destination": {"in": ["group", "agent"]}},
+                filters={
+                    "system_metadata.collective_destination": {"in": ["group", "agent"]},
+                    "system_metadata.is_credential": {"ne": "true"},
+                },
             )))
-        profile_units, *sections = await self.prefetch_with_profile(context.client, context.scope, *recalls)
-        profile_text = "\n".join(unit["content"] for unit in profile_units[:20])[:2000]
-        bodies = dict.fromkeys(item["content"] for hits in sections for item in hits)
+        profile_units, *sections = await self.prefetch_with_profile(
+            context.client, context.scope, *recalls
+        )
+        safe_profile = [
+            unit for unit in profile_units if unit.get("content") and not unit.get("is_credential")
+        ]
+        profile_text = "\n".join(unit["content"] for unit in safe_profile[:20])[:2000]
+        bodies: dict[str, None] = {}
+        for hits in sections:
+            for item in hits:
+                content = item.get("content")
+                if content and not item.get("is_credential"):
+                    bodies[content] = None
         parts = [
             "## User profile\n" + profile_text if profile_text else "",
             "## Collaboration memory\n" + "\n".join(bodies) if bodies else "",
@@ -195,14 +213,19 @@ class TeamMemoryScene(BaseDocumentScene):
     ) -> list:
         hits, fallback = await asyncio.gather(
             self._bounded(context.client.search(
-                query, context.scope, top_k=5, filters=self._filter(target, project),
+                query,
+                context.scope,
+                top_k=5,
+                filters=self._filter(target, project, exclude_credentials=True),
             ), operation=f"search {target}"),
             self._bounded(
                 context.client.read_md_file("MEMORY.md", context.scope, target=target),
                 operation=f"read {target}",
             ),
         )
-        return hits or fallback
+        safe_hits = [item for item in hits if not item.get("is_credential")]
+        safe_fallback = [item for item in fallback if not item.get("is_credential")]
+        return safe_hits or safe_fallback
 
     @staticmethod
     def system_prompt(_context: MemorySceneContext) -> str:

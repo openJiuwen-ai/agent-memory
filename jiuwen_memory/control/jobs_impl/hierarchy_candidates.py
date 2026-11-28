@@ -21,6 +21,7 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.common.type_def.hierarchy import is_incomplete_snapshot, validate_ref
 from jiuwen_memory.common.type_def.memory_codec import loads
+from jiuwen_memory.construction.dedup import is_credential_unit
 from jiuwen_memory.construction.hierarchy_composer import (
     TIME_CHILD_ROLES,
     TIME_PARENT_ROLES,
@@ -152,6 +153,10 @@ def validate_snapshot_links(unit: MemoryUnit) -> None:
         raise ValidationError("snapshot has parent_scope without parent_id")
 
 
+def _is_eligible_hierarchy_leaf(unit: MemoryUnit) -> bool:
+    return bool(filter_effective_units([unit], procedural=False)) and not is_credential_unit(unit)
+
+
 def _select(
     unit: MemoryUnit, candidates: HierarchyCandidates, options: HierarchyComposeOptions,
 ) -> None:
@@ -164,7 +169,7 @@ def _select(
         validate_snapshot_links(unit)
         if unit.hierarchy.parent_id:
             candidates.attached[node_key(unit)] = unit
-        elif filter_effective_units([unit], procedural=False):
+        elif _is_eligible_hierarchy_leaf(unit):
             candidates.leaves[node_key(unit)] = unit
     elif unit.hierarchy.role in TIME_PARENT_ROLES and (
         unit.scope == options.tree_home_scope
@@ -339,14 +344,14 @@ def collect_candidates(
             if has_incomplete_leaf_time(candidate):
                 if (
                     _unstructured_intersects(candidate, options)
-                    and filter_effective_units([candidate], procedural=False)
+                    and _is_eligible_hierarchy_leaf(candidate)
                 ):
                     collected.skipped_incomplete_time_count += 1
                 continue
             if (
                 require_snapshots
                 and candidate.lifecycle is LifecycleState.ACTIVE
-                and filter_effective_units([candidate], procedural=False)
+                and _is_eligible_hierarchy_leaf(candidate)
             ):
                 if not _active_time(candidate) and _unstructured_intersects(candidate, options):
                     raise ValidationError("树复用要求范围内 ACTIVE 事实携带有效 TIME 结构")

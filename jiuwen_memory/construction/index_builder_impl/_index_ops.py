@@ -26,6 +26,10 @@ from jiuwen_memory.common.type_def import (
     hierarchy_index_metadata,
 )
 from jiuwen_memory.common.type_def.memory import MemoryTier
+from jiuwen_memory.common.type_def.memory_filter import (
+    IS_CREDENTIAL_FILTER_FIELD,
+    normalize_is_credential_value,
+)
 from jiuwen_memory.storage.fulltext import FulltextStore
 from jiuwen_memory.storage.kv import KVStore
 from jiuwen_memory.storage.store_manager import StoreManager
@@ -135,6 +139,10 @@ def index_metadata(
         for key, value in unit.system_metadata.items()
         if key not in TRANSIENT_SYSTEM_METADATA_KEYS and key not in HIERARCHY_INDEX_KEYS
     }
+    if IS_CREDENTIAL_FILTER_FIELD in metadata:
+        normalized_cred = normalize_is_credential_value(metadata.pop(IS_CREDENTIAL_FILTER_FIELD))
+        if normalized_cred is not None:
+            metadata[IS_CREDENTIAL_FILTER_FIELD] = normalized_cred
     metadata.update({f"user_metadata.{key}": value for key, value in unit.user_metadata.items()})
     metadata.update(
         {

@@ -78,6 +78,7 @@ from jiuwen_memory.construction.common import (
     parse_importance_category,
     reject_deprecated_llm_attempt_keys,
 )
+from jiuwen_memory.construction.dedup import is_credential_unit
 from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 from jiuwen_memory.construction.message_role import (
     fence_role_content,
@@ -141,7 +142,7 @@ class ExtractionCandidate:
     importance_category: str = ""  # LLM 判的重要度类别（F10），按配置查表成数值；空=default
     keywords: list[str] = field(default_factory=list)  # 保留字段，普通抽取路径不再填充
     entities: list[Entity] = field(default_factory=list)  # 保留字段，普通抽取路径不再填充
-    metadata: dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -512,6 +513,11 @@ class ExtractorImpl(Extractor):
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _preserves_source_credential() -> bool:
+        """默认抽取器不逐条重判凭据，保留源单元的凭据标记以防静默降级。"""
+        return True
+
+    @staticmethod
     def _is_procedural(units: list[MemoryUnit]) -> bool:
         """本轮是否走过程记忆抽取（metadata["procedural"]=="true"）。"""
         return any(
@@ -754,7 +760,7 @@ class ExtractorImpl(Extractor):
                 title=title,
                 tags=tags,
                 importance_category=importance_category,
-                metadata={MEMORY_CLASS_KEY: memory_class} if memory_class else {},
+                metadata=self._candidate_metadata(item, unit_map[source_id], memory_class),
             ))
             logger.info(
                 "Extractor: candidate — source_unit_id=%s tier=%s metadata=%s",
@@ -795,6 +801,16 @@ class ExtractorImpl(Extractor):
             unmatched,
         )
         return candidates
+
+    @staticmethod
+    def _candidate_metadata(
+        item: dict,
+        source: MemoryUnit,
+        memory_class: str,
+    ) -> dict[str, object]:
+        """构造派生候选的附加 system_metadata，子类可覆写扩展字段。"""
+        _ = (item, source)
+        return {MEMORY_CLASS_KEY: memory_class} if memory_class else {}
 
     def call_llm_with_retry(self, messages: list, max_tokens: int = 8192) -> str:
         return self._call_llm_with_retry(messages, max_tokens=max_tokens)
@@ -935,6 +951,7 @@ class ExtractorImpl(Extractor):
             # procedural 汇总不判类别，取 default 类别值；不沿用源原文的重要度
             | inferred_attribution(None, self._importance_category_map)
             | ({MD_TITLE_KEY: candidate.title} if candidate.title else {})
+            | ({"is_credential": "true"} if any(is_credential_unit(u) for u in units) else {})
             | candidate.metadata,
             user_metadata=inherited_user_metadata(units),
             lifecycle=LifecycleState.ACTIVE,
@@ -1181,6 +1198,11 @@ class ExtractorImpl(Extractor):
                 # 派生记忆按自身类别查表，覆盖从源原文继承来的 importance
                 | inferred_attribution(c.importance_category, self._importance_category_map)
                 | ({MD_TITLE_KEY: c.title} if c.title else {})
+                | (
+                    {"is_credential": "true"}
+                    if self._preserves_source_credential() and is_credential_unit(source)
+                    else {}
+                )
                 | c.metadata,
                 user_metadata=inherited_user_metadata([source]),
                 lifecycle=LifecycleState.ACTIVE,

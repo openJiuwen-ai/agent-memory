@@ -28,8 +28,10 @@ from jiuwen_memory.common.type_def import (
     FilterLogic,
     FilterOp,
     Scope,
+    filter_field_metadata_key,
     normalize,
 )
+from jiuwen_memory.common.type_def.memory_filter import normalize_is_credential_clause_value
 
 from ._support import as_bool, sanitize_resource_id, scope_dims, wrap_backend
 
@@ -90,7 +92,9 @@ def compile_filter(filters: FilterExpr | None) -> tuple[str, list[Any]]:
     if expr is None:
         return "", []
     if isinstance(expr, FilterClause):
-        key, op, value = expr.field, expr.op, expr.value
+        key = filter_field_metadata_key(expr.field)
+        op = expr.op
+        value = normalize_is_credential_clause_value(key, op, expr.value)
         if op in (FilterOp.EQ, FilterOp.NE, FilterOp.IN, FilterOp.NOT_IN):
             values = value if op in (FilterOp.IN, FilterOp.NOT_IN) else [value]
             parts, params = [], []

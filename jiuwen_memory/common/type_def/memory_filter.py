@@ -20,6 +20,37 @@ _COLLECTIVE_PATH_DESTINATIONS = {
     f"{COLLECTIVE_DOCUMENT_ROOT}/agents/": "agent",
 }
 COLLECTIVE_DOCUMENT_PREFIXES = tuple(_COLLECTIVE_PATH_DESTINATIONS)
+IS_CREDENTIAL_FILTER_FIELD = "system_metadata.is_credential"
+
+
+def normalize_is_credential_value(value: object) -> str | None:
+    """将 is_credential 投影值归一为 'true' 或 None（兼容 bool True 与不区分大小写 'true'）。"""
+    if value is True or (isinstance(value, str) and value.strip().lower() == "true"):
+        return "true"
+    return None
+
+
+def normalize_is_credential_target(value: object) -> object:
+    """仅将凭据真值比较目标归一为 'true'，非真值目标保持原值以避免误匹配 None。"""
+    return "true" if normalize_is_credential_value(value) == "true" else value
+
+
+def normalize_is_credential_clause_value(
+    field: str, op: FilterOp, value: object
+) -> object:
+    """对 system_metadata.is_credential 谓词比较目标做真值归一（与真源求值同口径）。
+
+    索引侧仅存在 'true' 或缺失/NULL：对于 IN/NOT_IN，只要目标集含任一真值即归约为
+    同构 ['true']（防 [True, False] 变成异构 ['true', False] 破坏 Milvus/ES）；
+    不含真值时原样保留同类型列表，避免空数组语法错误。
+    """
+    if field != IS_CREDENTIAL_FILTER_FIELD:
+        return value
+    if op in (FilterOp.IN, FilterOp.NOT_IN) and isinstance(value, (list, tuple, set)):
+        if any(normalize_is_credential_value(item) == "true" for item in value):
+            return ["true"]
+        return list(value)
+    return normalize_is_credential_target(value)
 
 
 def collective_destination_of(metadata: Mapping[str, object]) -> str:
@@ -88,6 +119,8 @@ def _field_value(unit: MemoryUnit, field: str):
         # 恒非空（内核接入路径强制盖章，dreaming F13 D5）；防御性对齐 t_message 的
         # None 语义（None 只匹配 NE/NOT_IN），恒写投影下不会有实际 None。
         return _epoch_ms(unit.temporal.t_ingest)
+    if field == IS_CREDENTIAL_FILTER_FIELD:
+        return normalize_is_credential_value(unit.system_metadata.get("is_credential"))
     key = filter_field_metadata_key(field)
     if key.startswith("user_metadata."):
         return unit.user_metadata.get(key.removeprefix("user_metadata."))
@@ -113,6 +146,9 @@ def _matches_clause(unit: MemoryUnit, clause: FilterClause) -> bool:
 def matches_filter_value(value: object, clause: FilterClause) -> bool:
     """真源与内存索引共用标量、数组和缺值的过滤语义。"""
     op, target = clause.op, clause.value
+    if clause.field == IS_CREDENTIAL_FILTER_FIELD:
+        value = normalize_is_credential_value(value)
+        target = normalize_is_credential_clause_value(clause.field, op, target)
 
     if isinstance(value, (list, tuple, set)):  # 集合字段（如 tags）
         members = set(value)

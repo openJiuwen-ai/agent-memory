@@ -39,6 +39,7 @@ from jiuwen_memory.common.type_def import (
     Scope,
     filter_field_metadata_key,
 )
+from jiuwen_memory.common.type_def.memory_filter import normalize_is_credential_clause_value
 from jiuwen_memory.storage.vector import VectorProducer
 
 from .._support import preload_backend, read_ssl_config, scope_dims, scope_segments, wrap_backend
@@ -58,7 +59,6 @@ _SCOPE_FIELDS = (
 logger = get_logger(__name__)
 _CMP_OPS = {
     FilterOp.EQ: "==",
-    FilterOp.NE: "!=",
     FilterOp.GT: ">",
     FilterOp.GTE: ">=",
     FilterOp.LT: "<",
@@ -298,17 +298,27 @@ class MilvusVectorStore(VectorStore):
     @staticmethod
     def _filter_clause(fc: FilterClause) -> str:
         key = filter_field_metadata_key(fc.field)
+        value = normalize_is_credential_clause_value(key, fc.op, fc.value)
         field = f"metadata[{_lit(key)}]"
+        if fc.op == FilterOp.NE:
+            # Milvus 2.6+ 对缺失 JSON 键采用三值逻辑（not (UNKNOWN) 仍为 UNKNOWN）；
+            # 显式并入 not exists 使缺键记录与 memory_filter.py 语义一致。
+            return f"((not exists {field}) || ({field} != {_lit(value)}))"
         if fc.op in _CMP_OPS:
-            return f"{field} {_CMP_OPS[fc.op]} {_lit(fc.value)}"
+            return f"{field} {_CMP_OPS[fc.op]} {_lit(value)}"
         if fc.op == FilterOp.IN:
-            items = ", ".join(_lit(v) for v in fc.value)
+            if not value:
+                return 'id == ""'
+            items = ", ".join(_lit(v) for v in value)
             return f"{field} in [{items}]"
         if fc.op == FilterOp.NOT_IN:
-            items = ", ".join(_lit(v) for v in fc.value)
-            return f"{field} not in [{items}]"
+            if not value:
+                return 'id != ""'
+            items = ", ".join(_lit(v) for v in value)
+            # 与 NE 同理：缺键记录按 memory_filter.py 语义应满足 NOT_IN。
+            return f"((not exists {field}) || ({field} not in [{items}]))"
         if fc.op == FilterOp.CONTAINS:  # metadata 为 JSON，数组包含用 json_contains
-            return f"json_contains({field}, {_lit(fc.value)})"
+            return f"json_contains({field}, {_lit(value)})"
         raise ValidationError(f"unsupported filter op for vector: {fc.op}")
 
     @classmethod

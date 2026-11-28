@@ -60,6 +60,7 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.common.type_def.filter import FilterClause, FilterOp, and_merge
 from jiuwen_memory.common.type_def.memory_codec import dumps
+from jiuwen_memory.common.type_def.memory_filter import normalize_is_credential_value
 from jiuwen_memory.config.document_flag import WRITE_DOCUMENT_KEY, should_write_document
 from jiuwen_memory.storage.capability import StoreCapability, capabilities_of
 from jiuwen_memory.storage.domain_store import DomainStore, DomainStoreProducer
@@ -900,6 +901,13 @@ class CompositeDomainStore(DomainStore):
             # 不保留 supersedes（无明确继承源）。
             fb_project = project_from_md_path(rel_path)
             fb_class = class_from_md_path(rel_path)
+            # 若任一被替换旧块标记为凭据，降级兜底新建块保守继承 is_credential="true"，
+            # 防止跨块编辑导致凭据失去预取隔离标记。
+            inherit_credential = any(
+                normalize_is_credential_value((u.system_metadata or {}).get("is_credential"))
+                == "true"
+                for u in superseded_units
+            )
             for _, new_c, _ in inserted_blocks:
                 new = MemoryUnit(
                     id=str(uuid.uuid4()),
@@ -911,6 +919,7 @@ class CompositeDomainStore(DomainStore):
                         "project": fb_project,
                         **({"team": team_from_md_path(rel_path)}
                            if fb_class == "team_memory" else {}),
+                        **({"is_credential": "true"} if inherit_credential else {}),
                         MEMORY_CLASS_KEY: fb_class,
                         MD_FILENAME_KEY: rel_path,
                     },

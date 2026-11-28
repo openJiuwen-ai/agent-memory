@@ -20,10 +20,10 @@ from jiuwen_memory.common.tokenizer import Tokenizer
 from jiuwen_memory.common.tokenizer.base import TokenizerProducer
 from jiuwen_memory.common.type_def import (
     FilterClause,
-    FilterOp,
     Scope,
     evaluate,
     filter_field_metadata_key,
+    matches_filter_value,
 )
 from jiuwen_memory.storage.base import StoreType
 from jiuwen_memory.storage.fusion import FusionProducer, FusionStore
@@ -46,34 +46,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 
 def _passes(scalars: dict[str, Any], clause: FilterClause) -> bool:
-    val = scalars.get(filter_field_metadata_key(clause.field))
-    if isinstance(val, (list, tuple, set)):
-        if clause.op == FilterOp.CONTAINS:
-            return clause.value in val
-        if clause.op in (FilterOp.NE, FilterOp.NOT_IN):
-            return True
-        return False
-    if val is None:
-        return clause.op in (FilterOp.NE, FilterOp.NOT_IN)
-    if clause.op == FilterOp.EQ:
-        return val == clause.value
-    if clause.op == FilterOp.NE:
-        return val != clause.value
-    if clause.op == FilterOp.IN:
-        return val in (clause.value or [])
-    if clause.op == FilterOp.NOT_IN:
-        return val not in (clause.value or [])
-    if clause.op == FilterOp.CONTAINS:
-        return False
-    if clause.op == FilterOp.GT:
-        return val > clause.value
-    if clause.op == FilterOp.GTE:
-        return val >= clause.value
-    if clause.op == FilterOp.LT:
-        return val < clause.value
-    if clause.op == FilterOp.LTE:
-        return val <= clause.value
-    return True
+    return matches_filter_value(scalars.get(filter_field_metadata_key(clause.field)), clause)
 
 
 class InMemoryFusionStore(FusionStore):

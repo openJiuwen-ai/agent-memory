@@ -31,6 +31,7 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
     validate_ref,
 )
+from jiuwen_memory.construction.dedup import is_credential_unit
 from jiuwen_memory.construction.message_role import format_role_line
 
 DEFAULT_GAP_SECONDS = 7200
@@ -300,6 +301,8 @@ def build_time_span_parent(
             metadata[signal_key] = signal
     for transient_key in _NON_PROPAGATED_KEYS:
         metadata.pop(transient_key, None)
+    if any(is_credential_unit(child) for child in children):
+        metadata["is_credential"] = "true"
     header = f"{span_start.isoformat()} ~ {span_end.isoformat()}（{len(children)} 条记录）"
     return MemoryUnit(
         id=str(uuid.uuid4()),

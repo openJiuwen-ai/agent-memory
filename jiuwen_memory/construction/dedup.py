@@ -17,18 +17,22 @@ Evolver 的 EXTRACT/CONSOLIDATE 模式需判定候选是否与已有记忆重复
 
 from __future__ import annotations
 
+import re
 from abc import abstractmethod
+from collections.abc import Sequence
 
 from jiuwen_memory.common.factory.factory import Factory
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
     ISOLATED_MEMORY_TYPES,
+    MEMORY_CLASS_KEY,
     MEMORY_TYPE_FILTER_FIELD,
     FilterClause,
     FilterOp,
     MemoryUnit,
     Scope,
 )
+from jiuwen_memory.common.type_def.memory_filter import normalize_is_credential_value
 from jiuwen_memory.storage.kv import KVStore, load_units
 
 from .base import ConstructionOperator
@@ -142,3 +146,99 @@ def memory_type_matches(candidate: MemoryUnit, unit: MemoryUnit) -> bool:
     if candidate_type in ISOLATED_MEMORY_TYPES:
         return unit_type == candidate_type
     return unit_type not in ISOLATED_MEMORY_TYPES
+
+
+def is_credential_unit(unit: MemoryUnit) -> bool:
+    """判断记忆单元是否标记为凭据（兼容布尔 True 与大小写不敏感字符串 'true'）。"""
+    return (
+        normalize_is_credential_value((unit.system_metadata or {}).get("is_credential"))
+        == "true"
+    )
+
+
+def credential_filter_clause(candidate: MemoryUnit) -> FilterClause:
+    """凭据隔离的去重召回谓词：凭据只与凭据比对，普通记忆排除凭据。"""
+    return FilterClause(
+        "system_metadata.is_credential",
+        FilterOp.EQ if is_credential_unit(candidate) else FilterOp.NE,
+        "true",
+    )
+
+
+def is_credential_dedup_isolated(candidate: MemoryUnit, existing: MemoryUnit) -> bool:
+    """凭据与非凭据、或凭据与 user_profile/daily_memory 之间禁止合并/互替/NOOP 吞并。"""
+    cand_cred = is_credential_unit(candidate)
+    existing_cred = is_credential_unit(existing)
+    if cand_cred != existing_cred:
+        return True
+    if not cand_cred:
+        return False
+    cand_class = str((candidate.system_metadata or {}).get(MEMORY_CLASS_KEY, "")).strip()
+    existing_class = str((existing.system_metadata or {}).get(MEMORY_CLASS_KEY, "")).strip()
+    return (
+        cand_class in {"user_profile", "daily_memory"}
+        or existing_class in {"user_profile", "daily_memory"}
+    )
+
+
+_EXACT_EMAIL_RE = re.compile(
+    r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}"
+)
+_EXACT_URL_RE = re.compile(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'*+,;=%]+")
+
+
+def _normalize_exact_url(raw: str) -> str | None:
+    """剥离句尾标点并过滤退化占位符（如 'https://...'），返回规范 URL 或 None。"""
+    url = raw.rstrip(".,;:!?'\")]}/").lower()
+    if "://" not in url:
+        return None
+    _, rest = url.split("://", 1)
+    host = rest.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if not host or not any(ch.isalnum() for ch in host):
+        return None
+    return url
+
+
+def extract_exact_identifiers(text: str) -> frozenset[str]:
+    """提取高辨识度精确标识（邮箱与 HTTP(S) URL），用于召回命中前置与低分 LLM 复核兜底。"""
+    if not text:
+        return frozenset()
+    emails = {match.lower() for match in _EXACT_EMAIL_RE.findall(text)}
+    urls: set[str] = set()
+    for match in _EXACT_URL_RE.findall(text):
+        normalized = _normalize_exact_url(match)
+        if normalized is not None:
+            urls.add(normalized)
+    return frozenset(emails | urls)
+
+
+def shares_exact_identifier(
+    candidate: MemoryUnit,
+    hits: Sequence[tuple[MemoryUnit, float]],
+) -> bool:
+    """候选与已召回命中的任一记忆是否共享同一精确标识（邮箱/URL）。"""
+    candidate_ids = extract_exact_identifiers(candidate.content or "")
+    if not candidate_ids:
+        return False
+    return any(
+        bool(candidate_ids & extract_exact_identifiers(unit.content or ""))
+        for unit, _ in hits
+    )
+
+
+def prioritize_exact_identifier_hits(
+    candidate: MemoryUnit,
+    hits: Sequence[tuple[MemoryUnit, float]],
+) -> list[tuple[MemoryUnit, float]]:
+    """将与候选共享精确标识的命中优先前置，确保落入 LLM 截断与目标校验窗口。"""
+    candidate_ids = extract_exact_identifiers(candidate.content or "")
+    if not candidate_ids:
+        return list(hits)
+    matched: list[tuple[MemoryUnit, float]] = []
+    others: list[tuple[MemoryUnit, float]] = []
+    for item in hits:
+        if candidate_ids & extract_exact_identifiers(item[0].content or ""):
+            matched.append(item)
+        else:
+            others.append(item)
+    return [*matched, *others] if matched else list(hits)

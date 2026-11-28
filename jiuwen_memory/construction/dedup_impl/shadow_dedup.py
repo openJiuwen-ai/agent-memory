@@ -31,6 +31,7 @@ import math
 from jiuwen_memory.common.embedder.base import Embedder, EmbedderProducer
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import (
+    MEMORY_CLASS_KEY,
     FilterClause,
     FilterOp,
     LifecycleState,
@@ -39,7 +40,14 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.common.type_def.filter import and_merge
 from jiuwen_memory.construction.base import OperatorType
-from jiuwen_memory.construction.dedup import Dedup, DedupProducer, same_scope
+from jiuwen_memory.construction.dedup import (
+    Dedup,
+    DedupProducer,
+    credential_filter_clause,
+    is_credential_dedup_isolated,
+    is_credential_unit,
+    same_scope,
+)
 from jiuwen_memory.storage.shadow import DocumentShadowIndex
 from jiuwen_memory.storage.store_manager import StoreManager, StoreManagerProducer
 from jiuwen_memory.storage.types import FilterExpr, TextQuery, VectorQuery
@@ -69,25 +77,41 @@ def _active_lifecycle_filter() -> FilterExpr | None:
 def candidate_project(candidate: MemoryUnit) -> str:
     """读候选 project，与写入侧 ``SQLiteShadowIndex._project_of`` 同口径。
 
-    agent 场景 project 是 ``system_metadata.project`` 标量直传；``coords.project``
-    兜底覆盖 router 场景（``_route`` 回写）。空落空串 = 跨项目可见。
+    ``user_profile`` / ``experience`` 跨项目恒空；其余显式 ``system_metadata.project``
+    （含空串）优先，缺失时回落 ``coords.project``。空落空串 = 跨项目可见。
     """
     metadata = candidate.system_metadata or {}
-    project = metadata.get("project")
-    if isinstance(project, str) and project.strip():
-        return project.strip()
+    if (
+        metadata.get("memory_type") == "experience"
+        or metadata.get(MEMORY_CLASS_KEY) == "user_profile"
+    ):
+        return ""
+    if "project" in metadata and isinstance(metadata["project"], str):
+        return metadata["project"].strip()
     coords = metadata.get("coords") or {}
-    return coords.get("project") or ""
+    project = coords.get("project") if isinstance(coords, dict) else ""
+    return project.strip() if isinstance(project, str) else ""
 
 
 def _dedup_recall_filter(candidate: MemoryUnit) -> FilterExpr | None:
-    """Compare active experience with experience, and ordinary facts within their project."""
+    """Compare active experience with experience, and isolate credentials from ordinary facts."""
     experience = candidate.system_metadata.get("memory_type") == "experience"
-    filters = and_merge(_active_lifecycle_filter(), [
+    is_credential = is_credential_unit(candidate)
+    clauses = [
         FilterClause(
             "system_metadata.memory_type", FilterOp.EQ if experience else FilterOp.NE, "experience",
         ),
-    ])
+        credential_filter_clause(candidate),
+    ]
+    if is_credential:
+        clauses.append(
+            FilterClause(
+                "system_metadata.memory_class",
+                FilterOp.NOT_IN,
+                ["user_profile", "daily_memory"],
+            )
+        )
+    filters = and_merge(_active_lifecycle_filter(), clauses)
     project = "" if experience else candidate_project(candidate)
     if project:
         filters = and_merge(filters, [
@@ -276,6 +300,8 @@ class ShadowDedup(Dedup):
             if (candidate.system_metadata.get("memory_type") == "experience") != (
                 unit.system_metadata.get("memory_type") == "experience"
             ):
+                continue
+            if is_credential_dedup_isolated(candidate, unit):
                 continue
             if unit.id == candidate.id:
                 continue

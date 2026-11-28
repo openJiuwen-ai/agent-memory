@@ -28,6 +28,7 @@ from jiuwen_memory.construction.common import (
     importance_category_map_from_config,
     inferred_attribution,
 )
+from jiuwen_memory.construction.dedup import is_credential_unit
 from jiuwen_memory.construction.message_role import filter_effective_units, format_role_line
 
 logger = get_logger(__name__)
@@ -47,7 +48,11 @@ class ConcatAbstractor(Abstractor):
 
     def abstract(self, units: list[MemoryUnit]) -> list[MemoryUnit]:
         effective = filter_effective_units(units, procedural=False)
-        sources = [u for u in effective if u.lifecycle.value == "active"]
+        sources = [
+            u
+            for u in effective
+            if u.lifecycle.value == "active" and not is_credential_unit(u)
+        ]
         logger.info(
             "ConcatAbstractor: received %d units, %d active sources", len(units), len(sources)
         )
