@@ -348,6 +348,33 @@
       .source-count { grid-column:2; grid-row:1; }
       .source-name { white-space:normal; overflow-wrap:anywhere; }
     }
+.experience-reactions,.experience-rating { display:inline-flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.experience-reactions { font-variant-numeric:tabular-nums; }
+.experience-reactions .helpful { color:#23694f; }
+.experience-reactions .neutral { color:#596574; }
+.experience-reactions .harmful { color:#984b42; }
+.experience-rating { gap:4px; }
+.experience-rating .rating-choice { border:0; border-radius:999px; background:transparent; color:#545961; display:inline-flex; gap:5px; align-items:center; padding:5px 9px; }
+.experience-rating .rating-choice:hover,.experience-rating .rating-choice[aria-pressed=true] { color:#184d85; background:#e8f0fb; }
+.reaction-icon { font:20px/1 "Segoe UI Symbol",sans-serif; }
+#experience-dialog .dialog-header { align-items:center; padding:16px 24px; border-bottom:1px solid var(--line); }
+#experience-detail { padding:22px clamp(16px,4vw,26px) 28px; }
+.experience-intro { padding-bottom:20px; border-bottom:1px solid var(--line); }
+.experience-byline { display:flex; flex-wrap:wrap; gap:6px 12px; align-items:center; color:var(--muted); font-size:12px; }
+.experience-category-tag { padding:2px 8px; border-radius:6px; background:#edf3fb; color:#375a80; font-weight:600; }
+#experience-detail .experience-title { font-size:clamp(19px,4vw,23px); line-height:1.4; margin:12px 0 0; overflow-wrap:anywhere; }
+.experience-copy { margin:9px 0 0; color:#434a54; line-height:1.75; white-space:pre-wrap; overflow-wrap:anywhere; }
+.experience-conditions { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(165px,100%),1fr)); gap:16px; margin:20px 0; }
+.experience-conditions dt,.experience-step h3 { color:#495668; font-size:13px; font-weight:600; margin:0 0 5px; }
+.experience-conditions dd { margin:0; line-height:1.65; white-space:pre-wrap; overflow-wrap:anywhere; }
+.experience-step { margin:18px 0; padding:14px 16px; border-inline-start:3px solid #83a8d8; border-radius:0 8px 8px 0; background:#f2f6fb; }
+.experience-step .experience-copy { margin:0; }
+#experience-detail > h3:not(.detail-heading),.experience-review h3 { font-size:14px; margin:22px 0 8px; }
+.experience-related { display:flex; width:100%; justify-content:space-between; gap:16px; border:0; border-bottom:1px solid #edf0f3; border-radius:0; padding:10px 2px; text-align:start; color:#345a84; overflow-wrap:anywhere; }
+.experience-related::after { content:'›'; color:#728297; }
+.experience-review { margin-top:22px; padding-top:14px; border-top:1px solid var(--line); }
+.experience-review h3 { margin:0 0 6px; }
+.experience-review [role=status]:empty { display:none; }
 </style></head>
 <body><main id="session-expired" class="notice error" role="alert" hidden data-i18n="sessionExpired">访问会话已失效，请从应用重新打开记忆管理。</main><div id="portal-shell" class="app-shell"><aside class="module-sidebar"><div class="brand"><strong data-i18n="brand">记忆管理</strong></div><nav role="tablist" aria-label="页面导航" aria-orientation="vertical" data-i18n-label="pageNavigation"><button id="tab-overview" class="active" data-tab="overview" role="tab" aria-selected="true" aria-controls="overview" tabindex="0"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span data-i18n="overview">记忆概览</span></button>
 <button id="tab-memories" class="" data-tab="memories" role="tab" aria-selected="false" aria-controls="memories" tabindex="-1"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M3 7h4M3 12h4M3 17h4M10 8h5M10 12h5"/></svg><span data-i18n="memoryLibrary">记忆仓库</span></button>
@@ -465,6 +492,7 @@
             <div class="filter-field"><label for="lifecycle" data-i18n="memoryStatus">记忆状态</label><select id="lifecycle"><option value="active" data-i18n="activeMemories">有效记忆</option><option value="superseded" data-i18n="superseded">已纠正旧版本</option><option value="forgotten" data-i18n="forgotten">已遗忘</option><option value="archived" data-i18n="archived">已归档</option><option value="*" data-i18n="allStatuses">全部状态</option></select></div>
             <div id="tier-filter" class="filter-field"><label for="tier" data-i18n="memoryTierLabel">认知层级</label><select id="tier"><option value="*" data-i18n="allTiers">全部层级</option></select></div>
             <div id="class-filter" class="filter-field"><label for="memory-class" data-i18n="memoryClassLabel">记忆分类</label><select id="memory-class"><option value="*" data-i18n="allClasses">全部分类</option></select></div>
+            <div id="experience-category-field" class="filter-field" hidden><label for="experience-category" data-i18n="experienceCategory">经验类别</label><select id="experience-category"><option value="*" data-i18n="allClasses">全部分类</option></select></div>
             <button id="reset-filters" class="link" type="button" data-i18n="resetFilters">重置筛选</button>
           </div>
         </div>
@@ -529,6 +557,7 @@
     <tr><td data-i18n="overview">记忆概览</td><td><code>POST /v1/list</code></td><td><code>overview</code> · <code>lifecycle_counts</code><br><span data-i18n="sourcesOverview">来源应用数统计所有可见记录中已标注的应用。来源分布统计有效记忆，日期按浏览器时区统计全部状态的写入。</span></td></tr><tr><td data-i18n="sourcesBatchActions">复制 / 导出 / 批量遗忘</td><td><code>/v1/get, /v1/delete</code></td><td data-i18n="sourcesBatchActionsHint">只处理本页所选记录；复制和导出前重新读取详情，导出 JSON 不含页面内部记录标识。遗忘逐条调用接口并报告部分失败。</td></tr><tr><td data-i18n="sourcesListAndFilters">记忆列表与筛选</td><td><code>POST /v1/list</code></td><td><code>items / count / snapshot</code><span data-i18n="sourcesListPagination">；筛选后计数、再分页；</span><code>sources / agents / projects / memory_classes</code><span data-i18n="sourcesListFacets"> 来自完整授权集合。</span></td></tr>
     <tr><td data-i18n="sourceApps">来源应用</td><td><code>/v1/list, /v1/get</code></td><td><code>source</code> ← <code>system_metadata.source_app</code><span data-i18n="sourcesMissingSource">；缺失显示“未标注来源”。</span></td></tr>
     <tr><td data-i18n="sourcesAgentAndProject">Agent / 项目</td><td><code>/v1/list, /v1/get</code></td><td><code>agent</code> ← <code>scope.agent</code><span data-i18n="sourcesNextField">；</span><code>agent_label</code><span data-i18n="sourcesAgentLabel"> 是显示名称。</span><code>project</code><span data-i18n="sourcesProjectFrom"> ← 文档记忆的 </span><code>system_metadata.project</code><span data-i18n="sourcesProjectDirect">（直传）或 </span><code>coords.project</code><span data-i18n="sourcesProjectFromRouter">（router 回写），空值显示“跨项目 / 未标注”。</span></td></tr>
+    <tr><td data-i18n="experiences">经验记忆</td><td><code>/v1/experience_list, /v1/experience_get</code></td><td data-i18n="sourcesExperiences">从打开页面时绑定的经验空间读取当前有权查看的有效经验。</td></tr>
     <tr><td data-i18n="sourcesQuickFilters">内容快捷筛选</td><td><code>POST /v1/list</code></td><td><span data-i18n="sourcesTeamFilter">团队记忆使用 </span><code>memory_class=team_memory</code><span data-i18n="sourcesProfileFilter">。用户画像使用 </span><code>memory_class=user_profile</code><span data-i18n="sourcesKnowledgeFilter">。项目知识使用 </span><code>memory_class ∈ {long_term_memory, project_memory}, tier=semantic</code><span data-i18n="sourcesExperienceFilter">。经验记忆使用 </span><code>memory_type=experience</code><span data-i18n="sourcesShortcutScope">。其他筛选条件继续生效。</span></td></tr><tr><td data-i18n="sourcesTierAndClass">层级 / 记忆分类</td><td><code>/v1/list, /v1/get</code></td><td><code>tier</code> ← <code>MemoryTier.value</code><span data-i18n="sourcesTierCount">；筛选项对应六个认知层级。</span><code>memory_class</code> ← <code>system_metadata.memory_class</code><span data-i18n="sourcesNextField">；</span><code>memory_classes</code><span data-i18n="sourcesCustomClasses"> 来自授权集合，支持自定义分类。层级 archival 与生命周期 archived 是不同维度。</span></td></tr>
     <tr><td data-i18n="sourcesDetailAndTime">完整详情与时间</td><td><code>POST /v1/get</code></td><td><span data-i18n="sourcesFreshDetails">每次重读 </span><code>segments / lifecycle / tags / source_ref / supersedes / temporal.t_ingest</code><span data-i18n="sourcesIngestTime">；时间来自 </span><code>temporal.t_ingest</code><span data-i18n="sourcesIngestTimeExplanation">，不是文件修改时间。</span></td></tr>
     <tr><td data-i18n="sourcesMutations">新增 / 纠正 / 遗忘</td><td><code>/v1/add, /v1/update, /v1/delete</code></td><td><span data-i18n="sourcesMutationScope">新增提交正文、Agent 和可选项目；宿主可绑定实际 Agent 范围。纠正与遗忘通过 </span><code>scope</code><span data-i18n="sourcesAnd"> 和 </span><code>unit_id</code><span data-i18n="sourcesMutationPermission"> 定位，服务端再次检查归属和权限。纠正创建 SUPERSEDE 新版；遗忘使用 FORGET。</span></td></tr>
@@ -548,6 +577,10 @@
   <div id="memory-detail" class="detail-pane" aria-live="polite"></div>
   <div id="search-detail" class="detail-pane" aria-live="polite" hidden></div>
   <div id="detail-footer" class="detail-footer" hidden></div>
+</dialog>
+<dialog id="experience-dialog" class="detail-drawer" aria-labelledby="experience-detail-title">
+  <div class="dialog-header"><h2 id="experience-detail-title" data-i18n="experienceDetail">经验详情</h2><button id="close-experience-detail" type="button" class="quiet" data-i18n-label="closeExperienceDetail">×</button></div>
+  <div id="experience-detail" class="detail-pane" aria-live="polite"></div>
 </dialog><script>
 'use strict';
 
@@ -561,6 +594,44 @@ const messages = {
   memoryLibrary: ["记忆仓库", "Memory Library"],
   userProfile: ["用户画像", "User Profile"],
   projectKnowledge: ["项目知识", "Project Knowledge"],
+  experiences: ["经验记忆", "Experience Memory"],
+  experiencesHint: ["当前经验空间中的可复用做法和环境事实", "Reusable practices and environment facts from the current experience space."],
+  sourcesExperiences: ["从打开页面时绑定的经验空间读取当前有权查看的有效经验。", "Active experiences you can read in the space bound to this portal."],
+  taskFeedback: ["任务反馈", "Task feedback"],
+  myFeedback: ["我的评价", "My assessment"],
+  experienceEmptyHint: ["此入口展示有效经验，可调整筛选条件。","This view shows active experiences. Try adjusting the filters."],
+  taskOutcome: ['任务结果','Task outcome'],
+  backToExperience: ['← 返回经验详情','← Back to experience'],
+  relatedSkills: ["关联技能","Related skills"],
+  hasSkills: ["已关联技能","Linked skill"],
+  experienceSources: ["经验来源","Experience sources"],
+  relatedTask: ["相关任务","Related task"],
+  sourceSession: ["会话","Session"],
+  sourceEntries: ["来源经验","Source experience"],
+  noSource: ["暂无可查看的来源记录","No source records available"],
+  noSkills: ["暂无关联技能","No linked skills"],
+  skillApproved: ["已通过","Approved"],
+  skillTrial: ["试用中","Trial"],
+  skillDraft: ["草稿","Draft"],
+  feedbackHelpful: ["有帮助", "Helpful"],
+  feedbackNeutral: ["中性", "Neutral"],
+  feedbackHarmful: ["有害", "Harmful"],
+  feedbackClear: ["撤回评价", "Withdraw assessment"],
+  experienceDetail: ["经验详情", "Experience details"],
+  closeExperienceDetail: ["关闭经验详情", "Close experience details"],
+  searchExperiences: ["搜索经验正文", "Search experience content"],
+  experienceCategory: ["经验类别", "Experience category"],
+  experienceUnavailable: ["当前入口未绑定经验空间", "This portal was opened without an experience space."],
+  noExperiences: ["没有符合条件的经验", "No matching experiences"],
+  readExperiences: ["正在读取经验…", "Loading experiences…"],
+  experienceReadFailed: ["无法读取经验", "Could not load experiences"],
+  experienceCondition: ["适用条件", "When to use"],
+  experienceCapability: ["所需能力", "Required capability"],
+  experienceAction: ["操作建议", "Suggested action"],
+  experienceUpdated: ["更新时间", "Updated"],
+  experienceFact: ["环境事实", "Environment fact"],
+  experienceTip: ["操作建议", "Suggested action"],
+  experienceCount: [(first,last,total)=>`第 ${first}–${last} 条，共 ${total} 条`, (first,last,total)=>`${first}–${last} of ${total}`],
   experienceMemory: ["经验记忆", "Experience Memory"],
   configuration: ["配置", "Configuration"],
   overviewIntro: ["了解当前实例的记忆情况，让每一条记忆都有迹可循。", "Review the memories and sources in this instance."],
@@ -1058,12 +1129,13 @@ const contentLabels=new Map([
   ['member',msg('memberLabel')], ['context',msg('contextLabel')],
 ]);
 const directoryDestinations={projects:'project',teams:'team',groups:'group',agents:'agent'};
+let experienceBound=false;
 let portalSession, addContext, sessionExpired=false, addContextReady=false, addAgentLocked=false, addContextRequest=0;
 const sessionExpiredMessage=msg('sessionExpired');
 function expireSession(){
   sessionExpired=true;
   portalSession=undefined;
-  if(history.state?.sharedPortalToken)history.replaceState(null,'');
+  if(history.state?.sharedPortalToken||history.state?.experiencePortalToken)history.replaceState(null,'');
   $('portal-shell').hidden=true;
   $('session-expired').hidden=false;
   for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();
@@ -1078,11 +1150,15 @@ const browserReady=(async()=>{
     if(response.status===401){expireSession();return;}
     if(!response.ok)throw portalError(msg('bootstrapFailed'));
     session=await response.json();
+    if(session.experience_bound===true){
+      history.replaceState({...history.state,experiencePortalToken:session.session_token},'');
+    }
     if(session.shared===true)history.replaceState({...history.state,sharedPortalToken:session.session_token},'');
   }else if(history.state?.sharedPortalToken){
     session={shared:true,session_token:history.state.sharedPortalToken};
   }
-  portalSession=session?.session_token;
+  experienceBound=Boolean(history.state?.experiencePortalToken);
+  portalSession=session?.session_token||history.state?.experiencePortalToken;
   sharedPortal=session?.shared===true;
   if(sharedPortal){
     $('configuration-instance').hidden=false;
@@ -1123,6 +1199,7 @@ function memoryViewOf(unit){
   const dimension=destination==='agent'?(metadata.agent_label||scope.agent)
     :destinationLabels.has(destination)&&destination!=='user_profile'?metadata[destination]||documentPath?.[2]:'';
   return {
+    experience:metadata.memory_type==='experience',
     ref:recordKey(scope,unit.id),content:unit.segments.map(segment=>segment.content).join('\n'),
     source:metadata.source_app||'',agent_label:metadata.agent_label||'',agent:scope.agent,
     project,session:scope.session,tier:unit.tier,lifecycle:unit.lifecycle,tags:unit.tags,
@@ -1133,10 +1210,20 @@ function memoryViewOf(unit){
   };
 }
 async function listMemories({offset=0,limit=50,...personal}={}){
+  if(isBoundExperience()&&personal.memory_type==='experience'){
+    const {query,source,agent,project,lifecycle}=personal;
+    const category=selectionValue('experience-category')||'';
+    const data=await request('experience_list',{offset,limit,query,source,agent,project,lifecycle,category});
+    return {...data,items:data.items.map(experienceRow)};
+  }
   const data=await request('list',{offset,limit,extensions:{personal}});
   return {...data,items:data.items.map(memoryViewOf)};
 }
-async function fetchRecord(ref){return memoryViewOf(await request('get',JSON.parse(ref)));}
+async function fetchRecord(ref){
+  const target=JSON.parse(ref);
+  if(target.experience)return experienceRow(await request('experience_get',{unit_id:target.experience}));
+  return memoryViewOf(await request('get',target));
+}
 function forgetRecord(ref){
   const {scope,unit_id}=JSON.parse(ref);
   return request('delete',{selector:{scope,unit_ids:[unit_id],mode:'forget'}});
@@ -1163,6 +1250,142 @@ function fillOptions(id,options,label){
   el.value=previous;
 }
 function setFilterValue(id,value,label){const el=$(id);if(![...el.options].some(o=>o.value===value))el.add(option(label||value,value));el.value=value;}
+let experienceDetailRequest=0;
+function isBoundExperience(){return activeTab==='experience'&&experienceBound;}
+function experienceRow(item){
+  return {...item,boundExperience:true,experience:true,ref:JSON.stringify({experience:item.id}),
+    lifecycle:item.lifecycle||'active',created_at:item.updated_at};
+}
+
+function closeExperienceDetail() {
+  ++experienceDetailRequest;
+  if ($('experience-dialog').open) $('experience-dialog').close();
+}
+
+const reactionSymbols={helpful:'☺',neutral:'⊖',harmful:'☹'};
+const feedbackLabels={helpful:'feedbackHelpful',neutral:'feedbackNeutral',harmful:'feedbackHarmful'};
+function renderExperienceFeedback(root,unitId,feedback,sequence){
+  root.replaceChildren();
+  if(!feedback.can_rate)return;
+  const row=node('div',undefined,'experience-rating');
+  const status=node('p',undefined,'muted');
+  status.setAttribute('role','status');
+  const choices={...feedbackLabels};
+  if(feedback.mine)choices.clear='feedbackClear';
+  for(const [value,label] of Object.entries(choices)){
+    const control=button(msg(label),async()=>{
+      for(const el of row.children)el.disabled=true;
+      try{
+        const updated=await request('experience_rate',{unit_id:unitId,choice:value});
+        if(sequence===experienceDetailRequest)renderExperienceFeedback(root,unitId,updated,sequence);
+      }catch(error){
+        if(sequence===experienceDetailRequest)setText(status,errorText(error));
+      }finally{
+        for(const el of row.children)el.disabled=false;
+      }
+    },'rating-choice');
+    if(value!=='clear'){
+      const icon=node('span',reactionSymbols[value],'reaction-icon');
+      icon.setAttribute('aria-hidden','true');
+      control.replaceChildren(icon,node('span',msg(label)));
+    }
+    if(value!=='clear')control.setAttribute('aria-pressed',String(feedback.mine===value));
+    row.append(control);
+  }
+  root.append(node('h3',msg('myFeedback')),row,status);
+}
+
+async function showExperienceDetail(unitId) {
+  const sequence = ++experienceDetailRequest;
+  const root = $('experience-detail');
+  root.replaceChildren(node('p',msg('readingDetail'),'detail-empty'));
+  showDialog('experience-dialog');
+  try {
+    const item = await request('experience_get',{unit_id:unitId});
+    if (sequence!==experienceDetailRequest) return;
+    const intro=node('header',undefined,'experience-intro');
+    const byline=node('div',undefined,'experience-byline');
+    if(item.category)byline.append(node('span',item.category,'experience-category-tag'));
+    if(item.updated_at)byline.append(node('span',joinText([msg('experienceUpdated'),timeLabel(item.updated_at)],' · ')));
+    const content=(item.content||'').trim();
+    const firstLine=content.split('\n',1)[0].trim();
+    const title=item.title || (firstLine.length<=80?firstLine:titleOf(item)) || titleOf(item);
+    const body=firstLine===title?content.slice(content.indexOf(firstLine)+firstLine.length).trim():content;
+    intro.append(byline,node('h2',title,'experience-title'));
+    if(body)intro.append(node('p',body,'experience-copy'));
+    root.replaceChildren(intro);
+    if(item.condition||item.capability){
+      const conditions=node('dl',undefined,'experience-conditions');
+      for(const [field,label] of [['condition','experienceCondition'],['capability','experienceCapability']]){
+        if(!item[field])continue;
+        const group=node('div');
+        addPair(group,msg(label),item[field]);
+        conditions.append(group);
+      }
+      root.append(conditions);
+    }
+    if(item.action){
+      const step=node('section',undefined,'experience-step');
+      step.append(node('h3',msg('experienceAction')),node('p',item.action,'experience-copy'));
+      root.append(step);
+    }
+    if(item.sources?.length||item.parents?.length)root.append(node('h3',msg('experienceSources')));
+    const related=(label,title,display)=>{
+      const link=button(joinText([msg(label),title],' · '),()=>{
+        root.replaceChildren(button(msg('backToExperience'),()=>showExperienceDetail(unitId),'link'),
+          node('h3',title,'detail-heading'));
+        display();
+        root.firstElementChild?.focus();
+      },'experience-related');
+      root.append(link);
+    };
+    for(const ref of item.sources||[]){
+      related('relatedTask',ref.task,()=>{
+        const fields=node('dl',undefined,'detail-source');
+        if(ref.session)addPair(fields,msg('sourceSession'),ref.session);
+        if(ref.agent)addPair(fields,'Agent',ref.agent);
+        if(ref.outcome)addPair(fields,msg('taskOutcome'),ref.outcome);
+        if(ref.occurred_at)addPair(fields,msg('recordedAt'),timeLabel(ref.occurred_at));
+        root.append(fields);
+      });
+    }
+    for(const session of new Set((item.sources||[]).map(ref=>ref.session).filter(Boolean))){
+      related('sourceSession',session,()=>{
+        for(const ref of item.sources.filter(ref=>ref.session===session)){
+          const fields=node('dl',undefined,'detail-source');
+          addPair(fields,msg('relatedTask'),ref.task);
+          if(ref.agent)addPair(fields,'Agent',ref.agent);
+          if(ref.outcome)addPair(fields,msg('taskOutcome'),ref.outcome);
+          root.append(fields);
+        }
+      });
+    }
+    for(const parent of item.parents||[]){
+      related('sourceEntries',titleOf(parent),()=>root.append(node('p',parent.content,'detail-body')));
+    }
+    if(item.skills?.length)root.append(node('h3',msg('relatedSkills')));
+
+    for(const skill of item.skills||[]){
+      related('relatedSkills',skill.name,()=>{
+        const label={approved:'skillApproved',trial:'skillTrial',draft:'skillDraft'}[skill.status];
+        if(label)root.append(node('span',msg(label),'badge'));
+        root.append(node('p',skill.content,'detail-body'));
+      });
+    }
+    if(item.feedback?.can_rate){
+      const feedback=node('section',undefined,'experience-review');
+      renderExperienceFeedback(feedback,unitId,item.feedback,sequence);
+      root.append(feedback);
+    }
+  } catch (error) {
+    if (sequence===experienceDetailRequest) root.replaceChildren(node('p',errorText(error),'detail-empty'));
+  }
+}
+
+$('experience-category').onchange=()=>loadMemories(true);
+$('close-experience-detail').onclick = closeExperienceDetail;
+$('experience-dialog').addEventListener('cancel',closeExperienceDetail);
+
 const memoryTopics={memories:'all',team:'team',profile:'profile',knowledge:'knowledge',experience:'experience'};
 function isMemoryView(name){return Object.hasOwn(memoryTopics,name);}
 function renderNavigation(name){
@@ -1206,10 +1429,10 @@ function updateSelection(){
   $('select-page').indeterminate=count>0&&!$('select-page').checked;
   for(const id of ['copy-selected','export-selected','export-json','forget-selected','clear-selection','select-page'])$(id).disabled=batchBusy||memoryLoading;
   $('select-page').disabled ||= !rows.memories.length;
-  $('forget-selected').disabled=batchBusy||memoryLoading||!rows.memories.filter(item=>checked.has(item.ref)).every(item=>item.lifecycle==='active');
+  $('forget-selected').disabled=batchBusy||memoryLoading||!rows.memories.filter(item=>checked.has(item.ref)).every(item=>item.lifecycle==='active'&&!item.experience);
 }
 function renderEmptyMemories(root){
-  if(memoryView==='team'||memoryView==='experience'){
+  if(memoryView==='team'||(memoryView==='experience'&&!isBoundExperience())){
     emptyState(root,msg(memoryView==='team'?'noTeamMemories':'noExperienceMemories'),msg('noTopicMatchesHint'));
     return;
   }
@@ -1218,8 +1441,9 @@ function renderEmptyMemories(root){
   image.src='/portal/assets/memory-empty.svg';
   image.alt='';
   const hint=node('p');
-  hint.append(node('span',msg('noFilteredMemoriesHint')),button(msg('memoryGuide'),()=>showDialog('memory-guide'),'link'));
-  state.append(image,node('strong',msg('noFilteredMemories')),hint,button(msg('addMemory'),openAdd,'pill-button'));
+  hint.append(node('span',msg(isBoundExperience()?'experienceEmptyHint':'noFilteredMemoriesHint')),button(msg('memoryGuide'),()=>showDialog('memory-guide'),'link'));
+  state.append(image,node('strong',msg('noFilteredMemories')),hint);
+  if(memoryView!=='experience')state.append(button(msg('addMemory'),openAdd,'pill-button'));
   root.append(state);
 }
 function memoryStatusBadge(item,fallback,compact=false){
@@ -1244,8 +1468,10 @@ function cards(target,items){
   for(const item of items){
     const row=node('article',undefined,'memory-row'),title=titleOf(item);row.dataset.ref=item.ref;
     if(kind==='memories'){row.classList.add('selectable');const label=node('label',undefined,'row-select'),check=node('input');check.type='checkbox';check.checked=checked.has(item.ref);check.disabled=batchBusy;setText(check,msg('selectRecord',title),'aria-label');check.onchange=()=>{if(check.checked)checked.add(item.ref);else checked.delete(item.ref);updateSelection();};label.append(check);row.append(label);}
-    const open=button('',()=>selectMemory(item,kind),'card-open');setText(open,msg('viewRecord',title),'aria-label');
+    const open=button('',()=>item.boundExperience?showExperienceDetail(item.id):selectMemory(item,kind),'card-open');setText(open,msg('viewRecord',title),'aria-label');
     const heading=node('span',undefined,'row');heading.append(node('span',title,'memory-title'),memoryStatusBadge(item,'memory',true));
+    if(item.category)heading.append(node('span',item.category,'badge'));
+    if(item.has_skills)heading.append(node('span',msg('hasSkills'),'badge blue'));
     open.append(heading,node('span',summaryOf(item),'memory-preview'));
     const meta=node('div',undefined,'memory-meta');
     appendCollectiveBadges(meta,item);
@@ -1254,10 +1480,22 @@ function cards(target,items){
     if(item.project&&item.destination!=='project')meta.append(node('span',msg('memoryMetadata',msg('project'),item.project)));
     if(item.tier)meta.append(node('span',msg('tierBadge',tierLabels.get(item.tier)||item.tier)));
     if(item.memory_class)meta.append(node('span',msg('classBadge',classLabels.get(item.memory_class)||item.memory_class)));
+    if(item.experience){
+      const counts=node('span',undefined,'experience-reactions');
+      for(const [key,label] of Object.entries(feedbackLabels)){
+        const value=item.counts?.[key]??'—';
+        const count=node('span',reactionSymbols[key]+' '+value,key);
+        const description=joinText([msg(label),String(value)],' · ');
+        setText(count,description,'title');
+        setText(count,description,'aria-label');
+        counts.append(count);
+      }
+      meta.append(counts);
+    }
     if(item.score!==undefined)meta.append(node('span',msg('scoreWithinScope',Number(item.score).toFixed(3))));
     else meta.append(node('span',timeLabel(item.created_at),'memory-time'));
     row.append(open);
-    if(kind==='memories'&&item.lifecycle==='active'){
+    if(kind==='memories'&&item.lifecycle==='active'&&!item.experience){
       const actions=node('div',undefined,'memory-row-actions');
       const correct=button(msg('correctRecord'),()=>openCorrection(item),'pill-button');
       const forget=button(msg('forgetRecord'),()=>openFreshMemoryAction(item,openForget),'pill-button');
@@ -1281,7 +1519,7 @@ function renderDetail(item,kind){
     node('hr',undefined,'detail-divider'),node('h3',msg('sourceAndRecord')));
   const actions=node('div',undefined,'row');
   actions.append(button(msg('copyContent'),async()=>{try{await navigator.clipboard.writeText(item.content||'');notice(msg('copiedMemory'));}catch(e){notice(msg('copyMemoryFailed'),true);}},'quiet small'));
-  if(item.lifecycle==='active')actions.append(button(msg('forgetRecord'),()=>openForget(item),'pill-button'),button(msg('correctRecord'),()=>openCorrection(item),'emphasis pill-button'));
+  if(item.lifecycle==='active'&&!item.experience)actions.append(button(msg('forgetRecord'),()=>openForget(item),'pill-button'),button(msg('correctRecord'),()=>openCorrection(item),'emphasis pill-button'));
   const meta=node('dl',undefined,'detail-source');addPair(meta,msg('app'),item.source||msg('sourceUnknown'));addPair(meta,'Agent',item.agent_label||item.agent||msg('noAgent'));
   if(item.agent)addPair(meta,'Agent ID',item.agent);
   addPair(meta,msg('project'),item.project||msg('projectUnspecified'));
@@ -1326,6 +1564,7 @@ async function loadMemories(reset=false){
       ...(memoryType?{memory_type:memoryType}:{}),
     });
     if(sequence!==memoryRequest)return;
+    if(isBoundExperience())fillOptions('experience-category',(data.categories||[]).map(v=>[v,v]),msg('allClasses'));
     total=data.count;snapshot=data.snapshot;checked.clear();cards('memory-list',data.items);
     const sourceOptions=(data.sources||[]).map(v=>[sourceOptionValue(v),v||msg('sourceUnknown')]);
     fillOptions('source',sourceOptions,msg('allApps'));
@@ -1342,6 +1581,7 @@ async function loadMemories(reset=false){
     setText($('memory-count'),msg('memoryCount',total));$('memory-pager').hidden=!total;$('page-info').textContent=`${total?offset+1:0}–${Math.min(offset+pageSize,total)} / ${total}`;
     $('previous').disabled=offset===0;$('next').disabled=offset+pageSize>=total;
     const filterIds=['source','agent','project'];
+    if(isBoundExperience())filterIds.push('experience-category');
     if(memoryView==='memories')filterIds.push('tier','memory-class');
     const activeFilters=filterIds.filter(id=>selectionValue(id)!==null).length+($('lifecycle').value!=='*'?1:0);
     setText($('filter-count'),activeFilters?msg('filterCount',activeFilters):'');
@@ -1676,6 +1916,17 @@ function changes(){const result={};for(const [key,value]of drafts){if(key.endsWi
 async function switchTab(name,load=true){
   if(name==='search'){await switchTab('memories');setSearchMode('semantic');$('memory-filter').focus();return;}
   notice('');closeDetail();clearTimeout(filterTimer);renderNavigation(name);
+  closeExperienceDetail();
+  if(name==='experience'){
+    try{await browserReady;}
+    catch{
+      if(activeTab===name)notice(msg('bootstrapFailed'),true);
+      return;
+    }
+  }
+  if(activeTab!==name)return;
+  $('browse-results').hidden=searchMode!=='text';
+  $('experience-category-field').hidden=!isBoundExperience();
   if(isMemoryView(name)&&load){const preset=topicPresets[memoryTopics[name]];setFilterValue('memory-class',preset.memoryClass,classLabels.get(preset.memoryClass)||msg('allClasses'));setFilterValue('tier',preset.tier,tierLabels.get(preset.tier)||msg('allTiers'));return loadMemories(true);}
   if(name==='overview')return loadOverview();
   if(name==='settings'&&!saving)return loadSettings();
@@ -1705,16 +1956,16 @@ function setSearchMode(mode,reload=true){
   if(changed){++searchRequest;$('search-submit').disabled=false;closeDetail();setText($('search-count'),msg('runSearch'));$('search-list').replaceChildren();if(mode==='text'&&reload)loadMemories(true);}
 }
 $('mode-text').onclick=()=>setSearchMode('text');$('mode-semantic').onclick=()=>setSearchMode('semantic');
-$('refresh').onclick=()=>{notice('');loadMemories(true);};for(const id of ['source','agent','project','tier','memory-class','lifecycle'])$(id).onchange=()=>{clearTimeout(filterTimer);notice('');loadMemories(true);};
+$('refresh').onclick=()=>{notice('');return loadMemories(true);};for(const id of ['source','agent','project','tier','memory-class','lifecycle'])$(id).onchange=()=>{clearTimeout(filterTimer);notice('');loadMemories(true);};
 $('memory-filter').oninput=()=>{clearTimeout(filterTimer);if(searchMode==='text')filterTimer=setTimeout(()=>loadMemories(true),250);else{++searchRequest;$('search-submit').disabled=false;setText($('search-count'),msg('queryChanged'));$('search-list').replaceChildren();closeDetail();}};
-$('reset-filters').onclick=async()=>{clearTimeout(filterTimer);for(const id of ['source','agent','project','tier','memory-class'])$(id).value='*';$('lifecycle').value='active';$('memory-filter').value='';notice('');await loadMemories(true);};
-$('previous').onclick=()=>{offset=Math.max(0,offset-pageSize);loadMemories();};$('next').onclick=()=>{offset+=pageSize;loadMemories();};
+$('reset-filters').onclick=async()=>{clearTimeout(filterTimer);for(const id of ['source','agent','project','tier','memory-class'])$(id).value='*';$('experience-category').value='*';$('lifecycle').value='active';$('memory-filter').value='';notice('');await loadMemories(true);};
+$('previous').onclick=()=>{offset=Math.max(0,offset-pageSize);return loadMemories();};$('next').onclick=()=>{offset+=pageSize;return loadMemories();};
 $('open-add').onclick=openAdd;$('close-sources').onclick=()=>$('sources-dialog').close();
 $('close-memory-guide').onclick=()=>$('memory-guide').close();
 for(const id of ['close-memory-dialog','cancel-memory-dialog'])$(id).onclick=()=>{if(!mutationBusy)$('memory-dialog').close();};
 for(const id of ['close-forget-dialog','cancel-forget'])$(id).onclick=()=>{if(!mutationBusy)$('forget-dialog').close();};
 for(const id of ['memory-dialog','forget-dialog'])$(id).addEventListener('cancel',event=>{if(mutationBusy)event.preventDefault();});
-for(const id of ['memory-dialog','forget-dialog','sources-dialog','detail-dialog','memory-guide'])$(id).addEventListener('keydown',event=>{if(event.key!=='Tab')return;const controls=[...$(id).querySelectorAll('button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),summary,a[href]')].filter(el=>el.getClientRects().length);const first=controls[0],last=controls.at(-1);if(!first){event.preventDefault();return;}if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}});
+for(const id of ['memory-dialog','forget-dialog','sources-dialog','detail-dialog','experience-dialog','memory-guide'])$(id).addEventListener('keydown',event=>{if(event.key!=='Tab')return;const controls=[...$(id).querySelectorAll('button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),summary,a[href]')].filter(el=>el.getClientRects().length);const first=controls[0],last=controls.at(-1);if(!first){event.preventDefault();return;}if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}});
 function updateMemoryCounter(){const input=$('new-memory');setText($('memory-counter'),msg('characterCount',input.value.length,input.maxLength));}
 $('new-memory').oninput=updateMemoryCounter;
 $('memory-back').onclick=()=>{editorPreview=false;prepareEditor();$('new-memory').focus();};

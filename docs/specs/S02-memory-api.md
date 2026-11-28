@@ -187,8 +187,15 @@ SDK 和 HTTP 共用定位顺序，优先使用文档根目录，其次使用实�
 | 纠正记忆 | `/v1/update` | `scope`、`unit_id`、`patch.content` | 新版 `MemoryUnit`，通过 `supersedes` 指向旧版 |
 | 遗忘记忆 | `/v1/delete` | `selector.scope`、只含一个 ID 的 `selector.unit_ids`、`selector.mode: "forget"` | 已遗忘的 ID 数组 |
 | 配置 | `/v1/read_config`、`/v1/save_config` | 见 HTTP 托管配置接口。跨进程共享页面为指定实例的请求附加 `instance_id` | 同上。跨进程共享页面用空请求体调用 `read_config` 时返回 `instances`、`default_instance_id` |
-| HTTP 宿主取得页面链接 | `/portal/api/launch` | 使用原认证凭据，可带 `write_target`（`space`、`agent`、`session`） | `portal_url` |
-| 浏览器兑换会话 | `/portal/api/bootstrap` | `token`，可选 `embedded` | 普通独立页面建立 HttpOnly Cookie。iframe 和跨进程共享页面返回 `session_token`。跨进程共享页面另返回 `shared: true` |
+| 经验列表 | `/v1/experience_list` | 可选 `query`、`category`、`source`、`agent`、`project`、`lifecycle`、`offset`、`limit` | `available`、`items`、`count` 及筛选选项 |
+| 经验详情 | `/v1/experience_get` | `unit_id` | 有效经验、反馈、可读的来源与关联技能 |
+| 个人评价 | `/v1/experience_rate` | `unit_id`、`choice`（`helpful`、`neutral`、`harmful`、`clear`） | 任务反馈汇总及当前用户的评价 |
+| HTTP 宿主取得页面链接 | `/portal/api/launch` | 使用原认证凭据，可带 `write_target`（`space`、`agent`、`session`）和 `experience_space` | `portal_url` |
+| 浏览器兑换会话 | `/portal/api/bootstrap` | `token`，可选 `embedded` | 普通独立页面建立 HttpOnly Cookie。iframe、跨进程共享页面和绑定经验空间的页面返回 `session_token`。共享页面另返回 `shared: true`，绑定经验空间的页面另返回 `experience_bound: true` |
+
+经验接口只接受 Portal 浏览器会话。经验空间由宿主签发链接时绑定，组织取自认证身份，浏览器请求不能指定 Scope。
+未绑定经验空间时，经验列表、详情和评价均返回 404。SDK 宿主可在 Portal 句柄的
+`launch_url` 上传入 `experience_space`，Swarm Provider 会使用当前启用的经验空间。
 
 页面从 `MemoryUnit.segments` 拼接正文，时间取 `temporal.t_ingest`。HTTP
 `write_target` 由宿主提供，与认证身份合成完整写入范围，随会话绑定。独立访问可以

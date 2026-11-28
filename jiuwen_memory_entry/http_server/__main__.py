@@ -43,7 +43,12 @@ from jiuwen_memory_entry.core.dev_security import with_local_dev_security
 from jiuwen_memory_entry.core.error_response import error_response
 from jiuwen_memory_entry.core.import_support import import_required, import_required_attr
 from jiuwen_memory_entry.http_server.human_view import handle_human_request
-from jiuwen_memory_entry.portal.requests import BROWSER_VERBS, invoke_browser_api
+from jiuwen_memory_entry.portal.requests import (
+    BROWSER_VERBS,
+    EXPERIENCE_VERBS,
+    invoke_browser_api,
+    portal_experience_space,
+)
 from jiuwen_memory_entry.portal.sessions import (
     BROWSER_HEADER,
     SESSION_HEADER,
@@ -344,7 +349,10 @@ class HttpServer(Server):
                     if browser_request and verb not in BROWSER_VERBS:
                         self._send_error("NotFound", request_id=request_id)
                         return
-                    if not is_known_verb(verb) and verb not in CONFIG_VERBS:
+                    if not (
+                        is_known_verb(verb) or verb in CONFIG_VERBS
+                        or (browser_request and verb in EXPERIENCE_VERBS)
+                    ):
                         self._send_error("UnknownVerb", verb, request_id=request_id)
                         return
                 else:
@@ -391,7 +399,7 @@ class HttpServer(Server):
                         self.send(200, body, request_id=request_id, cookie=cookie)
                     return
                 credentials = credentials_from_headers(self.headers, peer_address=peer)
-                write_scope = None
+                write_scope = experience_space = None
                 if browser_request:
                     valid, access = srv.portal_sessions.lookup(
                         self.headers.get("Cookie"), token=self.headers.get(SESSION_HEADER),
@@ -399,7 +407,7 @@ class HttpServer(Server):
                     if not valid:
                         self._send_error("AuthenticationError", request_id=request_id)
                         return
-                    credentials, owner, write_scope = access
+                    credentials, owner, write_scope, experience_space = access
                 context_request_id = request_id
                 try:
                     with authenticated(
@@ -443,12 +451,22 @@ class HttpServer(Server):
                             )
                             return
                         if is_portal:
-                            if not isinstance(payload, dict) or payload.keys() - {"write_target"}:
+                            if (
+                                not isinstance(payload, dict)
+                                or payload.keys() - {"write_target", "experience_space"}
+                            ):
                                 raise ValidationError("invalid Portal launch fields")
                             owner = deepcopy(security.auth.actor)
                             if "write_target" in payload:
                                 write_scope = _portal_write_scope(payload["write_target"], owner)
-                            token = srv.portal_sessions.issue((credentials, owner, write_scope))
+                            if "experience_space" in payload:
+                                experience_space = portal_experience_space(
+                                    payload["experience_space"]
+                                )
+                            token = srv.portal_sessions.issue(
+                                (credentials, owner, write_scope, experience_space),
+                                page_bound=experience_space is not None,
+                            )
                             body = {
                                 "portal_url": urlunsplit((
                                     "http", self.headers["Host"], "/portal/", "", f"access={token}",
@@ -458,6 +476,7 @@ class HttpServer(Server):
                             body = invoke_browser_api(
                                 srv.api, verb, payload, configuration=srv.configuration,
                                 security=security, write_scope=write_scope,
+                                experience_space=experience_space,
                             )
                         elif verb in CONFIG_VERBS:
                             body = invoke_configuration(
