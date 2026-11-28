@@ -90,6 +90,7 @@ from .local_support import (
     _space_scope,
     _space_target_id,
     _TrustedRequestTarget,
+    _validate_message_role,
     _write_permission_context,
 )
 
@@ -820,7 +821,8 @@ class PepOpsMixin:
         self._require_trusted_request(security, request)
         action, audit_action, target, target_id, context = request
         if security.auth.actor.user == COLLECTIVE_MANAGER_ID and (
-            action is not Action.MANAGE_SPACE or audit_action not in COLLECTIVE_MANAGEMENT_OPERATIONS
+            action is not Action.MANAGE_SPACE
+            or audit_action not in COLLECTIVE_MANAGEMENT_OPERATIONS
         ):
             self._deny_authorization(
                 security.auth.actor, action, audit_action, target=target, target_id=target_id,
@@ -1084,6 +1086,7 @@ class PepOpsMixin:
         """
         _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
         _reject_non_scalar_metadata(user_metadata, field_name="user_metadata")
+        _validate_message_role(system_metadata)
         permission_context = _write_permission_context(scope, tags, system_metadata)
         self._authorize(
             security,

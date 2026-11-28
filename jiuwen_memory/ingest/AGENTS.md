@@ -105,4 +105,4 @@ SimpleIngestor 对非结构化规约结果通过共享 PrivacyProtection.split_i
 
 11. 叶区间比较复用 common/time_utils.as_utc；补齐与解析保留输入时间表示。
 
-SimpleIngestor 将 payload.event_time 优先写入所有分片的 t_event；不解析接续信封；普通 payload.occurred_at 仍写 t_message。
+SimpleIngestor 将 payload.event_time 优先写入所有分片的 t_event；不解析接续信封；普通 payload.occurred_at 仍写 t_message；并经模块级带锁单调 UTC 时钟保证同进程跨实例与超长分片的 `t_ingest` 严格递增（F16）。

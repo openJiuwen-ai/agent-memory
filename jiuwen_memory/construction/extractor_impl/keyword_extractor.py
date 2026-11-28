@@ -37,6 +37,11 @@ from jiuwen_memory.construction.common import (
     merge_unit_tags,
 )
 from jiuwen_memory.construction.extractor import Extractor, ExtractorProducer
+from jiuwen_memory.construction.message_role import (
+    filter_effective_units,
+    format_role_line,
+    is_procedural_units,
+)
 
 logger = get_logger(__name__)
 
@@ -66,14 +71,14 @@ class KeywordExtractor(Extractor):
         # （_dedup_batch 兜底）。接受参数仅为统一 Extractor 签名。
         # procedural 模式：本实现无 LLM 做结构化汇总，降级为把本轮原文原样合成 1 条
         # PROCEDURAL（provenance 回指全部本轮 unit），仍保证「1 条过程记忆」契约。
-        if any(
-            str(u.system_metadata.get("procedural", "")).strip().lower() == "true"
-            for u in units
-        ):
+        if is_procedural_units(units):
             return self._build_procedural(units)
-        logger.info("KeywordExtractor: received %d units", len(units))
+        effective = filter_effective_units(units, procedural=False)
+        if not effective:
+            return []
+        logger.info("KeywordExtractor: received %d units", len(effective))
         derived: list[MemoryUnit] = []
-        for unit in units:
+        for unit in effective:
             if unit.provenance or unit.lifecycle != LifecycleState.ACTIVE:
                 logger.debug(
                     "KeywordExtractor: skipping unit id=%s (provenance=%s, lifecycle=%s)",
@@ -124,8 +129,11 @@ class KeywordExtractor(Extractor):
         """procedural 降级：无 LLM，把本轮原文原样合成 1 条 PROCEDURAL。"""
         from datetime import datetime
 
+        units = filter_effective_units(units, procedural=True)
+        if not units:
+            return []
         source = units[0]
-        content = "\n".join(u.content for u in units if u.content).strip()
+        content = "\n".join(format_role_line(u) for u in units if u.content).strip()
         if not content:
             return []
         now = datetime.now(UTC)

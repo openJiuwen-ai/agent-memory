@@ -31,6 +31,7 @@ from .memory import (
     Temporal,
     TreeFact,
     TreeMemoryData,
+    sanitize_message_role,
 )
 from .scope import Scope
 
@@ -104,8 +105,12 @@ def dumps(unit: MemoryUnit) -> bytes:
             **({} if unit.hierarchy.is_empty else {"hierarchy": _dump_hierarchy(unit.hierarchy)}),
             **({} if unit.tree_memory is None else {
                 "tree_memory": {"facts": [
-                    {"source_id": fact.source_id, "source_scope": _dump_scope(fact.source_scope),
-                     "text": fact.text}
+                    {
+                        "source_id": fact.source_id,
+                        "source_scope": _dump_scope(fact.source_scope),
+                        "text": fact.text,
+                        **({"message_role": fact.message_role} if fact.message_role else {}),
+                    }
                     for fact in unit.tree_memory.facts
                 ]},
             }),
@@ -232,7 +237,17 @@ def _load_tree_memory(value: object, unit_id: str) -> TreeMemoryData | None:
             scope = _load_scope(item.get("source_scope"))
             if scope is None:
                 raise ValueError("tree fact source_scope 必须提供完整 Scope")
-            facts.append(TreeFact(source_id=source_id, source_scope=scope, text=text))
+            raw_role = item.get("message_role", "")
+            if not isinstance(raw_role, str):
+                raise ValueError("tree fact message_role 必须为字符串")
+            facts.append(
+                TreeFact(
+                    source_id=source_id,
+                    source_scope=scope,
+                    text=text,
+                    message_role=sanitize_message_role(raw_role),
+                )
+            )
         return TreeMemoryData(facts=facts)
     except (ValueError, TypeError):
         logger.warning("memory_codec: tree_memory 解析失败，降级为 None unit_id=%s", unit_id)

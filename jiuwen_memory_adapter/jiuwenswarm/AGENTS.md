@@ -54,7 +54,7 @@ Team 的项目、团队和 Group 坐标由宿主绑定。工具使用同一绑�
 Work 给定项目时，自动召回与搜索工具使用 project 等值过滤；画像独立读取 USER.md。
 Team 预取画像、项目和团队文档及语义召回并行且分别限时。项目和团队独立采用召回或文档兜底，单段异常保留其他结果。
 
-普通文档自动同步和显式写入工具统一调用场景 write_route；pipeline/infer 不暴露为工具参数。
+普通文档自动同步（`sync_turn` 对 `user` 剥壳并校验双方非空白后按 `message_role="user"`/`"assistant"` 走 `batch_add`）和显式写入工具统一调用场景 write_route；pipeline/infer 不暴露为工具参数。
 SDK 加载配置并应用场景覆盖后，仅当 write_document 归一为 true 时，通过
 configure_document_pipelines 装配文档场景流程，保留具名覆盖及 default/video；
 非文档 Work 保留原 Pipeline，不注入 Shadow 去重依赖。共享 Runtime 不保存当前场景。

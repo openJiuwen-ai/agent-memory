@@ -53,9 +53,10 @@ class SchemaPropertyMergePlan:
 
 @dataclass(slots=True)
 class SchemaPropertyMergeExecution:
-    """IDs changed by one executed plan."""
+    """IDs and created units changed by one executed plan."""
 
     created_ids: list[str] = field(default_factory=list)
+    created_units: list[MemoryUnit] = field(default_factory=list)
     superseded_ids: list[str] = field(default_factory=list)
     archived_ids: list[str] = field(default_factory=list)
 
@@ -251,6 +252,7 @@ class SchemaPropertyMergeExecutor:
         if plan.additions:
             self._index.build(plan.additions, mode=IndexWriteMode.ALL)
             result.created_ids.extend(unit.id for unit in plan.additions)
+            result.created_units.extend(plan.additions)
         for operation in plan.updates:
             replacement = _replacement(operation)
             self._index.build([replacement], mode=IndexWriteMode.ALL)
@@ -259,6 +261,7 @@ class SchemaPropertyMergeExecutor:
             self._index.update([superseded], mode=IndexWriteMode.FORWARD_ONLY)
             self._index.remove([superseded], mode=IndexRemoveMode.SOFT)
             result.created_ids.append(replacement.id)
+            result.created_units.append(replacement)
             result.superseded_ids.append(superseded.id)
         for target in plan.archives:
             archived = _retired(target, LifecycleState.ARCHIVED)

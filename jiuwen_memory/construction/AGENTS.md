@@ -28,6 +28,7 @@ IndexBuilder、Router、Dedup、LayerAnnotator 与 Evolver（默认 `Orchestrati
 | `abstractor.py` | Abstractor 接口：抽象与精炼/升华（高抽象粒度）；类属性 `dedup_products`（缺省 True）声明产物是否过语义去重，技能实现置 False |
 | `associator.py` | Associator 接口：关联分析（实体共指/因果链/引用关系） |
 | `common.py` | 构建层共享工具：LLM 尝试策略、派生 metadata 继承，以及 F12 重要度（`parse_importance` / 类别查表 `importance_category_map_from_config` / `inferred_attribution` / `fill_missing_importance` / `merge_importance_max` / prompt 类别段） |
+| `message_role.py` | 对话消息角色公共辅助（F16）：`message_role_of`（优先 `MESSAGE_ROLE_KEY`，只读兼容旧 `"role"`）、`filter_effective_units`（普通跳 `system`/`developer`，过程记忆仅跳 `system`）、`format_role_line` 与 `(as_utc(t_ingest), unit.id)` 保序键 |
 | `classifier.py` | Classifier 接口：多维分类（认知角色/主题/重要度） |
 | `prompt_strategy.py` | 动态抽取/巩固/反思 prompt metadata 的解析与传递（key 透传） |
 | `prompt_registry.py` | PromptRegistry：从 yml `prompts` 段加载命名 prompt，按 phase+key 查询 |
@@ -116,7 +117,7 @@ prompt_guard 对受保护 unit 的内容分批保留原子引用，过小的正�
 ## 行为铁律
 
 0. **派生 metadata 按来源合并**：单源复制 `user_metadata`，多源只保留相等交集；
-   `infer` / `procedural` / `middle` 不传播。IndexBuilder 分别投影
+   `infer` / `procedural` / `middle` / `message_role` 不传播。IndexBuilder 分别投影
    `system_metadata.<key>` 和 `user_metadata.<key>`。
 
 1. **落盘由本层负责**

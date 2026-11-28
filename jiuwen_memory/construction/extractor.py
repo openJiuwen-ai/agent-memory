@@ -46,4 +46,9 @@ class Extractor(ConstructionOperator):
         ``recent_originals`` 做指代/代词消解与语境，``related_memories`` 提示已有
         事实以规避重复。context 不进提取来源列表——本轮 ``units`` 是唯一提取来源。
         默认 None → 行为与未扩展前一致（向后兼容）。
+
+        角色过滤契约（F16）：实现类入口须调用
+        ``filter_effective_units(units, procedural=is_procedural_units(units))``
+        做纵深过滤（与 Evolver 前置过滤构成双层防线，确保直接调用 ``extract()``
+        绕过 Evolver 时同样跳过 ``system``/``developer`` 等指令角色）。
         """

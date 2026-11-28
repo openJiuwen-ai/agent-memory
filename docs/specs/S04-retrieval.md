@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/retrieval/ |
-| 最近一次修订日期 | 2026-11-23 |
+| 最近一次修订日期 | 2026-11-26 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
-| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F08-schema-temporal-entity.md、docs/features/retrieval/F09-query-rewrite.md、docs/features/retrieval/F11-recency-importance-secondary-rank.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/common/F10-llm-reranker.md、docs/features/storage/F06-composite-recaller-assembly.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
+| 关联特性文档 | docs/features/F01-system-spec-design.md、docs/features/construction/F04-cc-memory-compat.md、docs/features/construction/F05-construction-spec-multimodal-design.md、docs/features/construction/F16-dialogue-message-roles.md、docs/features/retrieval/F02-retrieval-threshold-topk-design.md、docs/features/retrieval/F03-metadata-filtering.md、docs/features/retrieval/F04-score-max-fusion.md、docs/features/retrieval/F05-storage-retrieval-pipelines.md、docs/features/retrieval/F08-schema-temporal-entity.md、docs/features/retrieval/F09-query-rewrite.md、docs/features/retrieval/F11-recency-importance-secondary-rank.md、docs/features/common/F01-memory-layer.md、docs/features/common/F08-memory-tree.md、docs/features/common/F10-llm-reranker.md、docs/features/storage/F06-composite-recaller-assembly.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md |
 
 ## 明文拒绝的传播边界
 
@@ -18,6 +18,12 @@
 FilterExpr 以 `user_metadata.<key>` 表示用户字段，以 `system_metadata.<key>` 表示
 内部系统谓词，两者不 fallback。`RetrievedItem` 同时返回两个命名空间；接入层可按
 信任边界裁剪 `system_metadata`，但 Core API 的检索结果保留完整字段。
+
+## 对话原话的角色检索
+
+按对话消息角色检索不新增接口参数或检索旁路，直接复用标准过滤路径 `filters={"system_metadata.message_role": ...}`（或对应 `FilterClause`），完整复用混合检索（向量 + BM25）、重排、阈值、渐进式披露、逻辑分片、跨空间检索、权限隔离、隐私脱敏与 `as_of` 时间回溯；`RetrievedItem` 返回结构不变。按角色召回原话适用于写入后进入主索引的原文路径（直写原文、中期 `WORKING` 原文归档前、Schema `source_evidence` 原文）；普通/动态路径的纯 `infer=true` 写入沿用既有语义，原文不建索引且派生事实剥离 `message_role`。
+
+KV / PG / ES / Milvus / 内存后端沿用既有 `system_metadata.<key>` 编译器与真源复核；文档模式的 SQLite 影子索引在系统谓词列映射中增加可空 `system_metadata.message_role`（基于 `unit_json` 的 `json_extract`，不套 `COALESCE`，仅编译 `EQ`/`NE`/`IN`/`NOT_IN` 且在 `NE`/`NOT_IN` 时补 `IS NULL OR`，范围算子交后置复核）并纳入向量预过滤字段集，在 SQL `WHERE` 与 `vec0` 召回前直接生效，无需新建表。未写入 `message_role` 的记忆不含该键（真源复核视为 `None`），对 `EQ`/`IN` 不命中、对 `NE`/`NOT_IN` 命中（注：Milvus 既有 JSON 缺键过滤不命中 `!=`/`not in`）。因每条消息独立落为 1 条 `MemoryUnit`，命中指定角色消息时天然不泄露同轮其他角色原话。无查询词按角色列出最近消息同样走 `list(scope, filters={"system_metadata.message_role": ...})`。写入契约见 [S02](S02-memory-api.md#对话消息角色)，设计决策与验收见 [F16](../features/construction/F16-dialogue-message-roles.md)。
 
 ## 当前交付边界
 

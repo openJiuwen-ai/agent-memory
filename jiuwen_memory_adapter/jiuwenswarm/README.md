@@ -39,7 +39,7 @@ USER.md 固定使用空 project，其他文件使用当前项目。write 失败�
 `prefetch` 并行读取 USER.md 与项目 MEMORY.md；普通请求同时搜索项目，默认 `top_k=5`。
 项目搜索为空、失败或超过 5 秒时，使用已读取的 MEMORY.md；背景请求只读文档。
 各读取操作也有 5 秒超时，失败时对应部分为空。画像与兜底文档不受 `top_k` 限制。
-`sync_turn(user, assistant)` 在两者均非空时拼接本轮内容，以 TEXT、`infer=true` 写入绑定项目；
+`sync_turn(user, assistant)` 在 `user` 剥壳去空白且 `assistant` 非空白时按 `message_role="user"` / `"assistant"` 拆为两条经 `batch_add` 以 TEXT、`infer=true` 写入绑定项目（配合默认合并抽取仍单次送模）；
 调用时机、后台排队及关闭由 Core Rail 决定。
 
 分类复用 `user_profile / long_term_memory / daily_memory`，文件由内核确定：
@@ -107,7 +107,7 @@ memory:
 
 `memory.mode=local` 是 Swarm 内置记忆门禁；`jiuwen.mode=http` 是连接方式，两者不冲突。
 Work 和 Code 共用这组服务配置。四个 Coding 工具分别调用 `/v1/read_md_file`、
-`/v1/add`、`/v1/edit_md_file`、`/v1/search`；回合后同步同样调用 `/v1/add`。
+`/v1/add`、`/v1/edit_md_file`、`/v1/search`；普通回合后同步调用 `/v1/batch_add`（Team `sources` 路径仍调用 `/v1/add`）。
 
 HTTP 沿用现有身份映射：org/user 取 identity_org/identity_user，agent 取配置 agent_id（默认 main_agent），
 session 取 user_id，space 为空；scope_id 和原 session_id 不原样传输。

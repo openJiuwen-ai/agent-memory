@@ -40,6 +40,7 @@ from jiuwen_memory.common.type_def import (
 )
 from jiuwen_memory.common.type_def.memory import (
     KERNEL_SYSTEM_METADATA_KEYS,
+    MESSAGE_ROLE_KEY,
     TRANSIENT_SYSTEM_METADATA_KEYS,
 )
 from jiuwen_memory.storage.privacy import (
@@ -118,7 +119,7 @@ def _walk(value: Any, transform: Callable[..., str], *, label: str = "") -> Any:
 
 
 def _texts(unit: MemoryUnit) -> dict[str, Any]:
-    return {
+    texts: dict[str, Any] = {
         "segments": [segment.content for segment in unit.segments],
         "layers": asdict(unit.layers),
         "tags": unit.tags,
@@ -131,6 +132,9 @@ def _texts(unit: MemoryUnit) -> dict[str, Any]:
         },
         "facts": [fact.text for fact in unit.tree_memory.facts] if unit.tree_memory else [],
     }
+    if unit.tree_memory and any(fact.message_role for fact in unit.tree_memory.facts):
+        texts["fact_roles"] = [fact.message_role for fact in unit.tree_memory.facts]
+    return texts
 
 
 def _digest(unit: MemoryUnit) -> str:
@@ -440,6 +444,8 @@ class RegexPrivacy(PrivacyProtection):
             if unit.tree_memory:
                 for fact in unit.tree_memory.facts:
                     fact.text = protect(fact.text)
+                    if fact.message_role:
+                        fact.message_role = protect(fact.message_role, label=MESSAGE_ROLE_KEY)
             # Original level is retained even if Normalizer/LLM drops its placeholder.
             unit.system_metadata[LEVEL_KEY] = self._strongest(detected)
             _record_evidence(unit.system_metadata, evidence)

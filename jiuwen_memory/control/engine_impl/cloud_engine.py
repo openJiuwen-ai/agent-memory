@@ -35,7 +35,6 @@ from jiuwen_memory.common.type_def import (
     Modality,
     RawPayload,
     Scope,
-    Segment,
 )
 from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction import EvolveMode
@@ -89,6 +88,7 @@ from jiuwen_memory.control.engine_impl.temporal_support import (
     valid_sort_key as _valid_sort_key,
 )
 from jiuwen_memory.control.engine_impl.update_support import (
+    apply_memory_patch,
     build_new_or_rollback,
     doc_supersede_lock,
     ensure_unit_active_for_update,
@@ -166,22 +166,8 @@ def _now() -> datetime:
 
 
 def _apply_patch(old: MemoryUnit, patch: MemoryPatch) -> MemoryUnit:
-    new = copy.deepcopy(old)
-    if patch.content is not None:
-        new.segments = [Segment(content=patch.content, assets=list(old.assets), source=old.source)]
-    if patch.tier is not None:
-        new.tier = patch.tier
-    if patch.tags is not None:
-        new.tags = list(patch.tags)
-    if patch.system_metadata is not None:
-        new.system_metadata.update(patch.system_metadata)
-    if patch.user_metadata is not None:
-        new.user_metadata.update(patch.user_metadata)
-    if patch.t_valid is not None:
-        new.temporal.t_valid = patch.t_valid
-    if patch.t_invalid is not None:
-        new.temporal.t_invalid = patch.t_invalid
-    return new
+    """把非 None 的 patch 字段叠加到旧单元的深拷贝上（公共实现见 update_support）。"""
+    return apply_memory_patch(old, patch)
 
 
 def _downweight_importance(unit: MemoryUnit) -> None:

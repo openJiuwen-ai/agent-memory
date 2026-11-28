@@ -130,7 +130,8 @@ _COLLECTIVE_PATH_SQL = " OR ".join(
 _COLLECTIVE_SHAREABLE_SQL = (
     "CASE json_type(CAST(unit_json AS TEXT), '$.system_metadata.shareable') "
     "WHEN 'true' THEN 1 WHEN 'false' THEN 0 "
-    "ELSE CASE WHEN (json_type(CAST(unit_json AS TEXT), '$.system_metadata.collective_destination') = 'text' "
+    "ELSE CASE WHEN (json_type(CAST(unit_json AS TEXT), "
+    "'$.system_metadata.collective_destination') = 'text' "
     f"AND {_COLLECTIVE_DESTINATION_SQL} != '') OR ({_COLLECTIVE_PATH_SQL}) "
     "THEN 0 ELSE 1 END END"
 )
@@ -263,14 +264,29 @@ _SYSTEM_PREDICATE_COLUMNS = {
     "system_metadata.team": "COALESCE(json_extract(CAST(unit_json AS TEXT), "
     "'$.system_metadata.team'), '')",
     "system_metadata.memory_type": _MEMORY_TYPE_SQL,
+    # message_role 为可空字符串键（F16）：不套 COALESCE，避免 NE "" / NOT_IN ["", ...] 误杀缺值行
+    # 及 EQ "" 捞出无角色行占满 top_k；仅编译 EQ/NE/IN/NOT_IN，NE/NOT_IN 显式补 IS NULL OR。
+    "system_metadata.message_role": (
+        "json_extract(CAST(unit_json AS TEXT), '$.system_metadata.message_role')"
+    ),
 }
 
+_NULLABLE_SYSTEM_PREDICATE_FIELDS = frozenset({"system_metadata.message_role"})
 
-def _compile_clause(col: str, op: FilterOp, value) -> tuple[str | None, list]:
+
+def _compile_clause(
+    col: str,
+    op: FilterOp,
+    value,
+    *,
+    nullable_string: bool = False,
+) -> tuple[str | None, list]:
     """把单个系统叶子谓词编译成 ``列 op ?``；不可编译的算子返回 None。"""
     if op is FilterOp.EQ:
         return f"{col} = ?", [value]
     if op is FilterOp.NE:
+        if nullable_string:
+            return f"({col} IS NULL OR {col} != ?)", [value]
         return f"{col} != ?", [value]
     if op is FilterOp.IN:
         if not value:
@@ -285,7 +301,12 @@ def _compile_clause(col: str, op: FilterOp, value) -> tuple[str | None, list]:
             # NOT IN 空集恒真（排除空集 = 不排除任何记录）。
             return "1", []
         ph = ",".join("?" for _ in value)
+        if nullable_string:
+            return f"({col} IS NULL OR {col} NOT IN ({ph}))", list(value)
         return f"{col} NOT IN ({ph})", list(value)
+    if nullable_string:
+        # 可空字符串列不下推范围算子，避免 SQLite TEXT > INTEGER 亲和性恒真，交后置复核。
+        return None, []
     if op is FilterOp.GT:
         return f"{col} > ?", [value]
     if op is FilterOp.GTE:
@@ -316,7 +337,12 @@ def _compile_system_filters(expr) -> tuple[str | None, list]:
         col = _SYSTEM_PREDICATE_COLUMNS.get(expr.field)
         if col is None:
             return None, []
-        return _compile_clause(col, expr.op, expr.value)
+        return _compile_clause(
+            col,
+            expr.op,
+            expr.value,
+            nullable_string=expr.field in _NULLABLE_SYSTEM_PREDICATE_FIELDS,
+        )
     if expr.logic is FilterLogic.AND:
         parts: list[str] = []
         params: list = []
@@ -355,6 +381,7 @@ def _requires_vector_prefilter(
         "unit_id", "id", "system_metadata.memory_class", "system_metadata.team",
         "system_metadata.collective.project", "system_metadata.collective.team",
         "system_metadata.collective.group", "system_metadata.collective.shareable",
+        "system_metadata.message_role",
     }
     if isinstance(expr, FilterClause):
         excludes_team = (
@@ -1302,7 +1329,9 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             qblob = _vec_to_blob(query.vector)
 
             prefilter = _requires_vector_prefilter(query.filters)
-            if prefilter and not _requires_vector_prefilter(query.filters, ignore_default_visibility=True):
+            if prefilter and not _requires_vector_prefilter(
+                query.filters, ignore_default_visibility=True
+            ):
                 # Leave the visibility predicate in both SQL plans. The partial index
                 # makes the scope probe cheap when no restricted document can crowd out KNN.
                 prefilter = conn.execute(

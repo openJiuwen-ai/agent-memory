@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -16,7 +17,32 @@ from .hierarchy import HierarchyRef
 from .scope import Scope
 
 MetadataValueType = str | int | float | bool | None | list[str]
-_NON_PROPAGATED_SYSTEM_METADATA_KEYS = frozenset({"infer", "procedural", "middle"})
+# 对话消息发言人角色（F16）：标量字符串（开放取值，如 user/assistant/system/developer/tool
+# 或自定义角色）；无角色时不写键，且禁止传播至派生记忆与 UPDATE 合并结果。
+MESSAGE_ROLE_KEY = "message_role"
+_MAX_MESSAGE_ROLE_LEN = 64
+_MAX_MASKED_MESSAGE_ROLE_LEN = 256
+_PRIVACY_PLACEHOLDER_RE = re.compile(r"\[JW-PRIVATE:[0-9a-f]{48}\]")
+NON_PROPAGATED_SYSTEM_METADATA_KEYS = frozenset(
+    {"infer", "procedural", "middle", MESSAGE_ROLE_KEY, "role"}
+)
+_NON_PROPAGATED_SYSTEM_METADATA_KEYS = NON_PROPAGATED_SYSTEM_METADATA_KEYS
+
+
+def sanitize_message_role(raw: object) -> str:
+    """清洗消息角色值：仅接受单行可打印值（常规 ≤64 字符，含脱敏占位符总长 ≤256），脏值返回空串。"""
+    if not isinstance(raw, str):
+        return ""
+    value = raw.strip()
+    if not value or not value.isprintable():
+        return ""
+    if len(value) <= _MAX_MESSAGE_ROLE_LEN:
+        return value
+    if len(value) > _MAX_MASKED_MESSAGE_ROLE_LEN or not _PRIVACY_PLACEHOLDER_RE.search(value):
+        return ""
+    if len(_PRIVACY_PLACEHOLDER_RE.sub("", value)) > _MAX_MESSAGE_ROLE_LEN:
+        return ""
+    return value
 
 # 来源标识（重要度 F12）：``system_metadata[ORIGIN_KEY]`` 二态。原文由接入层默认写 original，
 # 派生记忆由产出算子自己写 inferred——不靠继承，故不进上面的不传播键清单。
@@ -177,6 +203,7 @@ class TreeFact:
     source_id: str
     source_scope: Scope
     text: str
+    message_role: str = ""
 
 
 @dataclass

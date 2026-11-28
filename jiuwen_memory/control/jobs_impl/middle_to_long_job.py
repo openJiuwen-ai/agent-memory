@@ -18,7 +18,6 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any
 
 from jiuwen_memory.common.errors import ValidationError
@@ -34,6 +33,15 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.common.type_def.chat import ChatMessage
 from jiuwen_memory.construction import EvolveMode, Evolver
 from jiuwen_memory.construction.index_builder import IndexBuilder
+from jiuwen_memory.construction.message_role import (
+    filter_effective_units,
+    format_role_line,
+    ingest_sort_key,
+)
+from jiuwen_memory.construction.prompt_guard import (
+    CONTENT_MAX_UNIT_CHARS,
+    truncate_unit_content,
+)
 from jiuwen_memory.control.jobs import (
     Job,
     JobCancelledError,
@@ -118,8 +126,9 @@ class MiddleToLongJob(Job):
 
     @staticmethod
     def _format_for_continuity(unit: MemoryUnit) -> str:
-        """取 unit 第一段 content 作为连续性检测输入。"""
-        return unit.segments[0].content if unit.segments else ""
+        """取 unit 第一段 content（限长）并按需附带角色前缀，作为连续性检测输入。"""
+        raw = unit.segments[0].content if unit.segments else ""
+        return format_role_line(unit, truncate_unit_content(raw, limit=CONTENT_MAX_UNIT_CHARS))
 
     # ---- 入口 ----
 
@@ -189,11 +198,16 @@ class MiddleToLongJob(Job):
             scope_for_log(self.scope),
         )
 
-        batches = await self._split_by_continuity(candidates)
+        effective = filter_effective_units(candidates, procedural=False)
+        effective_ids = {id(unit) for unit in effective}
+        skipped_units = [unit for unit in candidates if id(unit) not in effective_ids]
+
+        batches = await self._split_by_continuity(effective) if effective else []
         self.check_cancelled()
 
         created_ids: list[str] = []
-        processed_units: list[MemoryUnit] = []
+        # 被跳过的内置指令角色（system/developer）零 LLM 直接纳入归档，避免下轮反复拉取。
+        processed_units: list[MemoryUnit] = list(skipped_units)
 
         if self._concurrency <= 1:
             # 串行：失败批次隔离（不收集 unit），原文保留 ACTIVE+WORKING 下轮重试
@@ -210,7 +224,7 @@ class MiddleToLongJob(Job):
                     break
                 except Exception as e:
                     logger.warning("middle batch failed, originals preserved: %s", e)
-        else:
+        elif batches:
             results = await self._gather_batches(batches)
             for batch, r in zip(batches, results):
                 if isinstance(r, JobCancelledError):
@@ -338,12 +352,7 @@ class MiddleToLongJob(Job):
             if u.system_metadata.get("middle") != "true":
                 continue
             candidates.append(u)
-        candidates.sort(
-            key=lambda unit: (
-                unit.temporal.t_ingest or datetime.min.replace(tzinfo=UTC),
-                unit.id,
-            )
-        )
+        candidates.sort(key=ingest_sort_key)
         return candidates[: self._max_fetch]
 
     # ---- 并发执行批 ----

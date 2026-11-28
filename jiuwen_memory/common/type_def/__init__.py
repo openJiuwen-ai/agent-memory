@@ -70,6 +70,8 @@ from .memory import (
     MD_TITLE_KEY,
     MEMORY_CLASS_KEY,
     MEMORY_KEY_PREFIX,
+    MESSAGE_ROLE_KEY,
+    NON_PROPAGATED_SYSTEM_METADATA_KEYS,
     ORIGIN_INFER,
     ORIGIN_KEY,
     ORIGIN_ORIGINAL,
@@ -95,6 +97,7 @@ from .memory import (
     inherited_system_metadata,
     inherited_user_metadata,
     memory_key,
+    sanitize_message_role,
 )
 from .memory_filter import matches_filter_value, matches_memory_unit
 from .normalizer import EntityNormalizer
@@ -168,6 +171,8 @@ __all__ = [
     "ORIGIN_ORIGINAL",
     "ORIGIN_INFER",
     "IMPORTANCE_KEY",
+    "MESSAGE_ROLE_KEY",
+    "NON_PROPAGATED_SYSTEM_METADATA_KEYS",
     "DedupDecision",
     "LifecycleState",
     "Temporal",
@@ -177,6 +182,7 @@ __all__ = [
     "ContentLayers",
     "inherited_system_metadata",
     "inherited_user_metadata",
+    "sanitize_message_role",
     "RawPayload",
     "Chunk",
     "ChunkVector",

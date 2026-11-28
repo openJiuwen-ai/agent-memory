@@ -65,6 +65,7 @@ from .local_support import (
     _take_merge_extract,
     _TrustedRequestTarget,
     _truthy_metadata,
+    _validate_message_role,
     _with_author_marks,
     _write_permission_context,
 )
@@ -184,6 +185,7 @@ class WriteOpsMixin:
                 user_metadata=user_metadata, tags=tags, occurred_at=occurred_at,
                 event_time=event_time,
             )
+        _validate_message_role(system_metadata, continuity=continuity)
         if continuity is not None:
             # The continuity path is synchronous and its writer bridges to the async
             # engine with its own loop; run it off the caller's event loop.
@@ -237,6 +239,7 @@ class WriteOpsMixin:
         _reject_route_tag_keys(system_metadata, self._route_table.tag_keys)
         _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
         _reject_non_scalar_metadata(user_metadata, field_name="user_metadata")
+        _validate_message_role(system_metadata)
         reject_kernel_coords(coords)
         # Only the private role writer supplies these kernel-owned fields. Public
         # metadata has already passed the reserved-prefix check, with no bypass flag.
@@ -689,6 +692,7 @@ class WriteOpsMixin:
         _reject_route_tag_keys(merged_system_metadata, self._route_table.tag_keys)
         _reject_non_scalar_metadata(merged_system_metadata, field_name="system_metadata")
         _reject_non_scalar_metadata(merged_user_metadata, field_name="user_metadata")
+        _validate_message_role(merged_system_metadata, continuity=item.continuity)
         if item.stream_id and not isinstance(item.stream_id, str):
             raise ValidationError("batch item stream_id must be str")
         if item.sequence is not None and not isinstance(item.sequence, int):
@@ -788,6 +792,7 @@ class WriteOpsMixin:
         _reject_route_tag_keys(system_metadata, self._route_table.tag_keys)
         _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
         _reject_non_scalar_metadata(user_metadata, field_name="user_metadata")
+        _validate_message_role(system_metadata)
         reject_kernel_coords(coords)
         self._require_trusted_context(
             security, _TrustedRequestTarget(Action.WRITE, "add", Scope(org=identity.org))

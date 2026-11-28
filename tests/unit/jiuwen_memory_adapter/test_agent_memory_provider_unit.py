@@ -1223,6 +1223,7 @@ def test_source_metadata_added_to_each_provider_write_path(monkeypatch):
             close=AsyncMock(),
             is_unavailable=Mock(return_value=False),
             add=AsyncMock(return_value=SimpleNamespace(item_id="unit")),
+            batch_add=AsyncMock(return_value=SimpleNamespace(item_id="unit")),
         )
         monkeypatch.setattr(provider_module, "_build_client", Mock(return_value=client))
         await provider.initialize()
@@ -1230,11 +1231,17 @@ def test_source_metadata_added_to_each_provider_write_path(monkeypatch):
             await provider.handle_tool_call("agent_memory_conclude", {"conclusion": "first"})
             await provider.handle_tool_call("agent_memory_procedural", {"content": "second"})
             await provider.sync_turn("third", "fourth")
-            assert client.add.await_count == 3
-            for call in client.add.await_args_list:
+            assert client.add.await_count == 2
+            assert client.batch_add.await_count == 1
+            for call in [*client.add.await_args_list, *client.batch_add.await_args_list]:
                 metadata = call.kwargs["system_metadata"]
                 assert metadata["source_app"] == "jiuwenswarm"
                 assert metadata["agent_label"] == "writer-agent"
+            batch_items = client.batch_add.await_args.args[0]
+            assert batch_items == [
+                {"content": "third", "system_metadata": {"message_role": "user"}},
+                {"content": "fourth", "system_metadata": {"message_role": "assistant"}},
+            ]
         finally:
             await provider.shutdown()
 

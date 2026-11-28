@@ -31,6 +31,7 @@ def code_provider(monkeypatch):
         is_unavailable=lambda: False,
         search=AsyncMock(return_value=[{"content": "match", "score": 1}]),
         add=AsyncMock(return_value=SimpleNamespace(item_id="new")),
+        batch_add=AsyncMock(return_value=SimpleNamespace(item_id="new")),
         read_md_file=AsyncMock(return_value=[]), edit_md_file=AsyncMock(return_value=[]),
     )
     monkeypatch.setattr(
@@ -111,7 +112,11 @@ def test_prefetch_profile_search_fallback_and_background(code_provider):
             assert "fallback" in await provider.prefetch(query, background=background)
             client.search.assert_not_called()
         await provider.sync_turn("user", "assistant", project="other")
-        assert client.add.call_args.kwargs["system_metadata"]["project"] == "repo-a"
+        assert client.batch_add.call_args.kwargs["system_metadata"]["project"] == "repo-a"
+        assert client.batch_add.call_args.args[0] == [
+            {"content": "user", "system_metadata": {"message_role": "user"}},
+            {"content": "assistant", "system_metadata": {"message_role": "assistant"}},
+        ]
 
     asyncio.run(run())
 

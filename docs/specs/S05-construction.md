@@ -5,10 +5,10 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-11-26 |
+| 最近一次修订日期 | 2026-11-27 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
-| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/construction/F12-importance-and-source-attribution.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
+| 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/construction/F12-importance-and-source-attribution.md, docs/features/construction/F16-dialogue-message-roles.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 乱序陈述的修改型决策契约
 
@@ -46,8 +46,19 @@
 ## Metadata 派生与索引契约
 
 单源派生复制 `user_metadata`；多源派生只保留所有来源都存在且值相等的字段。
-`system_metadata` 只保留相等的必要上下文，`infer` / `procedural` / `middle` 不传播。
-IndexBuilder 以带命名空的逻辑路径投影两类字段。
+`system_metadata` 只保留相等的必要上下文，`infer` / `procedural` / `middle` / `message_role` 不传播。
+IndexBuilder 以带命名空间的逻辑路径投影两类字段。
+
+## 对话消息抽取与归因
+
+- **统一公共模块与前置有效消息筛选**：构建层新增 `construction.message_role` 统一提供角色读取（`message_role_of`，优先读 `MESSAGE_ROLE_KEY`，只读兼容旧 `"role"`，原样透传任意开放角色）、有效消息筛选（`filter_effective_units`）与角色行渲染（`format_role_line`），全抽取路径（普通、Agent、动态、Schema、关键词）与中期连续性检测共同复用。按 `role.casefold()` 大小写不敏感匹配内置指令角色：普通抽取跳过 `system`/`developer`，过程记忆（`procedural=true`）跳过 `system`、保留 `developer`，其余所有标准及业务自定义角色均正常参与抽取。过滤前置到三大 Evolver（`OrchestratingEvolver` / `DynamicEvolver` / `SchemaOrchestratingEvolver`）`_evolve_extract` 入口（`_appraise` 与写 `/messages/` 之前）：整批被跳过时零 LLM 调用、不触发 `_appraise`、不写 `/messages/`（普通与动态路径返回空，Schema 路径仍先落 `source_evidence` 供原话检索并填充 `created_units`）；混合批次写 `/messages/` 前先剔除忽略角色。
+- **保留既有标记骨架、围栏前置规则与代码纵深护栏**：
+  - 普通 / Agent 路径沿用原有 `observation_date` + `[ID: ...]` 契约，仅对携带 `message_role` 的条目在 `[ID: ...]` 后追加 `[ROLE: ...]` 并用 `<message_content>...</message_content>` 围栏隔离不可信正文（转义闭合标签；无角色条目不写角色与围栏）；仅当本批 `units` 或 `context.recent_originals` 存在带角色条目时在 `_llm_extract_once` 将 `ROLE_ATTRIBUTION_SUFFIX` **前置插入 `system_prompt` 顶部**（显式覆盖基线「按行判断说话人」指令，不改 `extraction_system_prompt(units)` 签名），无角色批次的 User Prompt 与 System Prompt 字节级不变。`AgentLlmExtractor`（含 `DocumentFactExtractor`）在 `build_candidates` 纵深拦截 `source_id` 对应 `message_role` 为 `assistant`/`tool` 的 `user_profile` 与 `preference` 候选（保留合法助手事件）。`DynamicLLMExtractor` 自定义策略分支入口同步做 `filter_effective_units` 纵深兜底并在 `user_text` 透传 `[ROLE: ...]` 与围栏，但不改写用户自定义 yml system prompt（不自动追加 `ROLE_ATTRIBUTION_SUFFIX`）。`ExtractContext.recent_originals` 存在带角色条目时按 `(as_utc(t_ingest), unit.id)` 升序（旧→新）同步携带 `[ROLE: ...]` 并以 `<message_content>...</message_content>` 围栏隔离。
+  - 实体 Schema 抽取（`EntitySchemaExtractor`）沿用既有 `[unit_id=...][message_time=...][role=...][speaker=...]` 契约与 `schema_prompts.py`（无角色保持 `[role=unknown]`），统一复用 `message_role_of`、`filter_effective_units` 与 `fence_role_content`（带权威 `message_role` 时正文加 `<message_content>` 围栏并在 prompt 顶部条件追加权威覆盖说明，且无显式 `speaker` 元数据时禁止从正文正则反推 speaker），并同步 `_select_schema`（按条限长后再拼入总预算，避免长输出截断后续消息）；`SchemaOrchestratingEvolver.supports_grouped_extract()` 返回 `True`，执行属性合并写盘前补标 `_mark_persist_started()` 防部分落盘后误重放，并按源归属回传源证据与派生属性记忆（不因缺归属向被跳过角色项扩散），支持 `batch_add` 同批跨角色联合实体抽取；`VideoMemoryExtractor` 入口同步调 `filter_effective_units` 并经 `NON_PROPAGATED_SYSTEM_METADATA_KEYS` 禁止向 CLM/ELM 传播 `message_role`/`"role"`。
+- **巩固抽象（`CONSOLIDATE`）与层次树（`HIERARCHY`）角色隔离**：
+  - `LLMAbstractor._preprocess` 与 `ConcatAbstractor.abstract` 入口均调用 `filter_effective_units(units, procedural=False)` 过滤 `system`/`developer` 指令消息；`LLMAbstractor._llm_abstract_once` 在输入组含角色时前置插入角色归因约束并对带角色条目加 `[ROLE: ...]` + `<message_content>` 围栏（全 `assistant`/`tool` 源硬拦截 `portrait` 产物；无角色组 prompt 字节级不变）；`ConcatAbstractor` 通过 `format_role_line` 保留说话人标记。
+  - 未挂父的 `system`/`developer` snapshot 叶子在 `hierarchy_candidates._select`、`hierarchy_incremental.collect_incremental` 与 `OrchestratingEvolver._evolve_hierarchy` 三处统一过滤（已挂历史旧父的子节点在替换校验中保留，全未挂父指令叶早退返回空结果），保障 `HierarchyJob(reuse_existing=True)`、`replace_in_span` 与 `HierarchyDeriveJob` 树完整性不变量一致；`time_pipeline._structural_body`、`scene_pipeline`、`event_pipeline` 复用 `format_role_line` 保留正文摘录角色，父元数据剥离 `message_role`/`"role"`；`TreeFact` 增可选权威 `message_role` 字段（空值不落序列化 JSON），`parent_enrichment` 在 `TIME_SPAN`/`SCENE`/`EVENT` 全层级对带权威角色的叶与 `TreeFact` 统一加 `[ROLE: ...]` + `<message_content>` 围栏，仅凭权威角色字段触发摘要归因规则（无角色叶子及文本以 `"[ROLE: "` 开头时均不误触发、字节级不变）。
+- **不传播与去重合并保护**：派生事实（含实体属性记忆、视频 CLM/ELM、抽象巩固产物与树父节点）经 `inherited_system_metadata()` / `NON_PROPAGATED_SYSTEM_METADATA_KEYS` 自动剥离 `message_role` 与 `"role"`，且不改变多模态 `UPDATE` 语义；`should_direct_noop`（`has_meaningful_delta`）当 `candidate` 与 `existing` 的 `message_role` 不同（含无角色派生事实对比带角色原话）时禁止高相似直接 NOOP，三处去重 LLM Prompt 均对带角色条目附带 `[ROLE: ...]`；在 `OrchestratingEvolver._apply_decision` 中，当带权威 `message_role` 的直写原话命中 `DedupDecision.UPDATE` 时保守转为 `DedupDecision.ADD`（既不篡改原话、不丢旧原话独有细节，也不使原话退出按角色活跃检索），同时 `OrchestratingEvolver` / `DynamicEvolver` 的 `_merge_content` 对带角色输入加 `<message_content>` 围栏与归因约束并在降级拼接时保留 `format_role_line`。离线 `EvolveJob(mode=EXTRACT)` 对含 `message_role` 的候选桶按 `(as_utc(t_ingest), unit.id)` 升序送模（无 role 桶保持原序）。详见 [F16](../features/construction/F16-dialogue-message-roles.md)。
 
 ## 范围 / 边界
 

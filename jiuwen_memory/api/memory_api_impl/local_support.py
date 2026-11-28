@@ -30,6 +30,7 @@ from jiuwen_memory.common.type_def import (
     ISOLATED_MEMORY_TYPES,
     KERNEL_SYSTEM_METADATA_KEYS,
     MEMORY_TYPE_FILTER_FIELD,
+    MESSAGE_ROLE_KEY,
     TRANSIENT_SYSTEM_METADATA_KEYS,
     ChannelError,
     Context,
@@ -227,12 +228,62 @@ def _reject_kernel_system_metadata(metadata: dict[str, Any] | None) -> None:
     """
     if not metadata:
         return
+    reserved = KERNEL_SYSTEM_METADATA_KEYS | {
+        "collective_destination",
+        "shareable",
+        "group",
+        "sources",
+    }
     clash = sorted(
-        (set(metadata) & (KERNEL_SYSTEM_METADATA_KEYS | {"collective_destination", "shareable", "group", "sources"}))
+        (set(metadata) & reserved)
         | {key for key in metadata if isinstance(key, str) and key.startswith("continuity_")}
     )
     if clash:
         raise ValidationError(f"system_metadata 不得使用内核保留 key：{clash}")
+
+
+_MAX_MESSAGE_ROLE_LEN = 64
+_MESSAGE_ROLE_KEYS = (MESSAGE_ROLE_KEY, "role")
+
+
+def _validate_message_role(
+    metadata: Mapping[str, Any] | None, *, continuity: object | None = None
+) -> None:
+    """校验写入边界的 ``system_metadata["message_role"]``（含历史兼容键 ``"role"``，F16）。
+
+    开放取值：任意非空单行可打印字符串，长度 1..64，无首尾空白。
+    首版禁止与 ``continuity`` 同传。无角色时不写该键（传入 ``""`` 或 ``None`` 一律拒绝）。
+    """
+    if not isinstance(metadata, Mapping):
+        return
+    present_keys = [key for key in _MESSAGE_ROLE_KEYS if key in metadata]
+    if not present_keys:
+        return
+    if continuity is not None:
+        raise ValidationError(
+            f"system_metadata.{present_keys[0]} cannot be combined with continuity"
+        )
+    for key in present_keys:
+        raw = metadata[key]
+        if not isinstance(raw, str) or not raw or len(raw) > _MAX_MESSAGE_ROLE_LEN:
+            raise ValidationError(
+                f"system_metadata.{key} must be a non-empty string "
+                f"of 1..{_MAX_MESSAGE_ROLE_LEN} chars"
+            )
+        if raw.strip() != raw or not raw.isprintable():
+            raise ValidationError(
+                f"system_metadata.{key} must be a single-line string "
+                "without leading/trailing whitespace or control characters"
+            )
+
+
+def _reject_message_role_in_patch(metadata: Mapping[str, Any] | None) -> None:
+    """更新入口禁止经 ``patch.system_metadata`` 写入或篡改 ``message_role`` / ``role``（F16）。"""
+    if not isinstance(metadata, Mapping):
+        return
+    for key in _MESSAGE_ROLE_KEYS:
+        if key in metadata:
+            raise ValidationError(f"patch.system_metadata cannot set or modify {key}")
 
 
 def _truthy_metadata(metadata: dict[str, Any] | None, key: str) -> bool:
