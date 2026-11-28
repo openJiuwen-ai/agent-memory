@@ -209,14 +209,15 @@ def binding_httpd_fixture(monkeypatch):
 
 
 @pytest.fixture
-def http_endpoint():
+def http_endpoint(request):
     runtime = SimpleNamespace(
         authenticator=_Authenticator(),
         rate_limiter=None,
         workload_guard=None,
         audit=None,
     )
-    server = HttpServer.build(load_config([OFFLINE]), security_runtime=runtime)
+    layers = [OFFLINE, *getattr(request, "param", [])]
+    server = HttpServer.build(load_config(layers), security_runtime=runtime)
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.handler_cls())
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -1620,6 +1621,110 @@ def test_portal_real_write_list_search_and_detail(dev_http_endpoint):
     status, hits = browser.call("search", personal_search("个人记忆"))
     assert status == 200, hits
     assert any("个人记忆检索样本" in hit["item"]["content"] for hit in hits["items"])
+
+
+@pytest.mark.parametrize(
+    "http_endpoint", [[{"memory_api": {"engine": {"default": "cloud"}}}]], indirect=True,
+)
+def test_http_portal_experience_sessions_bind_the_provider_space(http_endpoint):
+    import asyncio
+
+    from jiuwen_memory.common.type_def import (
+        LifecycleState,
+        MemoryTier,
+        MemoryUnit,
+        Segment,
+        memory_key,
+    )
+    from jiuwen_memory.common.type_def.memory_codec import dumps
+    from jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider import AgentMemoryMemoryProvider
+    from tests.integration.portal.test_document_portal import Browser, personal_list
+    from tests.support.whitebox import private
+
+    base_url, server = http_endpoint
+    authenticator = server.security_runtime.authenticator
+    kv = private(server.api, "_engine").kv
+    first = Scope(org=authenticator.actor.org, space="first")
+    second = Scope(org=authenticator.actor.org, space="second")
+
+    def unit(scope, unit_id, content, category, **kwargs):
+        return MemoryUnit(
+            id=unit_id, scope=scope, segments=[Segment(content=content)],
+            system_metadata={
+                "memory_type": "experience", "category": category,
+                "condition": "When the job fails", "action": "Check CI",
+                "author_principal": "system", "private_metadata": "not for browser",
+            },
+            **kwargs,
+        )
+
+    units = [
+        unit(first, "tip", "Check CI output", "dev", tier=MemoryTier.PROCEDURAL),
+        unit(first, "fact", "The runtime is local", "environment", tier=MemoryTier.SEMANTIC),
+        unit(first, "archived", "Archived CI", "obsolete", lifecycle=LifecycleState.ARCHIVED),
+        unit(second, "other", "Other CI", "dev"),
+    ]
+    skill = MemoryUnit(
+        id="ci-skill", scope=first, segments=[Segment(content="CI procedure")],
+        tags=["trial"], provenance=["tip"],
+        system_metadata={"memory_type": "skill", "skill_name": "ci-check"},
+    )
+    units.append(skill)
+    for record in units:
+        kv.insert(record.scope, memory_key(record.id), dumps(record))
+
+    async def launch(space):
+        provider = AgentMemoryMemoryProvider(
+            base_url=base_url, api_key="test-key", experience_space=space,
+        )
+        try:
+            return await provider.open_portal()
+        finally:
+            await provider.shutdown()
+
+    first_browser = Browser(asyncio.run(launch(first.space)))
+    second_browser = Browser(asyncio.run(launch(second.space)), opener=first_browser.opener)
+    unbound = Browser(asyncio.run(launch("")), opener=first_browser.opener)
+    assert first_browser.call("experience_list", {})[0] == 403
+    authenticator.role = Role.ROOT
+    status, page = first_browser.call("experience_list", {"query": "ci", "category": "dev"})
+    assert status == 200, page
+    assert page["available"] and page["count"] == 1
+    assert page["categories"] == ["dev", "environment"]
+    assert [item["id"] for item in page["items"]] == ["tip"]
+    assert first_browser.call("experience_list", {"limit": 1, "offset": 1})[1]["count"] == 2
+    for filters in ({"lifecycle": "forgotten"}, {"project": "unknown"}, {"agent": "other"}):
+        assert first_browser.call("experience_list", filters)[1]["count"] == 0
+    assert first_browser.call("experience_list", [])[0] == 400
+    assert first_browser.call("experience_list", {"scope": {"space": second.space}})[0] == 400
+    assert first_browser.call("experience_get", {"unit_id": "other"})[0] == 404
+    assert first_browser.call("experience_get", {"unit_id": "archived"})[0] == 404
+    status, detail = first_browser.call("experience_get", {"unit_id": "tip"})
+    assert status == 200 and detail["condition"] == "When the job fails"
+    assert page["items"][0]["has_skills"]
+    assert detail["skills"] == [{"name": "ci-check", "content": "CI procedure", "status": "trial"}]
+    assert "private_metadata" not in detail and "scope" not in detail
+    for choice, expected in [("helpful", "helpful"), ("neutral", "neutral"), ("clear", None)]:
+        status, saved = first_browser.call("experience_rate", {"unit_id": "tip", "choice": choice})
+        assert status == 200 and saved["mine"] == expected
+        assert first_browser.call("experience_get", {"unit_id": "tip"})[1]["feedback"] == saved
+        assert saved["counts"] == {"helpful": 0, "neutral": 0, "harmful": 0}
+    assert first_browser.call("experience_rate", {"unit_id": "tip", "choice": "bad"})[0] == 400
+    assert second_browser.call("experience_rate", {"unit_id": "tip", "choice": "clear"})[0] == 404
+    assert [item["id"] for item in second_browser.call("experience_list", {})[1]["items"]] == [
+        "other",
+    ]
+    for verb, payload in (
+        ("experience_list", {}),
+        ("experience_get", {"unit_id": "tip"}),
+        ("experience_rate", {"unit_id": "tip", "choice": "clear"}),
+    ):
+        assert unbound.call(verb, payload)[0] == 404, verb
+    assert first_browser.call("list", personal_list())[1]["items"] == []
+    target = {"scope": {"org": first.org, "space": first.space}, "unit_id": "tip"}
+    assert first_browser.call("update", {**target, "patch": {"content": "changed"}})[0] == 403
+    status, _, _ = _request(base_url, "/v1/experience_list", b"{}", key=None)
+    assert status == 404
 
 
 def test_portal_lookup_at_capacity_does_not_evict_live_session():

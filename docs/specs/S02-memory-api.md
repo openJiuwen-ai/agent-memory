@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-27 |
+| 最近一次修订日期 | 2026-11-28 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/F05-personal-memory-portal.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/api/F10-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F09-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/construction/F13-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md，docs/features/control/F10-async-write-orchestration.md |
 
@@ -173,8 +173,15 @@ SDK 和 HTTP 共用定位顺序，优先使用文档根目录，其次使用实�
 | 纠正记忆 | `/v1/update` | `scope`、`unit_id`、`patch.content` | 新版 `MemoryUnit`，通过 `supersedes` 指向旧版 |
 | 遗忘记忆 | `/v1/delete` | `selector.scope`、只含一个 ID 的 `selector.unit_ids`、`selector.mode: "forget"` | 已遗忘的 ID 数组 |
 | 配置 | `/v1/read_config`、`/v1/save_config` | 见 HTTP 托管配置接口。跨进程共享页面为指定实例的请求附加 `instance_id` | 同上。跨进程共享页面用空请求体调用 `read_config` 时返回 `instances`、`default_instance_id` |
-| HTTP 宿主取得页面链接 | `/portal/api/launch` | 使用原认证凭据，可带 `write_target`（`space`、`agent`、`session`） | `portal_url` |
-| 浏览器兑换会话 | `/portal/api/bootstrap` | `token`，可选 `embedded` | 普通独立页面建立 HttpOnly Cookie。iframe 和跨进程共享页面返回 `session_token`。跨进程共享页面另返回 `shared: true` |
+| 经验列表 | `/v1/experience_list` | 可选 `query`、`category`、`source`、`agent`、`project`、`lifecycle`、`offset`、`limit` | `available`、`items`、`count` 及筛选选项 |
+| 经验详情 | `/v1/experience_get` | `unit_id` | 有效经验、反馈、可读的来源与关联技能 |
+| 个人评价 | `/v1/experience_rate` | `unit_id`、`choice`（`helpful`、`neutral`、`harmful`、`clear`） | 任务反馈汇总及当前用户的评价 |
+| HTTP 宿主取得页面链接 | `/portal/api/launch` | 使用原认证凭据，可带 `write_target`（`space`、`agent`、`session`）和 `experience_space` | `portal_url` |
+| 浏览器兑换会话 | `/portal/api/bootstrap` | `token`，可选 `embedded` | 普通独立页面建立 HttpOnly Cookie。iframe、跨进程共享页面和绑定经验空间的页面返回 `session_token`。共享页面另返回 `shared: true`，绑定经验空间的页面另返回 `experience_bound: true` |
+
+经验接口只接受 Portal 浏览器会话。经验空间由宿主签发链接时绑定，组织取自认证身份，浏览器请求不能指定 Scope。
+未绑定经验空间时，经验列表、详情和评价均返回 404。SDK 宿主可在 Portal 句柄的
+`launch_url` 上传入 `experience_space`，Swarm Provider 会使用当前启用的经验空间。
 
 页面从 `MemoryUnit.segments` 拼接正文，时间取 `temporal.t_ingest`。HTTP
 `write_target` 由宿主提供，与认证身份合成完整写入范围，随会话绑定。独立访问可以

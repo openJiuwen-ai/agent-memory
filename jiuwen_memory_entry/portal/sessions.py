@@ -20,12 +20,13 @@ def bootstrap(sessions, body, *, shared=False):
     embedded = body.get("embedded", False)
     if not isinstance(embedded, bool):
         return None, None
-    tab_session = embedded or shared
-    session = sessions.redeem(body.get("token"), embedded=tab_session)
+    session, bound = sessions.redeem_for_page(body.get("token"), embedded=embedded or shared)
     if session is None:
         return None, None
-    if tab_session:
+    if embedded or shared or bound:
         response = {"ready": True, "session_token": session}
+        if bound:
+            response["experience_bound"] = True
         if shared:
             response["shared"] = True
         return response, None
@@ -46,32 +47,37 @@ class BrowserSessions:
                 if table[key][0] <= now:
                     del table[key]
 
-    def issue(self, payload=None):
+    def issue(self, payload=None, *, page_bound=False):
         with self.lock:
             self._prune()
             if len(self.grants) >= _MAX_ENTRIES:
                 del self.grants[next(iter(self.grants))]
             token = secrets.token_urlsafe(32)
-            self.grants[token] = (time.monotonic() + 300, payload)
+            self.grants[token] = (time.monotonic() + 300, payload, page_bound)
             return token
 
     def redeem(self, token, *, embedded=False):
+        session, _ = self.redeem_for_page(token, embedded=embedded)
+        return session
+
+    def redeem_for_page(self, token, *, embedded=False):
         if not isinstance(token, str):
-            return None
+            return None, False
         with self.lock:
             self._prune()
             grant = self.grants.pop(token, None)
             if grant is None:
-                return None
+                return None, False
             if len(self.sessions) >= _MAX_ENTRIES:
                 del self.sessions[next(iter(self.sessions))]
             session = secrets.token_urlsafe(32)
+            embedded = embedded or grant[2]
             self.sessions[session] = (time.monotonic() + 3600, grant[1], embedded)
             if embedded:
-                return session
+                return session, grant[2]
             return (
                 f"{self.cookie}={session}; Path=/v1/; HttpOnly; SameSite=Strict; Max-Age=3600"
-            )
+            ), False
 
     def _read_cookie(self, header):
         cookie = SimpleCookie()

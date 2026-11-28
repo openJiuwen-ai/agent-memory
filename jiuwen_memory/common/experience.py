@@ -475,6 +475,24 @@ class UtilityStore:
         except NotFoundError:
             self._kv.insert(scope, BASELINE_KEY, payload)
 
+    def reproduction_sources(self, scope: Scope, entry_id: str):
+        """Read the recorded task coordinates for one experience, across revisions."""
+        for key, raw in self._kv.scan(scope, f"{UTILITY_KEY_PREFIX}{entry_id}/repro:"):
+            parsed = parse_utility_event_key(key)
+            if not parsed or parsed.entry_id != entry_id or not parsed.trajectory_id:
+                continue
+            try:
+                event = decode_payload(raw)
+            except ValueError:
+                continue
+            if not isinstance(event, dict) or event.get("trajectory_id") != parsed.trajectory_id:
+                continue
+            coordinates = event.get("source_scope")
+            if isinstance(coordinates, list) and len(coordinates) == 5 and all(
+                isinstance(value, str) for value in coordinates
+            ):
+                yield coordinates, parsed, event
+
     def scan_events(self, scope: Scope) -> list[tuple[UtilityEventKey, dict[str, Any]]]:
         """按前缀扫出全部效用事件并解出键与载荷（聚合的输入，§2.5.2 第 1 步）。
 
