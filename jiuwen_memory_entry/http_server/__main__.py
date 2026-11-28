@@ -27,7 +27,6 @@ import uuid
 from contextlib import contextmanager
 from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from importlib.resources import files
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -51,6 +50,7 @@ from jiuwen_memory_entry.portal.sessions import (
     BrowserSessions,
     bootstrap,
 )
+from jiuwen_memory_entry.portal.static import serve_portal_file
 
 # 共享应用核（server / profiles / handler / config_loader）住在 jiuwen_memory_entry/core；
 # 加入 sys.path 后 flat-import 复用——本 surface 只做 HTTP 传输。
@@ -308,18 +308,14 @@ class HttpServer(Server):
                 ):
                     return
                 request_id = uuid.uuid4().hex
-                if self.path.rstrip("/") == "/portal" and srv.portal_enabled:
-                    if not self._portal_origin_allowed(require_origin=False):
+                if srv.portal_enabled and (
+                    self.path.rstrip("/") == "/portal" or self.path.startswith("/portal/assets/")
+                ):
+                    if not (
+                        self._portal_origin_allowed(require_origin=False)
+                        and serve_portal_file(self, self.path)
+                    ):
                         self._send_error("NotFound", request_id=request_id)
-                        return
-                    data = files("jiuwen_memory_entry.portal").joinpath("index.html").read_bytes()
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Content-Length", str(len(data)))
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("X-Content-Type-Options", "nosniff")
-                    self.end_headers()
-                    self.wfile.write(data)
                 elif self.path.rstrip("/") == "/healthz":
                     body = {"status": "ok", "profile": srv.config.profile}
                     authenticator = srv.authenticator

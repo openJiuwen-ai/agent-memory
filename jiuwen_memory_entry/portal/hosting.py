@@ -9,7 +9,6 @@ import secrets
 import socket
 from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from importlib.resources import files
 from threading import BoundedSemaphore, Lock, RLock, Thread
 from urllib.parse import urlsplit
 from weakref import ref
@@ -28,6 +27,7 @@ from jiuwen_memory_entry.portal.sessions import (
     BrowserSessions,
     bootstrap,
 )
+from jiuwen_memory_entry.portal.static import serve_portal_file
 
 
 def new_provider_key() -> str:
@@ -120,12 +120,10 @@ class _PortalServer:
                     return False
                 return True
 
-            def respond(self, status, payload, *, cookie=None, html=False):
-                data = payload if html else json.dumps(payload, ensure_ascii=False).encode()
+            def respond(self, status, payload, *, cookie=None):
+                data = json.dumps(payload, ensure_ascii=False).encode()
                 self.send_response(status)
-                self.send_header(
-                    "Content-Type", "text/html; charset=utf-8" if html else "application/json"
-                )
+                self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("X-Content-Type-Options", "nosniff")
@@ -136,14 +134,8 @@ class _PortalServer:
 
             def handle_get(self):
                 path = self.path.partition("?")[0] if shared else self.path
-                if not self.allowed() or path.rstrip("/") != "/portal":
+                if not self.allowed() or not serve_portal_file(self, path):
                     self.respond(404, {"error": "NotFound"})
-                    return
-                self.respond(
-                    200,
-                    files("jiuwen_memory_entry.portal").joinpath("index.html").read_bytes(),
-                    html=True,
-                )
 
             def handle_post(self):
                 try:
