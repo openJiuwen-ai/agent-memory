@@ -30,11 +30,13 @@ from jiuwen_memory.common.normalizer.normalizer_impl.video_asr import (
 from jiuwen_memory.common.normalizer.normalizer_impl.video_normalizer import VideoNormalizer
 from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import (
+    ChannelError,
     Context,
     FilterClause,
     FilterOp,
     Modality,
     RawPayload,
+    RecallChannel,
     Scope,
     iter_clauses,
 )
@@ -45,7 +47,7 @@ from jiuwen_memory.retrieval.retriever import Retriever
 from jiuwen_memory.retrieval.retriever_impl.multimodal_retriever import (
     MultimodalRetriever,
 )
-from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult
+from jiuwen_memory.retrieval.types import RetrievalQuery, RetrievalResult, RetrievedItem
 from jiuwen_memory_entry.core.legacy_request_adapter import (
     _scope,
     build_legacy_dispatch_request,
@@ -565,6 +567,50 @@ def test_multimodal_retriever_builds_three_filtered_branches() -> None:
     base.queries.clear()
     retriever.retrieve(other_space, RetrievalQuery(text="video"))
     assert len(base.queries) == 3
+
+
+@pytest.mark.parametrize("with_trajectory", [False, True])
+def test_multimodal_retriever_preserves_branch_errors(with_trajectory: bool) -> None:
+    native_error = ChannelError(RecallChannel.VECTOR, "native-vector", "BackendError", "offline")
+    clip_error = ChannelError(RecallChannel.KEYWORD, "clip-keyword", "BackendError", "offline")
+    event_errors = [
+        ChannelError(RecallChannel.VECTOR, "event-vector", "BackendError", "offline"),
+        ChannelError(RecallChannel.KEYWORD, "event-keyword", "BackendError", "offline"),
+    ]
+    branch_results = {
+        "native": RetrievalResult(
+            items=[RetrievedItem(unit_id="native")], errors=[native_error],
+        ),
+        "clm": RetrievalResult(items=[RetrievedItem(unit_id="clip")], errors=[clip_error]),
+        "elm": RetrievalResult(items=[RetrievedItem(unit_id="event")], errors=list(event_errors)),
+    }
+
+    class PartialFailureRetriever(_RecordingRetriever):
+        def retrieve(self, scope: Scope, query: RetrievalQuery) -> RetrievalResult:
+            del scope
+            branch = next(
+                (
+                    clause.value
+                    for clause in iter_clauses(query.filters)
+                    if clause.field == "system_metadata.memory_level"
+                ),
+                "native",
+            )
+            branch_result = branch_results.get(branch)
+            assert branch_result is not None, f"Unexpected retrieval branch: {branch!r}"
+            return branch_result
+
+    result = MultimodalRetriever(PartialFailureRetriever()).retrieve(
+        Scope(org="org-1", user="user-1"),
+        RetrievalQuery(text="video", top_k=2, with_trajectory=with_trajectory),
+    )
+
+    assert [item.unit_id for item in result.items] == ["native", "clip"]
+    assert result.errors == [native_error, clip_error, *event_errors]
+    assert bool(result.trajectory) is with_trajectory
+    assert branch_results["native"].errors == [native_error]
+    assert branch_results["clm"].errors == [clip_error]
+    assert branch_results["elm"].errors == event_errors
 
 
 def test_multimodal_config_add_and_search_end_to_end(tmp_path, monkeypatch) -> None:

@@ -134,6 +134,7 @@ class MultimodalRetriever(Retriever):
             top_k=query.top_k,
             rrf_k=self._rrf_k,
         )
+        errors = [error for branch in branch_order for error in results[branch].errors]
         trajectory: list[TrajectoryStep] = []
         for branch in branch_order:
             if query.with_trajectory:
@@ -154,7 +155,7 @@ class MultimodalRetriever(Retriever):
             ), enabled=query.with_trajectory, level=TraceLevel.SIMPLE)
             if capture is not None:
                 trajectory.extend(trajectory_steps(capture))
-        return RetrievalResult(items=items, trajectory=trajectory)
+        return RetrievalResult(items=items, trajectory=trajectory, errors=errors)
 
 
 def _with_filters(
