@@ -50,8 +50,16 @@ class API:
         return list(selector.unit_ids)
 
     @staticmethod
+    def supports_operation_receipt():
+        return True
+
+    @staticmethod
     def operation_receipt(*args, **kwargs):
         return None
+
+    @staticmethod
+    def receipt_evicted(*args, **kwargs):
+        return False
 
 
 def _security():

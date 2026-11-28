@@ -532,6 +532,7 @@ async def memory_batch_add(  # pylint: disable=too-many-arguments,huawei-too-man
     user_metadata: dict | None = None,
     continue_on_error: bool = True,
     event_time: str | None = None,
+    operation_id: str | None = None,
     ctx: Context = None,
 ) -> dict:
     """
@@ -550,6 +551,8 @@ async def memory_batch_add(  # pylint: disable=too-many-arguments,huawei-too-man
     event_time: 批级缺省事件时间（含时区 ISO 8601，写入 t_event），优先于正文日期抽取。
     system_metadata / user_metadata: 批级缺省元数据对象（值限标量）。
     continue_on_error: true（默认）时单条失败不中断整批。
+    operation_id: 可选幂等键，整批视为一次写入；相同键且各项正文一致的重放返回
+        首次结果、不重写，正文不一致返回冲突。批内含接续项时不能给。
     返回 {"outcomes": [...]}，每项含 index（与输入顺序对齐）与 units（成功）
     或 error/error_type（该条失败原因）。
     """
@@ -566,6 +569,7 @@ async def memory_batch_add(  # pylint: disable=too-many-arguments,huawei-too-man
             "user_metadata": user_metadata,
             "continue_on_error": continue_on_error,
             "event_time": event_time,
+            "operation_id": operation_id,
         },
         context=ctx,
     )
@@ -660,6 +664,7 @@ async def memory_batch_add_async(  # pylint: disable=too-many-arguments,huawei-t
     user_metadata: dict | None = None,
     continue_on_error: bool = True,
     event_time: str | None = None,
+    operation_id: str | None = None,
     ctx: Context = None,
 ) -> dict:
     """
@@ -680,6 +685,7 @@ async def memory_batch_add_async(  # pylint: disable=too-many-arguments,huawei-t
             "user_metadata": user_metadata,
             "continue_on_error": continue_on_error,
             "event_time": event_time,
+            "operation_id": operation_id,
         },
         context=ctx,
     )

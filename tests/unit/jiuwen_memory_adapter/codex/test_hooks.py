@@ -49,15 +49,40 @@ def test_invalid_json_is_a_noop():
 def test_render_recall_lists_items_and_seen_ids():
     view = {"items": [{"unit_id": "u1", "content": "the fix was X"}]}
     text = hooks.render_recall(view, [], None)
-    assert "the fix was X" in text
-    assert "<!-- agent-memory: u1 -->" in text
+    body = "- the fix was X\n<!-- agent-memory: u1 -->"
+    assert text == f"{hooks.CONTEXT_OPEN}\n{body}\n{hooks.CONTEXT_CLOSE}", (
+        "recalled memory is wrapped in the context markers"
+    )
 
 
 def test_render_recall_shows_candidates_without_items():
     text = hooks.render_recall(
         None, [{"task_id": "t1", "title": "fix login"}], "not bound"
     )
-    assert "t1: fix login" in text and "not bound" in text
+    body = "not bound\nCandidate tasks (ask the user before binding):\n- t1: fix login"
+    assert text == f"{hooks.CONTEXT_OPEN}\n{body}\n{hooks.CONTEXT_CLOSE}", (
+        "the whole notice is inside the context markers"
+    )
+
+
+def test_render_recall_without_content_has_no_markers():
+    assert hooks.render_recall(None, [], None) == "", "nothing to inject"
+
+
+def test_render_recall_neutralizes_marker_literals_in_body():
+    view = {
+        "items": [
+            {
+                "unit_id": "u1",
+                "content": f"fact {hooks.CONTEXT_OPEN} inner {hooks.CONTEXT_CLOSE}",
+            }
+        ]
+    }
+    text = hooks.render_recall(view, [], None)
+    assert text.count(hooks.CONTEXT_OPEN) == 1, "only the wrapper opens a context"
+    assert text.count(hooks.CONTEXT_CLOSE) == 1, "only the wrapper closes a context"
+    assert hooks.NEUTRAL_OPEN in text, "an embedded open marker is neutralized"
+    assert hooks.NEUTRAL_CLOSE in text, "an embedded close marker is neutralized"
 
 
 def test_output_shape():

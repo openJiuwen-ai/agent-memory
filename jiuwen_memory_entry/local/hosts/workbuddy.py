@@ -24,27 +24,43 @@ class WorkBuddyDetection:
     mcp_paths: dict[str, Path] = field(default_factory=dict)
 
 
-def detect_workbuddy(project_root: str | Path | None = None) -> WorkBuddyDetection:
-    community = Path(
-        os.environ.get("JIUWEN_WORKBUDDY_HOME", Path.home() / ".workbuddy")
-    ).expanduser()
-    enterprise = Path(
-        os.environ.get("JIUWEN_CODEBUDDY_HOME", Path.home() / ".codebuddy")
-    ).expanduser()
-    if community.is_dir():
-        paths = {"user": community / "mcp.json"}
+_EDITION_HOMES = {
+    "community": ("JIUWEN_WORKBUDDY_HOME", ".workbuddy"),
+    "enterprise": ("JIUWEN_CODEBUDDY_HOME", ".codebuddy"),
+}
+
+
+def detect_workbuddy(
+    project_root: str | Path | None = None, edition: str = ""
+) -> WorkBuddyDetection:
+    """Detect the requested edition; community comes before enterprise when unnamed."""
+    if edition in _EDITION_HOMES:
+        return _detect_edition(edition, project_root)
+    community = _detect_edition("community", project_root)
+    if community.state != "absent":
+        return community
+    return _detect_edition("enterprise", project_root)
+
+
+def _detect_edition(
+    edition: str, project_root: str | Path | None
+) -> WorkBuddyDetection:
+    variable, fallback = _EDITION_HOMES[edition]
+    home = Path(os.environ.get(variable, Path.home() / fallback)).expanduser()
+    if not home.is_dir():
+        return WorkBuddyDetection("absent", "", None, {})
+    if edition == "community":
+        paths = {"user": home / "mcp.json"}
         state = "configured" if paths["user"].exists() else "no_config"
-        return WorkBuddyDetection(state, "community", community.resolve(), paths)
-    if enterprise.is_dir():
-        paths = {"user": enterprise / ".mcp.json"}
-        if project_root:
-            root = Path(project_root).expanduser().resolve()
-            preferred = root / ".codebuddy" / ".mcp.json"
-            alternate = root / ".mcp.json"
-            paths["project"] = alternate if alternate.exists() else preferred
-        state = "configured" if any(path.exists() for path in paths.values()) else "no_config"
-        return WorkBuddyDetection(state, "enterprise", enterprise.resolve(), paths)
-    return WorkBuddyDetection("absent", "", None, {})
+        return WorkBuddyDetection(state, "community", home.resolve(), paths)
+    paths = {"user": home / ".mcp.json"}
+    if project_root:
+        root = Path(project_root).expanduser().resolve()
+        preferred = root / ".codebuddy" / ".mcp.json"
+        alternate = root / ".mcp.json"
+        paths["project"] = alternate if alternate.exists() else preferred
+    state = "configured" if any(path.exists() for path in paths.values()) else "no_config"
+    return WorkBuddyDetection(state, "enterprise", home.resolve(), paths)
 
 
 def _read(path: Path) -> dict:
@@ -78,7 +94,7 @@ class WorkBuddyMcpWriter:
 
     @staticmethod
     def _detection(install: HostInstall) -> WorkBuddyDetection:
-        detection = detect_workbuddy(install.project_root or None)
+        detection = detect_workbuddy(install.project_root or None, install.edition)
         if detection.state == "absent":
             raise ValueError("WorkBuddy not detected; refusing to guess a config path")
         if install.edition and install.edition != detection.edition:

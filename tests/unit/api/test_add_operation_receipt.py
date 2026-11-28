@@ -11,6 +11,13 @@ from tests.support.scoped_authenticator import ScopedAuthenticator
 pytestmark = pytest.mark.unit
 
 
+def test_real_assembly_declares_receipt_capability():
+    # The sync engine probes receipts only when this is declared; a real assembly
+    # keeps receipts, so it must say so (the ABC default is False).
+    api = assemble(config={})
+    assert api.supports_operation_receipt() is True
+
+
 def test_receipt_lists_outputs_and_replays_without_writing():
     api = assemble(config={})
     scope = Scope(org="acme", user="owner")

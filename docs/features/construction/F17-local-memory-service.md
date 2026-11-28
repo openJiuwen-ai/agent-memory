@@ -5,9 +5,9 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-11-25 |
-| 状态 | 实现中（本机服务、hook 核心、MCP/Codex/JiuwenSwarm/DSH 接入已落地）；D14（MCP 默认 / hook 可选，新增 Hermes、WorkBuddy）已完成仓库内可验证实现；D15（宿主记忆同步）尚有回执持久化未完成；授权版本逐次核对已落地，详见「实现状态」；真机矩阵需在外部宿主机执行，见「验证」 |
-| 影响范围 | `jiuwen_memory_entry/`（新增本机服务入口、宿主 hook 端点，抽取 Portal 的启动锁与私有目录工具）、`jiuwen_memory_entry/cli/`（`service` / `connect` / `hook` / `task` 子命令）、`jiuwen_memory_adapter/jiuwenswarm/`（Provider 本机连接模式）、`jiuwen_memory_adapter/continuity/`（MCP 桥自动发现、补齐 add/search）、`jiuwen_memory_adapter/codex/`、新增 DeepSeek Harness 插件目录、`jiuwen_memory/common/security/authentication/`（本机令牌认证器）、`jiuwen_memory/api/memory_api_impl/continuity_ops.py`（连接自绑定授权）、`jiuwen_memory/storage/watchdog_impl/`（启动对账）、`jiuwen_memory_entry/local/hosts/`（新增 Hermes、WorkBuddy 写入器，MCP 与 hook 分层）、`jiuwen_memory_entry/local/sync/`（宿主记忆同步，D15）、`pyproject.toml`（打包与 `local` 依赖组）；`docs/specs/S11-cross-agent-continuity.md`、`docs/specs/S10-security.md`、`docs/specs/S02-memory-api.md` 与 `docs/specs/S06-storage.md`（D15 所需的原子条件删除与创建时归属字段）、安全能力 F04、角色记忆 F11 |
-| 测试基线 | `pytest -m unit` 全绿；本机服务集成测试 `tests/integration/jiuwen_memory_entry/local`（含真实旧服务数据迁移/恢复、同步端点、冻结计划、增量与镜像删除、Hermes/WorkBuddy 临时目录双次同步与跨主体召回）；DSH 插件 `node --test` 7 项；真机矩阵待外部宿主执行 |
+| 状态 | 实现中（本机服务、hook 核心、MCP/Codex/JiuwenSwarm/DSH 接入已落地）；D14（MCP 默认 / hook 可选，新增 Hermes、WorkBuddy）已完成仓库内可验证实现；D15（宿主记忆同步）尚有回执持久化未完成；授权版本逐次核对已落地，详见「实现状态」；D16（授权后扫描本机 Agent 并自动接入）已完成仓库内可验证实现，四家宿主的特征文件与“接管自带记忆”配置项待选定版本实测；真机矩阵需在外部宿主机执行，见「验证」 |
+| 影响范围 | `jiuwen_memory_entry/`（新增本机服务入口、宿主 hook 端点，抽取 Portal 的启动锁与私有目录工具）、`jiuwen_memory_entry/cli/`（`service` / `connect` / `hook` / `task` 子命令）、`jiuwen_memory_adapter/jiuwenswarm/`（Provider 本机连接模式）、`jiuwen_memory_adapter/continuity/`（MCP 桥自动发现、补齐 add/search）、`jiuwen_memory_adapter/codex/`、新增 DeepSeek Harness 插件目录、`jiuwen_memory/common/security/authentication/`（本机令牌认证器）、`jiuwen_memory/api/memory_api_impl/continuity_ops.py`（连接自绑定授权）、`jiuwen_memory/storage/watchdog_impl/`（启动对账）、`jiuwen_memory_entry/local/hosts/`（新增 Hermes、WorkBuddy 写入器，MCP 与 hook 分层）、`jiuwen_memory_entry/local/sync/`（宿主记忆同步，D15）、`jiuwen_memory_entry/local/scan.py` 与宿主注册表 `probe`（本机 Agent 扫描与自动接入，D16）、`pyproject.toml`（打包与 `local` 依赖组）；`docs/specs/S11-cross-agent-continuity.md`、`docs/specs/S10-security.md`、`docs/specs/S02-memory-api.md` 与 `docs/specs/S06-storage.md`（D15 所需的原子条件删除与创建时归属字段）、安全能力 F04、角色记忆 F11 |
+| 测试基线 | `pytest -m unit` 全绿；本机服务集成测试 `tests/integration/jiuwen_memory_entry/local`（含真实旧服务数据迁移/恢复、同步端点、冻结计划、增量与镜像删除、Hermes/WorkBuddy 临时目录双次同步与跨主体召回）；DSH 插件 `node --test` 9 项；真机矩阵待外部宿主执行 |
 | Refs | 待定 |
 
 ## 背景
@@ -71,11 +71,12 @@ JiuwenSwarm 的记忆本来就在 agent memory 中，不需要导入。
 5. 已有 JiuwenSwarm 用户切换后，原个人记忆、任务与绑定仍可见。
 6. 一个宿主创建的任务，另一个从未参与的宿主可在用户确认后接手，原宿主不必在线。
 7. 指定宿主目录后，可把 Codex、DSH、Hermes、WorkBuddy 自己保存的记忆**同步导入** agent memory，可反复执行、结果一致（D15）。
+8. 装好 agent memory 后，经用户授权自动找出本机已安装的 Codex、DSH、Hermes、WorkBuddy 实例并批量接入，再逐个引导同步其已有记忆；之后新出现的实例自动接入（D16）。
 
 **非目标**
 
 - 不做跨主机、多写实例；团队部署仍是现有 HTTPS 服务，本特性只是同一协议的本机形态。
-- 不把扫描宿主私有文件当作**默认**采集方式：记忆同步只在用户对某个安装显式开启读取、并执行或开启同步后才读取，且只读，不修改宿主文件（D15）。
+- 不把扫描宿主私有文件当作**默认**采集方式：D16 的本机扫描只看路径是否存在、不读文件内容；记忆同步只在用户对某个安装显式开启读取、并执行或开启同步后才读取，且只读，不修改宿主文件（D15）。
 - 不提供同一系统账号下进程间的防冒充隔离：同账号程序能读到彼此的令牌文件，身份只用于来源归属。
 - 不实现 Agent MCP 业务封装（服务端维护 active task / binding 状态的薄工具层），见 D11。
 
@@ -609,7 +610,7 @@ jiuwen-memory sync revoke <宿主> [--install ID]
   1. **权威写入结果查询**：按系统元数据从**真源**精确查询，写成功后立即可查，不依赖异步索引——即 S06 的 `DomainStore.supports_exact_metadata_lookup` 能力。`MemoryAPI.list()` 的契约是"只返回已建索引的单元"，数据已写、索引未可见时会查空，**不能**作为恢复依据；
   2. **创建时写入归属字段**：`sync_created_by` 随单元创建原子写入，且内核去重合并到既有单元时不改写它；确定性直写同时写入 `sync_initial_digest`，会话抽取的派生单元不写源摘要，改由账本按每个输出记录实际内容摘要，避免摘要与单元内容不符导致永久保护；
   3. **删除语义**：只有后端提供原子比较删除时，摘要比较与删除才在同一事务内完成。默认后端 `supports_conditional_delete()` 为 False，无法消除检查后到删除前的编辑窗口，必须保留单元并报告能力不足；不得退化为本地比较后的普通删除。
-  4. **按操作标识的写入回执**：`add` 接受调用方给出的同步操作标识，回执列出本次调用的**全部输出**（含去重复用的既有单元），可按操作标识查询；回执返回前重新做可信上下文与写权限校验。当前回执为进程内实现，进程重启后的恢复只能依赖真源查询或落 `unconfirmed`，持久化仍列为遗留。
+  4. **按操作标识的写入回执**：`add` 接受调用方给出的同步操作标识，回执列出本次调用的**全部输出**（含去重复用的既有单元），可按操作标识查询；回执返回前重新做可信上下文与写权限校验。`batch_add` / `batch_add_async` 同样接受批级操作标识——整批是一次逻辑写入、对应一张回执，与单条回执同表、可由同一探测查询，重放按各项正文顺序判定一致。回执探测是 `MemoryAPI` 上声明的能力（`supports_operation_receipt()`），调用方先查能力再探测。当前回执为进程内实现，进程重启后的恢复只能依赖真源查询或落 `unconfirmed`，持久化仍列为遗留。
 - **未完成写入的恢复**（遇到 `writing`），按以下顺序判断：
   - **有持久化的写入回执**：按回执恢复全部输出（含复用项）并登记引用，然后**与正常返回走同一状态转移**——按 `writing` 时持久化的写入意图，新增置 `ok`，替换置 `cleanup_pending` 并继续清理旧引用；不重写。否则 `USER.md` 从 A 改成 B、内核已提交 B 而账本未落盘时中断，恢复会留下 A、B 两版；
   - **没有回执**：缺回执不能证明写入未执行——内核可能已部分提交后抛异常，reload/重启也会清空进程内回执。只有显式 `prepared` 或人工确认未执行的来源才可重发；其余一律置 `unconfirmed`。回执因容量上限被淘汰同样按 `unconfirmed`，不能当作未提交；
@@ -666,7 +667,99 @@ jiuwen-memory sync revoke <宿主> [--install ID]
 
 - 手动执行；`connect` 完成后询问是否授权并立即同步一次（非交互默认否）；定期自动同步默认关闭，可按安装开启，且只在当前授权范围内执行。
 
-### D16：同步与 hook 的数据去向
+### D16：授权后扫描本机 Agent 并自动接入
+
+装好 agent memory 后，经用户授权，自动找出本机已安装的 Codex、DSH、Hermes、WorkBuddy 实例，批量接入并逐个引导同步其已有记忆；之后新出现的实例自动接入。用户不必逐个宿主执行 `connect` 与 `sync grant`。
+
+**用法**
+
+```
+jiuwen-memory init                       # 初始化完成后询问是否授权扫描与接入（默认"是"）
+jiuwen-memory scan [--add-dir <目录>...] [--remove-dir <目录>...] [--depth N] [--dry-run]
+jiuwen-memory scan status
+jiuwen-memory scan include <实例>        # 把"已忽略"的实例恢复为可自动接入
+jiuwen-memory scan auto-connect on|off
+jiuwen-memory scan revoke
+```
+
+命令命名为 `scan`，不用 `discover`：`discovery` 在本特性中已指服务发现文件（D2）。
+
+**1. 两层授权**
+
+| 层 | 允许做什么 | 不允许做什么 | 保存位置 |
+|---|---|---|---|
+| 扫描授权 | 在授权位置内查看文件、目录是否存在（只做 `stat` 与列目录），按宿主特征识别实例 | 打开文件读取内容；跟随跳出授权位置的符号链接；进入网络盘、外接盘或其他用户的目录 | `~/.jiuwen-memory/scan.json`（0600）：扫描位置、深度上限、`auto_connect`、已忽略的实例、授权版本 |
+| 同步授权 | 按 D15 的授权单读取指定来源根、指定类型的内容 | 超出授权单范围（沿用 D15 的受限访问接口） | 安装记录的 `sync` 字段（D15） |
+
+- 接入（修改宿主配置）位于两层之间：扫描授权允许发现之后才能接入，接入之后才有安装可挂同步授权。
+- 扫描授权变更（增删目录、改深度、开关自动接入）时授权版本加一；扫描授权不隐含任何同步授权。
+
+**2. 触发与默认行为**
+
+- **安装后询问**：`init` 在交互终端完成后询问是否授权扫描与接入，展示将查看的位置、"只看路径、不读内容"、发现后会自动接入、以后新出现的实例也会自动接入，默认"是"。非交互环境不扫描，只输出提示命令：无人确认不能当作同意。
+- **首次扫描**：结果一次性列出每个实例的宿主、实例（profile、版本、作用域）、命中的特征路径、接入将修改的配置文件、hook 默认值与可导入类型；用户可取消勾选个别实例，确认后批量接入。接入按 D14 的默认值：MCP 全部开启，hook 只有配置级且已核实的宿主默认开启，需要安装代码插件的 hook 不随扫描开启。
+- **逐个同步授权**：每个实例接入后进入 D15 第 1 节的同步授权确认（来源根、数据类型、目标空间及可见人群、`profile` 个人信息提示、出站清单），可逐个跳过；确认后先 dry-run，再确认写入。会话类（`session_turn`）默认不勾选，与 D15 一致。
+- **之后自动接入**：服务启动时和此后每 24 小时重新扫描一次，只看路径。`auto_connect` 默认开启，随首次扫描授权一起确认；新出现的实例按上面的默认值自动接入，并在 `status` 中报告。自动接入**不**自动开启同步授权：该安装记为"待授权同步"，在 `status`、下一次交互式 CLI 命令与 MCP 工具说明中提示用户确认。
+- **用户意愿优先**：用户 `disconnect` 过、或在扫描结果中取消勾选的实例记入"已忽略"，此后重新扫描不再自动接入，只在 `scan status` 中列出；`scan include` 才恢复。
+- `scan revoke`：停止定期扫描与自动接入；已有安装与同步授权不受影响，分别用 `disconnect`、`sync revoke` 处理。
+
+**3. 扫描边界**
+
+- 扫描框架统一执行边界，宿主的识别逻辑只能经框架提供的受限遍历接口查看路径（与 D15 受限访问接口同一思路，但只有 `stat` 与列目录，没有打开文件的能力）。
+- 默认位置都是用户目录下的隐藏目录，不会触发 macOS 的文件夹访问授权；"文稿""桌面""下载"等受保护目录只在用户自己追加时扫描，系统拒绝访问时报告跳过，不重复请求。
+- 用户追加的项目目录逐层下探，有深度（默认 4 层）与条目数上限，跳过 `.git`、`node_modules`、虚拟环境与构建产物；达到上限即停止，报告"未扫完"，不猜测剩余部分。
+- 扫描结果只保存实例与特征路径，不保存文件内容。
+
+**4. 四家宿主的识别**
+
+| 宿主 | 查看的位置 | 实例划分 | 可导入类型（按 D14 能力表） | 可接管自带记忆（见第 7 节） |
+|---|---|---|---|---|
+| Codex | `JIUWEN_CODEX_HOME` 或 `~/.codex` | 单实例 | 长期记忆、会话 | 待实测（自带记忆默认关闭，开关位于 `config.toml`） |
+| DSH | `JIUWEN_DSH_HOME` 或 `~/.dsh`，以及 `desktop`、`dsh-tui` 两个 profile | 每个 profile 一个实例 | 会话（无内置长期记忆） | 不涉及 |
+| Hermes | `JIUWEN_HERMES_HOME` 或 `~/.hermes`，以及 `profiles/<名>/` | 每个 profile 一个实例 | `MEMORY.md`、`USER.md`；会话待实测，不可选 | 待实测（内置记忆配置项） |
+| WorkBuddy | 社区版 `~/.workbuddy`、企业版 `~/.codebuddy`；用户追加目录下项目里的 `.workbuddy/memory/` | 按版本一个实例，企业版默认用户作用域 | `USER.md` 等长期记忆、项目每日日志；会话不支持 | 待实测（能否单独关闭未知） |
+
+- 每家的特征文件声明在宿主注册表中，以选定版本的实测结果定稿。只有目录、不满足特征时标为"疑似"：列出供用户判断，不自动接入。
+- 接入还依赖宿主自身工具时（如 DSH 的 `dsh` 命令），工具不可用则标为"已发现、无法接入"并说明原因。
+- **WorkBuddy 项目日志并入用户级安装**：项目里的 `.workbuddy/memory/` 作为该用户已有 WorkBuddy 安装的额外来源根，进入其同步授权；不为每个项目新建项目作用域安装，也不往项目里写 `.mcp.json`，避免改动代码仓库或被提交进版本库。本机没有用户级 WorkBuddy 实例时，只列出提示，不自动接入。
+
+**5. 插件化**
+
+- 宿主注册表的 `HostSpec` 新增 `probe(view) -> list[ProbeResult]`：`view` 是受限遍历接口；`ProbeResult` 含宿主名、实例（与 D14 的 `instance` 同结构）、命中的特征路径、记忆来源根、可导入类型（必须是能力表中"支持"的类型）与状态（已发现 / 疑似 / 已发现但无法接入）。
+- 接入复用 `connect` 的步骤与回滚（D5），同步复用 D15；扫描不另建接入或读取路径。
+- 新增宿主只需在注册表中补 `probe`，扫描命令与服务不按宿主名分支。实现时在 S09 的宿主接入约定中补充 `probe` 的约束：不得读取内容、必须有边界、可导入类型不得超出能力声明。
+
+**6. 失败与并发**
+
+- 批量接入逐实例独立：一个失败不影响其他，最后统一报告；重跑时按实例去重（D14），续做未完成的接入。
+- 后台扫描与 `connect`、`disconnect` 共用安装记录的文件锁，按实例去重，不会为同一实例建两个安装；用户正在断开的实例不会被同时接回。
+- 后台自动接入失败（配置文件被占用、格式无法解析等）只记录原因，下一周期再试；连续失败三次转为"需手动处理"，不再自动重试。
+
+**7. 与宿主自带记忆并存**
+
+宿主自己的记忆功能（如 Codex memories、Hermes 内置记忆、WorkBuddy 的 `USER.md`）在接入后默认继续工作，agent memory 不修改、不关闭它；用户可对单个安装选择"由 agent memory 接管"（见本节末）。两套记忆同时存在会带来两类重复，分别处理：
+
+- **同一件事两边各记一份**：hook 写入的是本轮问答原文（任务事件），宿主自带记忆再由同步导入一份整理后的条目。两者形态不同，不强行合并；导入条目带 `source_app` 与来源标识，召回时可区分来源。接入确认页说明"该宿主自带记忆已开启（或未开启），授权同步后会定期导入"，由用户决定是否授权同步，以及是否在宿主里自行关闭自带记忆。
+- **回流：agent memory 注入的内容被宿主记下后又被导入**：自动召回把记忆注入宿主上下文，宿主自带记忆可能把这些内容记进自己的文件，下次同步再导入，形成"写入 → 召回 → 宿主记下 → 再导入"的循环，每转一圈多一份副本。处理分三层：
+  1. **注入内容带标记**：召回注入的文本统一包在固定的标记块中（标记格式在实现时定稿并写入 S11 的召回视图约定）；同步过滤在入账前剥除标记块，宿主原样记下的注入内容不会被导入。capture 现有的"剔除本轮注入原文"规则不变。
+  2. **正文相同即复用**：剥除后的条目，规范化正文与目标空间中已有单元相同、且该单元不是本来源创建的，不新写单元，只在账本登记对该单元的引用（`origin=external`），删除时按 D15 统一删除条件不会删除它。
+  3. **改写后的回流不强判**：宿主把注入内容改写、摘要后记下的条目无法可靠识别，按普通新条目导入并保留来源标识；这部分列为已知遗留，不用相似度猜测去重，避免误吞用户真实的新记忆。
+- 同一宿主的镜像写入与文件同步对同一条目使用同一稳定标识（D15），不会因两条路径各写一份。
+
+**由 agent memory 接管（可选）**
+
+用户可选择关闭某个安装的宿主自带记忆，改由 agent memory 承担，从源头消除重复与回流。
+
+- **提供条件**（同时满足才在确认页出现该选项）：该安装的 hook 已开启；该宿主"关闭自带记忆"的配置项已在选定版本实测（第 4 节表中为"支持"）；用户在交互界面手动选择。后台自动接入的实例一律不接管。
+  - 只有 MCP 时模型不一定调用工具，关闭自带记忆后可能什么都记不住，因此 hook 未开启不提供；
+  - 配置项未实测时改错会破坏宿主配置，因此"待实测"不提供。
+- **执行顺序**：先完成一次该安装的同步（需已有同步授权，dry-run 确认后写入），再修改宿主配置关闭自带记忆；同步未完成时不关闭，避免宿主已有记忆既未导入又不再更新。宿主的原始记忆文件不删除、不改写。
+- **记录与恢复**：安装记录新增 `takeover`，保存被修改的配置项及原值。`disconnect`、关闭 hook、或执行 `jiuwen-memory takeover off <宿主>` 时恢复原值；恢复按 D5 规则只回滚本工具写入、且用户之后未改动的字段，用户改过的保留并报告。
+- **接管后的同步**：宿主不再新增自带记忆，定期同步只需处理已有文件的变化；Hermes 的镜像写入（`on_memory_write`）随内置记忆关闭而不再触发，属预期行为。
+- **状态可见**：`status` 显示每个安装是否处于接管状态；hook 因故失效（如宿主升级导致事件不再触发）时提示用户恢复自带记忆。
+- 用法：`connect` 确认页勾选，或对已连接安装执行 `jiuwen-memory takeover on|off|status <宿主> [--install ID]`。
+
+### D17：同步与 hook 的数据去向
 
 - 读取授权与 `capture` 分开确认；两者开启前都展示 D9 的出站清单。同步授权另外展示目标空间的可见人群，并单独提示 `profile` 类含个人信息。
 - 导入内容写入时会经 Embedder 向量化，包含 `session_turn` 时还会发给 LLM 抽取，清单中按实际装配列出；dry-run 不发生任何出站。
@@ -683,6 +776,8 @@ D14 随本版交付；D15 先交付不含持久化回执的同步实现，逐次
 4. 对原目录再次同步，结果不重复。
 
 WorkBuddy 尚未核实的 hook 与会话格式按 D14 的能力表返回"不支持"，不影响上述两项核心功能在本版交付。
+
+D16 已完成仓库内实现与自动化测试；四家宿主的特征文件、默认路径与接管配置项在选定版本真机实测后再宣称完整交付。
 
 已有部署显式启用本机模式时先执行 D12，由服务在旧 Runtime 释放存储后接管；全新部署经 `init`、`connect` 完成装配。安装后须能从干净环境运行 CLI、发现或拉起服务，并使用本机模板中已装配组件的数据去向声明。
 
@@ -755,7 +850,19 @@ WorkBuddy 尚未核实的 hook 与会话格式按 D14 的能力表返回"不支�
 | 出站清单为空即承诺不外发 | 第三方插件未声明去向时会被当成不出站，界面作出错误承诺 |
 | hook 只凭连接与会话确定项目 | 同一连接服务多个项目时会查错空间；改为宿主传入或安装固定唯一项目，多项目时要求选择，见 D8 |
 | 本地已有操作即返回原结果 | 同轮异内容会被当作成功，内核的同键异内容冲突检查被绕过；改为比对冻结请求摘要，见 D8 |
+| 扫描整个硬盘寻找宿主 | 慢、触发系统隐私授权、误识别多；只看各家默认位置与用户追加的目录，见 D16 |
+| 扫描时读取文件内容判别宿主 | 扫描授权只覆盖查看路径，读取内容属于同步授权；识别只靠特征路径，见 D16 |
+| 发现后自动开启同步 | 宿主记忆含个人画像，写入共享空间后成员都能召回；自动接入后仍须逐个确认同步授权，见 D16 |
+| 非交互环境默认同意扫描 | 无人确认不能当作授权；非交互只输出提示命令，见 D16 |
+| 重新扫描时接回用户断开的实例 | 违背用户意愿；断开或取消勾选的实例记入已忽略，见 D16 |
+| WorkBuddy 每个项目新建项目作用域安装 | 要往代码仓库写 `.mcp.json`，可能被提交；项目日志改为用户级安装的来源根，见 D16 |
+| 默认关闭宿主自带记忆 | 三家宿主默认只有 MCP，模型不调用工具时会什么都记不住；服务不在线时宿主失去本地兜底；后台自动接入时用户难以察觉。改为满足条件时由用户手动选择接管，见 D16 |
+| 按文本相似度识别回流并去重 | 无法区分改写的回流与用户真实的新记忆，误判会吞掉新记忆；只对标记块与正文完全相同的回流处理，见 D16 |
+| 扫描命令命名为 `discover` | 与服务发现文件（D2）同名，易混淆；改为 `scan` |
 | 只凭 `--config` 迁移认证主体 | SDK 主体由宿主运行时注入，配置里通常没有，owner 指纹也不能反推；改为可信来源取得并核对，见 D12 |
+| 为同步引擎单独新增 `add_sync` 写入端口，用 `trusted_metadata` 绕过保留键检查 | 内核 ABC 上长出一个只为本机同步引擎服务的方法，默认报错文案还得写死 Access 层装配名；HTTP/CLI 契约要额外排除它；引擎靠 `hasattr` 探测、没有时退回 `add` 内联键，而退回路径在生产 API 上会被保留键检查拒掉——同一操作两条路径，其中一条只对测试替身成立。创建归属键不属于内核保留键（内核不据其判定，只在去重合并与更新时保留），改为经 `add` / `batch_add` 的 `system_metadata` 在创建边界写入，更新边界继续拒绝改写，见 D15 |
+| 同步引擎按 `getattr` 探测 `operation_receipt` / `receipt_evicted`，回执方法不进 `MemoryAPI` | 可选能力没有显式声明，调用方只能猜，违反插件规约「能力声明必须真实」；改为在 `MemoryAPI` 上声明 `supports_operation_receipt()` 及配套方法（非抽象默认成员，不进传输契约），引擎先查能力再探测，见 D15 |
+| `batch_add` 的回执按逐项 `BatchWriteItem.operation_id` 发放 | N 张回执等于 N 次单条写入，整批作为一个逻辑写入的幂等性反而没人负责；改为批级一个 `operation_id`、整批一张回执，与单条回执同表同键空间，见 D15 |
 
 ## 实现状态（2026-11-25）
 
@@ -771,6 +878,21 @@ WorkBuddy 尚未核实的 hook 与会话格式按 D14 的能力表返回"不支�
 | hook 核心 | `local/turns.py`（待写记录、操作记录、选择）、`local/hooks.py`（recall/capture/retry）、`local/capture_filter.py`、`local/recovery.py` | `test_turns.py`、`test_hooks_recall.py`、`test_capture.py`、`test_capture_filter.py`、`test_recovery.py` |
 | 宿主接入 | `jiuwen_memory_adapter/continuity/mcp.py`（本机发现与租约）、`jiuwen_memory_adapter/codex/hooks.py`、`jiuwenswarm/agent_memory_provider.py`（`connection="local"`、`export_actor`）、`jiuwen_memory_adapter/deepseek_harness/`（npm 插件） | 适配器单测、`deepseek_harness/test/hook.test.js` |
 | 迁移 | `local/migrate.py`（`plan_migration`/`apply_migration`/`recover_admin`）、CLI `migrate`、`space recover-admin` | `tests/integration/jiuwen_memory_entry/local/test_migrate_jiuwenswarm.py`、`test_migrate_real_service.py` |
+
+D16（授权后扫描本机 Agent 并自动接入）当前实现：
+
+| 层 | 落点 | 测试 |
+|---|---|---|
+| 扫描授权与只看路径的遍历 | `local/scan.py`（`ScanGrant`/`scan.json`、`scan_grant_lock`、`PathView`、`ProbeResult`、`probe_all`） | `test_scan.py` |
+| 四家识别 | `local/hosts/registry.py` 的 `_probe_codex`/`_probe_dsh`/`_probe_hermes`/`_probe_workbuddy`；Hermes 来源根为各实例自己的 `memories/`，DSH 会话只归第一个 profile，WorkBuddy 项目日志只挂一个用户级实例；`detect_workbuddy(edition=...)` 按版本识别 | `test_scan.py`、`sync/test_reader_scan.py`、`hosts/test_workbuddy.py` |
+| 批量接入与命令 | `scan.py` 的 `candidates`/`connect_results`/`dismiss_instance`/`include_instance`/`resolve_pending_sync`；`cli.py` 的 `scan run|status|include|auto-connect|revoke`、`init` 询问、待授权同步提示；`disconnect` 记入已忽略并移出待授权同步 | `test_scan_connect.py`、`test_local_cli.py` |
+| 定期扫描 | `service.py` 的 `scan_due`/`_scan_tick`/扫描调度线程；只拉起 `jiuwen-memory scan run --background` 子进程，时间记在 `data/scan.last` | `test_scan_scheduler.py` |
+| 注入标记与回流 | `capture_filter.py`（`CONTEXT_OPEN/CLOSE`、`strip_context_blocks`）、三家适配器包裹并中和标记、`sync/engine.py` 入账前剥除、镜像纯标记内容返回 `ignored` | `test_capture_filter.py`、`sync/test_scan_engine.py`、适配器测试、`test_sync_endpoints.py` |
+| 由 agent memory 接管 | `hosts/__init__.py` 的 `TakeoverWriter` 与能力列 `takeover`；`install.py` 的 `set_takeover` 与断开、关闭 hook、重连关闭 hook 时恢复；`cli.py` 的 `takeover on|off|status` | `test_takeover.py` |
+
+- 目前没有宿主提供 `TakeoverWriter`，能力矩阵中“接管自带记忆”均为 `unverified`（DSH 为 `unsupported`），`takeover on` 返回不支持；选定版本实测后再为对应宿主补写入器并改为 `supported`。
+- 扫描与正在进行的 `connect`/`disconnect` 之间只做了“接入完成后再核对已忽略列表、必要时撤销”的保护，两者尚未共用按实例的锁；断开晚于接入完成时可能残留 connector 与令牌登记（安装记录仍为已断开，不会被再次接回）。
+
 
 D15 当前实现与设计核对结果：
 
@@ -945,6 +1067,23 @@ D15 当前实现与设计核对结果：
 - 入口与授权单：从 `/local/sync` 进入、使用真实安装对象执行；请求体中的目录、项目、会话参数超出授权单时被服务端拒绝或忽略，以授权单为准（CLI 确认不能替代这层检查）。
 - 缺席保留：未加 `--mirror-deletes` 时，源端缺席条目的记忆与账本关联都保留，下次源端恢复该条目时仍能识别为同一条。
 
+**本机 Agent 扫描与自动接入（D16）**
+
+- 安装后询问：交互终端执行 `init`，完成后出现扫描授权询问，默认"是"；非交互环境执行 `init` 不扫描，只输出提示命令。
+- 只看路径：用伪造的用户目录覆盖四家宿主，扫描过程中被打开读取的文件数为 0；扫描结果文件中不含任何宿主文件内容。
+- 识别与实例：Hermes 两个 profile、DSH 两个 profile、WorkBuddy 社区版与企业版分别识别为独立实例；只有目录、缺少特征的标为"疑似"且不自动接入；`dsh` 命令不可用时标为"已发现、无法接入"。
+- 批量接入：首次确认后四家全部接入，其中一个实例的配置文件不可写时，其余实例照常接入并在报告中列出失败项；重跑后续做失败项，不重复建安装。
+- hook 默认值：扫描接入后只有 Codex 的 hook 开启，DSH、Hermes 不安装代码插件。
+- 同步不自动开启：自动接入后各安装均为"待授权同步"，在用户确认前不读取任何记忆文件；确认后先 dry-run 再写入。
+- 新实例自动接入：新建一个 Hermes profile，下一次周期扫描后自动接入并在 `status` 中报告；`auto-connect off` 后不再自动接入，只列出。
+- 尊重断开：`disconnect` 一个实例后周期扫描不再接回，`scan include` 后才恢复；断开与后台扫描同时发生时，实例最终保持断开。
+- 扫描边界：用户追加的目录中有跳出该目录的符号链接、`node_modules`、超过深度上限的层级，均不被进入，报告"未扫完"；macOS 上追加"文稿"目录且系统拒绝访问时报告跳过。
+- 回流不导入：hook 召回注入的标记块被宿主原样写进其自带记忆文件后，再次同步不新增单元；去掉标记、正文与空间中他人创建的单元完全相同的条目只登记引用，不新写，撤销同步并选择删除时该单元保留。
+- 自带记忆提示：接入确认页按实际探测结果显示宿主自带记忆是否开启；未选择接管时，agent memory 不修改宿主的自带记忆设置。
+- 接管条件：hook 未开启、配置项待实测或后台自动接入时，确认页不出现接管选项。
+- 接管顺序与恢复：选择接管后先完成同步再关闭自带记忆，宿主原记忆文件不变；同步失败时不关闭。`disconnect` 后自带记忆配置恢复原值；用户在接管期间手动改过该配置项时保留用户的值并报告。
+- WorkBuddy 项目日志：追加一个含 `.workbuddy/memory/` 的项目目录后，该目录成为用户级 WorkBuddy 安装同步授权中的候选来源根，项目里不新增任何文件。
+
 **数据去向**
 
 - 出站清单由装配结果生成：在「本地 Embedder + 本地 LLM + 远程 Reranker」配置下，清单列出 Reranker 端点并标明收到查询与候选正文，不得显示"不向外发送原文"。
@@ -988,6 +1127,7 @@ HTTP 原生数据替代）、macOS arm64 / Windows 11 / Linux 三平台矩阵、
 - 第三方插件数据去向声明：作为插件开发契约（S09）的一部分要求第三方插件声明；本机模板启用的内置组件随本版声明（D9）。
 - 委托授权：为不希望项目成员自绑定的部署提供更严格的接手方式。
 - `all` 档：未绑定任务时抽取个人记忆。
+- D16 四家宿主的特征文件与 Windows、Linux 默认路径须在选定版本实测后定稿；OpenClaw 等其他宿主的 `probe` 后续补充；周期扫描后续可改为监听目录变化。宿主把注入内容改写、摘要后记下的回流条目无法可靠识别，仍会作为新条目导入（D16）。
 - OpenClaw 等其他宿主的接入；WorkBuddy hook 事件与配置路径、Hermes 条目分隔方式须在选定版本实测后定稿（D14、D15）。
 - Hermes `state.db` 会话导入的表结构适配（待实测）；WorkBuddy 会话历史位置未知，暂不导入。
 - 定期自动同步改为监听宿主记忆文件变化（目前按间隔轮询）。
@@ -999,3 +1139,8 @@ HTTP 原生数据替代）、macOS arm64 / Windows 11 / Linux 三平台矩阵、
 - 迁移在写入 `service.yaml` 后、后续核对失败时，以迁移前的备份整体还原；这段时间内若有 `connect` 写入新连接，会被还原覆盖，需重新 `connect`。
 - DSH 会话内的轮次按在文件中的位置编号；DSH 会话只追加，若宿主改写会话中较早的轮次，其后轮次会被视为替换。
 - 未升级的旧版 JiuwenSwarm 不检查本机服务的锁，若在切换后仍以进程内 SDK 写同一 md 目录，新服务无法感知；只能靠切换时的共存检测与文档提示。
+- hook 路径的 `continuity_receipt_status`（D8）仍是"不在 `MemoryAPI` 上、服务按 `getattr` 探测"的可信进程内端口，与 D15 本次收口前的 `operation_receipt` 同形；是否同样声明为显式能力另行决定（D8、D15）。
+- 创建归属键 `sync_created_by` / `sync_initial_digest` 自 D15 收口后对任何 `add` / `batch_add` 调用方（含 MCP）开放：伪造只能往自己的新单元上盖一个对不上任何操作标识的标记，影响不了判删；原先"普通 `add` 直接拒绝"的那层纵深防御不再保留（D15）。
+- 写入调用中途抛异常（部分项已提交、后续项因后端故障等非逐项错误中止）时**不记回执**：调用方按同一 `operation_id` 重发会重复写入已提交的项。单条 `add` 同样如此（回执只在调用成功返回后登记），不是批量回执新引入的；同步引擎自己对缺回执的写入只置 `unconfirmed`、不自动重发，但通用调用方（如 MCP Agent 重试）没有这层保护。回执持久化与"提交即登记"一并列为遗留（D15）。
+- 批量回执的重放判据只比较各项正文：同一 ID、同样正文但换了逐项 scope / metadata 时照样重放首次结果、不报冲突（首次结果里各项的落点会被逐项复核写权限，所以不是越权，但调用方不能靠重放改落点）。注意单条 `add` 比这严——它把请求 scope 的各维与回执 scope 逐一比对，换 scope 会被拒；批量只比对批级 scope，逐项 scope 的变化检测不到（D15）。
+- 没有批级 `scope` 的批量写入，回执记在空 `Scope()` 下：重放时的 scope 比对全部放行，只靠逐项授权兜底；`operation_receipt` 是精确匹配，这类回执必须用 `Scope()` 来查，按某个真实空间去查会落空（D15）。

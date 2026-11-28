@@ -48,7 +48,7 @@ HTTP 和 SDK 使用 `open_config_overlay` 定位配置库。文件路径由可�
 | `personal_memory.py` | 按认证身份判定个人范围和历史记录归属，复用 MemoryAPI 做单条读取和检索候选限制 |
 | `collective.py` | SDK 和受信 HTTP 宿主的群体坐标绑定与子集验证 |
 | `memory_api_impl/collective_ops.py` | 结构化来源写入和成员治理的 PEP，读取成员事实后由 PDP 生成群体召回计划 |
-| `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/add_sync/batch_add/check_write/supports_video_ingest/prepare_video_ingest/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理） |
+| `memory_api.py` | MemoryAPI 抽象接口：统一语义定义（add/batch_add/check_write/supports_video_ingest/prepare_video_ingest/submit_ingest/search/list/get/update/delete/evolve/admin/inspect/trace/audit/grant/revoke/space 管理）；另有写入回执的进程内可信探测（`supports_operation_receipt` / `operation_receipt` / `receipt_evicted` / `receipt_epoch`），均为非抽象默认成员、不进传输契约 |
 | `memory_api_impl/` | 具体实现目录 |
 | `memory_api_impl/assembly.py` / `managed_assembly.py` | 公开装配及托管配置注入（含写入编排：执行器、per-user 锁、`WriteOrchestrator`，并在 `deployment.multi_instance=true` 配进程内锁时装配失败）：assemble 返回 MemoryAPI；assemble_runtime 返回 api/authenticate/start/start_background/close 句柄，并在创建 SDK 时设置进程共用的日志输出；assemble_server_runtime 增量提供安全组合与共享 audit。私有 Kernel 持有原始端口。close 先停止准入，再等待 watcher/摄入/调度任务结束；wait=False 由单个收尾线程完成屏障与资源释放，wait=True 等待并报告异常；共享所有者统一关闭 shadow 和安全依赖 |
 | `memory_api_impl/local_memory_api.py` | LocalMemoryAPI facade：构造、属性，公开方法由 mixin 提供 |
@@ -91,7 +91,7 @@ API 边界保护路由预览、查询文本/上下文和批量回显；更新准
   回填当前上下文；公共 manager 解析执行保护清单准入，替代插件不得绕过统一开关。
   包装接线遵循同一装配作用域和上游资源所有权/失败回滚生命周期。
 
-- **同步写入回执与条件删除**：`add` 的可选 `operation_id` 只用于同一逻辑写入的回执/重放，回执按认证主体与 operation_id 隔离、再校验目标 scope，不能跨空间探测；同一 ID 内容不同返回 `ConflictError`，重放输出重新剥离瞬态元数据；MCP `memory_add`/`memory_add_async` 透传，HTTP/CLI 不新增该参数。创建归属键只允许本机同步引擎经显式 `add_sync` 端口传入，普通 `add` 仍拒绝 `sync_created_by`/`sync_initial_digest`；`outputs[].created` 以 `t_ingest` 与本次调用起点比较，不设容差窗口。`DeleteSelector.expected_digests` 只在 `supports_conditional_delete()` 为真时可用，摘要比较与删除须同一事务；不支持的后端必须拒绝该参数。本机同步引擎在默认后端上先本地比较摘要，再走不带 `expected_digests` 的普通删除，并在文档中说明非原子窗口。
+- **同步写入回执与条件删除**：`add` / `batch_add`（及其 `_async`）的可选 `operation_id` 标识一次逻辑写入：单条一张回执，批量整批一张（与单条同表、同键空间、同上限，回执 `scope` 为批级 `scope`，未给则空 `Scope`）。回执按认证主体与 operation_id 隔离、再校验目标 scope，不能跨空间探测；重放判据为正文一致（批量按各项正文顺序），不一致或同 ID 在途返回 `ConflictError`，单条与批量不共用同一 ID；重放返回首次的实际结果、不重写、不重试被拒项；`outputs[].created` 以 `t_ingest` 与本次调用起点比较，不设容差窗口。MCP `memory_add`/`memory_add_async` 透传 `operation_id`，HTTP/CLI 不暴露该参数。回执探测是 `MemoryAPI` 上**声明的非抽象能力**（`supports_operation_receipt()` 为真时 `operation_receipt` / `receipt_evicted` / `receipt_epoch` 必然可调），ABC 默认 `False`，`WriteOpsMixin` 覆盖为 `True`（它持有回执表）——持有回执表的装配必须覆盖，否则同步引擎不会探测、丢响应的写入全部落 `unconfirmed`（`tests/unit/api/test_add_operation_receipt.py` 与 `tests/unit/jiuwen_memory_entry/local/sync/test_engine_real_receipt.py` 用真实装配锁住）；调用方先查能力再探测、不得按 `hasattr` 猜，且不进传输契约。创建归属键 `sync_created_by` / `sync_initial_digest` 由调用方经创建入口（add / batch_add 的批级与逐项 `system_metadata`）写入，`_reject_kernel_system_metadata(creation=True)` 只在创建边界放行；内核不据其判定，只在去重合并与 `update` 时保留，`update` / `batch_update` 改写它们返回 `ValidationError`；不为此另设写入端口。`DeleteSelector.expected_digests` 只在 `supports_conditional_delete()` 为真时可用，摘要比较与删除须同一事务；不支持的后端必须拒绝该参数。本机同步引擎在默认后端上先本地比较摘要，再走不带 `expected_digests` 的普通删除，并在文档中说明非原子窗口。
 - **关闭失败必须可观察**：Runtime 在变更状态前校验 Scheduler 关闭上下文，逐步隔离收尾错误。无法确认后台组件停止时不释放 leader 锁或存储；确认停止后，锁释放失败仍继续存储清理。等待关闭汇报单个异常或 ExceptionGroup，影子索引清理失败不得静默吞掉。
 
 0. **写入 metadata 明确分区**

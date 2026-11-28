@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from jiuwen_memory.api import DeleteSelector, Scope
+from jiuwen_memory_entry.local.capture_filter import strip_context_blocks
 from jiuwen_memory_entry.local.locks import file_lock
 from jiuwen_memory_entry.local.sync.ledger import (
     OutputRow,
@@ -213,9 +214,13 @@ class ScanSyncMixin:
                         seen.add(legacy_key)
                 if group is not None:
                     group["all"].add(key)
-            text = self.filter(item.text).strip()
+            text = strip_context_blocks(self.filter(item.text)).strip()
             if not text:
                 report.skipped += 1
+                if group is not None:
+                    # A pure reflow entry has nothing to migrate, but it must not
+                    # keep the legacy whole-file USER row from completing.
+                    group["ok"].add(key)
                 continue
             digest = _digest(text)
             report.writes[key] = digest
@@ -690,36 +695,27 @@ def _add_sync(
     op_id: str,
     occurred_at=None,
 ):
-    """Write with creation-only sync attribution.
+    """Write one source item through the ordinary ``add`` port.
 
-    Production APIs expose ``add_sync`` so the attribution keys never pass through
-    the caller-facing reserved-key check. Lightweight test doubles that only implement
-    ``add`` still get the keys inline.
+    Creation-only sync attribution travels in ``system_metadata`` like the other
+    source keys: the kernel accepts it at the creation boundary and only preserves
+    it afterwards (dedup merges and updates never rewrite it). ``op_id`` doubles as
+    the receipt key, so a lost response can be resolved by ``operation_receipt``.
     """
-    public = _sync_metadata(item, digest, source_key, host)
-    trusted: dict[str, str] = {"sync_created_by": op_id}
-    if item.kind != "session_turn":
-        # Direct writes produce one unit whose content is the source text. Session
-        # extraction produces derived units with different content, so the ledger
-        # records each output's own initial digest instead of stamping the source
-        # digest onto units it does not describe.
-        trusted["sync_initial_digest"] = digest
-    private = getattr(api, "add_sync", None)
-    if callable(private):
-        return private(
-            text,
-            scope,
-            security=security,
-            system_metadata=public,
-            trusted_metadata=trusted if op_id else None,
-            occurred_at=occurred_at,
-            operation_id=op_id or None,
-        )
+    metadata = _sync_metadata(item, digest, source_key, host)
+    if op_id:
+        metadata["sync_created_by"] = op_id
+        if item.kind != "session_turn":
+            # Direct writes produce one unit whose content is the source text. Session
+            # extraction produces derived units with different content, so the ledger
+            # records each output's own initial digest instead of stamping the source
+            # digest onto units it does not describe.
+            metadata["sync_initial_digest"] = digest
     return api.add(
         text,
         scope,
         security=security,
-        system_metadata={**public, **trusted} if op_id else public,
+        system_metadata=metadata,
         occurred_at=occurred_at,
         operation_id=op_id or None,
     )
@@ -790,8 +786,9 @@ def _recover_source(self, source: SourceRow, security=None) -> RecoveryVerdict:
         return RecoveryVerdict("resend")
     if source.state in {"writing", "unconfirmed"}:
         probe_checked = False
-        probe = getattr(self.api, "operation_receipt", None)
-        if callable(probe) and source.op_id:
+        # 能力先声明再探测：supports_operation_receipt() 为真时三个回执成员必然可调。
+        if source.op_id and self.api.supports_operation_receipt():
+            probe = self.api.operation_receipt
             try:
                 actor = getattr(getattr(security, "auth", None), "actor", None)
                 org = getattr(actor, "org", "")
@@ -824,10 +821,10 @@ def _recover_source(self, source: SourceRow, security=None) -> RecoveryVerdict:
             return RecoveryVerdict(
                 "partial_clean", refs=refs, created=created, partial_units=refs
             )
-        evicted = getattr(self.api, "receipt_evicted", None)
-        if probe_checked and callable(evicted):
+        if probe_checked:
+            # 回执因容量上限被淘汰：不能证明未提交，同样按未知处理。
             try:
-                if evicted(source.op_id, security=security):
+                if self.api.receipt_evicted(source.op_id, security=security):
                     return RecoveryVerdict("unconfirmed")
             except Exception:  # noqa: BLE001 - an unreadable eviction mark is unknown
                 return RecoveryVerdict("unconfirmed")

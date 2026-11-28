@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
@@ -102,6 +103,21 @@ def _created_in_operation(unit: MemoryUnit, started: datetime) -> bool:
     return created_at >= started
 
 
+def _batch_content_digest(items: Sequence[object]) -> str:
+    """Replay identity of one batch: the ordered item contents, nothing else.
+
+    Mirrors the single-item receipt, which digests only ``content``: scopes and metadata
+    are re-authorized on replay rather than hashed. A ``NUL`` separates items so that a
+    split or merge of neighbouring contents cannot collide.
+    """
+    digest = hashlib.sha256()
+    for item in items:
+        content = getattr(item, "content", None)
+        digest.update((content if isinstance(content, str) else "").encode("utf-8"))
+        digest.update(b"\x00")
+    return digest.hexdigest()
+
+
 logger = get_logger("jiuwen_memory.api.memory_api_impl.local_memory_api")
 
 
@@ -187,35 +203,6 @@ class WriteOpsMixin:
         self._ensure_space_writable(target)
         return auth
 
-    def add_sync(
-        self,
-        content: str,
-        scope: Scope,
-        *,
-        security: RequestSecurityContext,
-        system_metadata: dict[str, MetadataValueType] | None = None,
-        trusted_metadata: dict[str, MetadataValueType] | None = None,
-        occurred_at: datetime | None = None,
-        operation_id: str | None = None,
-    ) -> list[MemoryUnit]:
-        """Trusted sync write port: creation-only attribution keys are kernel-owned.
-
-        The local sync engine is the only intended caller. ``trusted_metadata`` is
-        merged after caller-facing validation, so public ``add`` callers still cannot
-        spoof ``sync_created_by`` or ``sync_initial_digest``.
-        """
-        return asyncio.run(
-            self._add_impl(
-                content,
-                scope,
-                security=security,
-                system_metadata=system_metadata,
-                occurred_at=occurred_at,
-                continuity_metadata=trusted_metadata,
-                operation_id=operation_id,
-            )
-        )
-
     @privacy_operation
     @traced("add_async", component="MemoryAPI", level=TraceLevel.DEBUG)
     async def add_async(
@@ -291,14 +278,7 @@ class WriteOpsMixin:
         source_ref: str = "",
         operation_id: str | None = None,
     ) -> list[MemoryUnit]:
-        identity = security.auth.actor
-        claim = _receipt_key(identity, operation_id) if operation_id else None
-        if claim is not None:
-            with self._receipt_guard:
-                if claim in self._add_inflight:
-                    raise ConflictError("operation_id is already in progress")
-                self._add_inflight.add(claim)
-        try:
+        with self._receipt_claim(security.auth.actor, operation_id):
             return await self._add_impl_body(
                 content,
                 scope,
@@ -314,10 +294,6 @@ class WriteOpsMixin:
                 source_ref=source_ref,
                 operation_id=operation_id,
             )
-        finally:
-            if claim is not None:
-                with self._receipt_guard:
-                    self._add_inflight.discard(claim)
 
     async def _add_impl_body(
         self,
@@ -345,21 +321,10 @@ class WriteOpsMixin:
                 _receipt_key(identity, operation_id)
             )
             if existing is not None:
-                # A receipt is a read of the committed memory: trusted-context and
-                # target authorization must run before returning any content, and a
-                # caller may not replay an ID against a different space.
-                self._require_trusted_context(
-                    security,
-                    _TrustedRequestTarget(Action.WRITE, "add", Scope(org=identity.org)),
-                )
-                if existing.scope.org != identity.org:
-                    raise PermissionDeniedError("receipt belongs to another organization")
-                for field in ("space", "user", "agent", "session"):
-                    requested = getattr(scope, field)
-                    if requested and requested != getattr(existing.scope, field):
-                        raise PermissionDeniedError(
-                            f"receipt belongs to another {field}"
-                        )
+                self._check_receipt_replay_scope(security, identity, scope, existing)
+                if existing.batch_result is not None:
+                    # 回执表按主体 × operation_id 共用：批量写入占了的 ID 不能再给单条用。
+                    raise ConflictError("operation_id was already used for a batch write")
                 await self._run_blocking(
                     _io_lane(),
                     self._authorize,
@@ -381,7 +346,8 @@ class WriteOpsMixin:
         merge_extract, system_metadata = _take_merge_extract(
             system_metadata, self._merge_extract_default
         )
-        _reject_kernel_system_metadata(system_metadata)
+        # 创建边界：创建期归属键（sync_created_by / sync_initial_digest）在此可写。
+        _reject_kernel_system_metadata(system_metadata, creation=True)
         _reject_route_tag_keys(system_metadata, self._route_table.tag_keys)
         _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
         _reject_non_scalar_metadata(user_metadata, field_name="user_metadata")
@@ -441,33 +407,138 @@ class WriteOpsMixin:
             for unit in units
         )
         if operation_id:
-            receipt_key = _receipt_key(identity, operation_id)
-            self._add_receipts[receipt_key] = AddReceipt(
-                operation_id=operation_id,
-                scope=target,
-                outputs=outputs,
-                committed_at=datetime.now(UTC),
-                content_digest=content_digest,
-                units=tuple(units),
+            self._record_receipt(
+                identity,
+                AddReceipt(
+                    operation_id=operation_id,
+                    scope=target,
+                    outputs=outputs,
+                    committed_at=datetime.now(UTC),
+                    content_digest=content_digest,
+                    units=tuple(units),
+                ),
             )
-            self._evicted_receipts.discard(receipt_key)
-            receipts = self._add_receipts
-            if len(receipts) > _MAX_ADD_RECEIPTS:
-                for stale in list(receipts)[: len(receipts) - _MAX_ADD_RECEIPTS]:
-                    receipts.pop(stale, None)
-                    self._evicted_receipts.add(stale)
         await self._run_blocking(
             _io_lane(), self._log, identity, "add", target_scope=target, detail=auth
         )
         return [_strip_transient_metadata(unit) for unit in units]
 
-    def receipt_evicted(self, operation_id: str, *, security) -> bool:
+    # -- 写入回执：单条与批量共用 ---------------------------------------------------
+
+    @contextmanager
+    def _receipt_claim(self, identity: Scope, operation_id: str | None):
+        """Hold ``operation_id`` for one subject while its write is in flight.
+
+        Two concurrent calls with the same ID would both miss the receipt table and
+        both write; the second one fails fast with ``ConflictError`` instead.
+        """
+        claim = _receipt_key(identity, operation_id) if operation_id else None
+        if claim is not None:
+            with self._receipt_guard:
+                if claim in self._add_inflight:
+                    raise ConflictError("operation_id is already in progress")
+                self._add_inflight.add(claim)
+        try:
+            yield
+        finally:
+            if claim is not None:
+                with self._receipt_guard:
+                    self._add_inflight.discard(claim)
+
+    def _check_receipt_replay_scope(
+        self,
+        security: RequestSecurityContext,
+        identity: Scope,
+        requested: Scope,
+        existing: AddReceipt,
+    ) -> None:
+        """A receipt is a read of committed memory: the trusted context and the requested
+        target must line up with the receipt before anything is authorized or returned.
+
+        A caller may not replay an ID against another organization, space or subject.
+        Only the axes the request actually names are compared, so a faithful replay
+        passes unchanged while a narrowed or widened request is rejected.
+        """
+        self._require_trusted_context(
+            security, _TrustedRequestTarget(Action.WRITE, "add", Scope(org=identity.org))
+        )
+        if existing.scope.org != identity.org:
+            raise PermissionDeniedError("receipt belongs to another organization")
+        for field in ("space", "user", "agent", "session"):
+            if getattr(requested, field) and getattr(requested, field) != getattr(
+                existing.scope, field
+            ):
+                raise PermissionDeniedError(f"receipt belongs to another {field}")
+
+    def _record_receipt(self, identity: Scope, receipt: AddReceipt) -> None:
+        """Store one write receipt; beyond the cap the oldest are dropped and marked evicted.
+
+        The table is process-local: a reload clears it, and an evicted receipt is
+        indistinguishable from "never written" unless the eviction mark survives, which
+        is why the mark is kept in a separate set.
+        """
+        key = _receipt_key(identity, receipt.operation_id)
+        self._add_receipts[key] = receipt
+        self._evicted_receipts.discard(key)
+        receipts = self._add_receipts
+        if len(receipts) > _MAX_ADD_RECEIPTS:
+            for stale in list(receipts)[: len(receipts) - _MAX_ADD_RECEIPTS]:
+                receipts.pop(stale, None)
+                self._evicted_receipts.add(stale)
+
+    async def _replay_batch(
+        self, security: RequestSecurityContext, existing: AddReceipt, content_digest: str
+    ) -> BatchWriteResult:
+        """Return the first result of a batch write without writing again.
+
+        Committed items are re-authorized on their resolved scopes (the receipt is a
+        read of committed memory); the digest check comes last so a mismatch is only
+        reported to a caller allowed to see the original result. Each replay hands
+        back an independent copy: a caller mutating ``outcomes`` must not poison the
+        next replay.
+        """
+        for outcome in existing.batch_result.outcomes:
+            if outcome.units:
+                await self._run_blocking(
+                    _io_lane(),
+                    self._authorize,
+                    security,
+                    outcome.item.scope,
+                    Action.WRITE,
+                    "add",
+                    context=_write_permission_context(outcome.item.scope, None, None),
+                )
+        if existing.content_digest and existing.content_digest != content_digest:
+            raise ConflictError("operation_id was already used for different content")
+        return BatchWriteResult(
+            outcomes=[
+                replace(outcome, units=list(outcome.units))
+                for outcome in existing.batch_result.outcomes
+            ]
+        )
+
+    @staticmethod
+    def supports_operation_receipt() -> bool:
+        # The receipt table is created in LocalMemoryAPI.__init__; declaring it is what
+        # lets the sync engine probe a lost write instead of guessing by hasattr.
+        return True
+
+    def receipt_evicted(
+        self, operation_id: str, *, security: RequestSecurityContext
+    ) -> bool:
         """Whether this subject's receipt was evicted, not merely never written."""
         identity = security.auth.actor
         return _receipt_key(identity, operation_id) in self._evicted_receipts
 
-    def operation_receipt(self, operation_id: str, scope: Scope, *, security):
-        """Trusted in-process receipt probe; not exposed through HTTP or tools."""
+    def operation_receipt(
+        self, operation_id: str, scope: Scope, *, security: RequestSecurityContext
+    ) -> AddReceipt | None:
+        """Trusted in-process receipt probe; not exposed through HTTP or tools.
+
+        ``scope`` is matched exactly against the receipt scope: a batch written without a
+        batch-level ``scope`` is stored under an empty ``Scope()`` and only found by probing
+        with ``Scope()``.
+        """
         identity = security.auth.actor
         receipt = getattr(self, "_add_receipts", {}).get(
             _receipt_key(identity, operation_id)
@@ -886,7 +957,8 @@ class WriteOpsMixin:
         }
         merged_user_metadata = {**(user_metadata or {}), **(item.user_metadata or {})}
         # 逐项校验而不是只校批级默认值：逐项的 system_metadata 同样是调用方入参。
-        _reject_kernel_system_metadata(merged_system_metadata)
+        # 创建边界：创建期归属键（sync_created_by / sync_initial_digest）在此可写。
+        _reject_kernel_system_metadata(merged_system_metadata, creation=True)
         _reject_route_tag_keys(merged_system_metadata, self._route_table.tag_keys)
         _reject_non_scalar_metadata(merged_system_metadata, field_name="system_metadata")
         _reject_non_scalar_metadata(merged_user_metadata, field_name="user_metadata")
@@ -927,6 +999,7 @@ class WriteOpsMixin:
         stream_id: str = "",
         continue_on_error: bool = True,
         event_time: datetime | None = None,
+        operation_id: str | None = None,
     ) -> BatchWriteResult:
         return asyncio.run(
             self.batch_add_async(
@@ -941,6 +1014,7 @@ class WriteOpsMixin:
                 stream_id=stream_id,
                 continue_on_error=continue_on_error,
                 event_time=event_time,
+                operation_id=operation_id,
             )
         )
 
@@ -959,6 +1033,40 @@ class WriteOpsMixin:
         stream_id: str = "",
         continue_on_error: bool = True,
         event_time: datetime | None = None,
+        operation_id: str | None = None,
+    ) -> BatchWriteResult:
+        # 整批是同一次逻辑写入：同 ID 并发在入口就拒绝，不等到第一项落盘之后。
+        with self._receipt_claim(security.auth.actor, operation_id):
+            return await self._batch_add_impl(
+                items,
+                scope,
+                source,
+                security=security,
+                tags=tags,
+                system_metadata=system_metadata,
+                user_metadata=user_metadata,
+                occurred_at=occurred_at,
+                stream_id=stream_id,
+                continue_on_error=continue_on_error,
+                event_time=event_time,
+                operation_id=operation_id,
+            )
+
+    async def _batch_add_impl(
+        self,
+        items: list[BatchWriteItem],
+        scope: Scope | None,
+        source: Modality,
+        *,
+        security: RequestSecurityContext,
+        tags: list[str] | None,
+        system_metadata: dict[str, MetadataValueType] | None,
+        user_metadata: dict[str, MetadataValueType] | None,
+        occurred_at: datetime | None,
+        stream_id: str,
+        continue_on_error: bool,
+        event_time: datetime | None,
+        operation_id: str | None,
     ) -> BatchWriteResult:
         identity = security.auth.actor
         if not isinstance(items, list) or not items:
@@ -980,13 +1088,32 @@ class WriteOpsMixin:
         if occurred_at is not None and not isinstance(occurred_at, datetime):
             raise ValidationError("batch occurred_at must be datetime")
         _reject_invalid_event_time(event_time, name="batch event_time")
+        content_digest = _batch_content_digest(items)
+        if operation_id:
+            # 接续项各自带事件幂等键，再叠一层批级回执就是两套幂等事实；只收普通项。
+            if any(getattr(item, "continuity", None) is not None for item in items):
+                raise ValidationError(
+                    "batch operation_id cannot be combined with continuity items"
+                )
+            existing = getattr(self, "_add_receipts", {}).get(
+                _receipt_key(identity, operation_id)
+            )
+            if existing is not None:
+                self._check_receipt_replay_scope(
+                    security, identity, scope if scope is not None else Scope(), existing
+                )
+                if existing.batch_result is None:
+                    # 回执表按主体 × operation_id 共用：单条写入占了的 ID 不能再给批量用。
+                    raise ConflictError("operation_id was already used for a single write")
+                return await self._replay_batch(security, existing, content_digest)
         # 坐标取自批级参数袋：判定上下文每批只算一次，逐项无处安放（逐项携带即拒绝，
         # 见 _normalize_batch_item）。同样须先于标量校验取出。
         coords, system_metadata = _take_coords(system_metadata, enabled=self._routing_enabled())
         merge_extract, system_metadata = _take_merge_extract(
             system_metadata, self._merge_extract_default
         )
-        _reject_kernel_system_metadata(system_metadata)
+        # 创建边界：创建期归属键（sync_created_by / sync_initial_digest）在此可写。
+        _reject_kernel_system_metadata(system_metadata, creation=True)
         _reject_route_tag_keys(system_metadata, self._route_table.tag_keys)
         _reject_non_scalar_metadata(system_metadata, field_name="system_metadata")
         _reject_non_scalar_metadata(user_metadata, field_name="user_metadata")
@@ -1001,6 +1128,8 @@ class WriteOpsMixin:
         await self._run_blocking(_io_lane(), self._ensure_audit_integrity_healthy)
 
         outcomes: dict[int, BatchWriteOutcome] = {}
+        # 批级回执的扁平输出：与单条回执同形，按落盘先后列出每个单元及是否本次新建。
+        receipt_outputs: list[dict[str, object]] = []
         ready: list[tuple[int, BatchWriteItem]] = []
         seen_sequences: set[tuple[str, str, str, str, str, str, int]] = set()
         stopped_index: int | None = None
@@ -1151,6 +1280,7 @@ class WriteOpsMixin:
                 nonlocal stopped_index
                 if not run:
                     return
+                write_started = datetime.now(UTC)
                 remapped = await self._commands.batch_write_aligned(
                     [
                         replace(
@@ -1168,6 +1298,14 @@ class WriteOpsMixin:
                 )
                 for engine_outcome, (index, item, auth) in zip(remapped, run):
                     outcomes[index] = engine_outcome
+                    # 去重命中会返回既有单元，无条件记 ``True`` 会把复用误报成新建（同单条）。
+                    receipt_outputs.extend(
+                        {
+                            "unit_id": unit.id,
+                            "created": _created_in_operation(unit, write_started),
+                        }
+                        for unit in engine_outcome.units
+                    )
                     if engine_outcome.units:
                         # 批路径与 add 同处置：units 是回显给调用方的形态，瞬态键不越界。
                         engine_outcome.units = [
@@ -1300,4 +1438,18 @@ class WriteOpsMixin:
         finally:
             await self._run_blocking(_io_lane(), self._flush_audit_logs, pending_logs)
 
-        return self._commands.collect_batch_result(outcomes, len(items))
+        result = self._commands.collect_batch_result(outcomes, len(items))
+        if operation_id:
+            # 回执记的是首次的**实际结果**（含被拒项）；重放原样返回，不重试。
+            self._record_receipt(
+                identity,
+                AddReceipt(
+                    operation_id=operation_id,
+                    scope=scope if scope is not None else Scope(),
+                    outputs=tuple(receipt_outputs),
+                    committed_at=datetime.now(UTC),
+                    content_digest=content_digest,
+                    batch_result=result,
+                ),
+            )
+        return result

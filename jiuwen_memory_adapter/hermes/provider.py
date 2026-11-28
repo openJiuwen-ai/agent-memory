@@ -6,6 +6,18 @@ import json
 import os
 import uuid
 
+CONTEXT_OPEN = "<agent-memory-context>"
+CONTEXT_CLOSE = "</agent-memory-context>"
+NEUTRAL_OPEN = "‹agent-memory-context›"
+NEUTRAL_CLOSE = "‹/agent-memory-context›"
+
+
+def _neutralize_markers(text: str) -> str:
+    """Keep recalled text from closing the wrapper or forging a new block."""
+    return text.replace(CONTEXT_OPEN, NEUTRAL_OPEN).replace(
+        CONTEXT_CLOSE, NEUTRAL_CLOSE
+    )
+
 
 class JiuwenMemoryProvider:
     """Small standard-library-only provider; failures never reach the host turn."""
@@ -88,9 +100,14 @@ class JiuwenMemoryProvider:
                 return ""
             view = body.get("view") or {}
             items = view.get("items") or []
-            return "\n".join(
-                str(item.get("content", "")) for item in items if item.get("content")
+            text = "\n".join(
+                _neutralize_markers(str(item.get("content", "")))
+                for item in items
+                if item.get("content")
             )
+            if not text:
+                return ""
+            return f"{CONTEXT_OPEN}\n{text}\n{CONTEXT_CLOSE}"
         except Exception:  # noqa: BLE001 - host turn must not fail
             return ""
 

@@ -56,6 +56,22 @@ class HostWriter(Protocol):
         ...
 
 
+class TakeoverWriter(Protocol):
+    """Optional layer that turns a host's own memory off for one installation."""
+
+    def current(self, install: HostInstall) -> object | None:
+        """The own-memory setting as it is now; ``None`` when it is not set."""
+        ...
+
+    def disable(self, install: HostInstall) -> EntryRef:
+        """Switch the host's own memory off; return the entry, original value included."""
+        ...
+
+    def restore(self, install: HostInstall, entry: EntryRef) -> bool:
+        """Put the recorded value back; ``False`` when the user changed it since."""
+        ...
+
+
 def _read_json(path: Path) -> dict:
     """Read a host config file. A broken file is an error, never an empty config.
 
@@ -154,12 +170,14 @@ class HostCapabilities:
     auto_capture: Cap
     memory_import: Cap
     session_import: Cap
+    takeover: Cap = "unverified"
 
 
 CAPABILITIES: dict[str, HostCapabilities] = {
     "codex": HostCapabilities("supported", "supported", "supported", "supported", "supported"),
     "dsh": HostCapabilities(
-        "supported", "supported", "supported", "unsupported", "supported"
+        "supported", "supported", "supported", "unsupported", "supported",
+        takeover="unsupported",
     ),
     "hermes": HostCapabilities(
         "supported", "supported", "supported", "supported", "unverified"

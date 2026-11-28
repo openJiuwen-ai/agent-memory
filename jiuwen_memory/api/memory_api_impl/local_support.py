@@ -220,20 +220,30 @@ def _take_merge_extract(
     )
 
 
-def _reject_kernel_system_metadata(metadata: dict[str, Any] | None) -> None:
+def _reject_kernel_system_metadata(
+    metadata: dict[str, Any] | None, *, creation: bool = False
+) -> None:
     """写入/更新边界拒绝调用方占用内核系统元数据 key（群体记忆 F07）。
 
     ``system_metadata`` 是内核可解释的命名空间，同时也是对外入参。调用方能自行赋值这些
     key 即可伪造归属：作者主体写成他人的，或改写判定命中的类别名。用户元数据落在另一个
     命名空间、物理上占用不了这些 key，因此本校验只作用于 ``system_metadata`` 入参。
+
+    ``creation=True`` 用于创建边界（add / batch_add）：创建期归属键
+    ``sync_created_by`` / ``sync_initial_digest`` 只在创建时可写，由调用方经
+    ``system_metadata`` 给出；内核只负责在去重合并与更新时保留它们、不参与任何判定。
+    更新边界（update / batch_update / evolve）不传该参数，继续拒绝改写。
     """
     if not metadata:
         return
-    reserved = (
-        KERNEL_SYSTEM_METADATA_KEYS
-        | IMMUTABLE_SYNC_METADATA_KEYS
-        | {"collective_destination", "shareable", "group", "sources"}
-    )
+    reserved = KERNEL_SYSTEM_METADATA_KEYS | {
+        "collective_destination",
+        "shareable",
+        "group",
+        "sources",
+    }
+    if not creation:
+        reserved = reserved | IMMUTABLE_SYNC_METADATA_KEYS
     clash = sorted(
         (set(metadata) & reserved)
         | {key for key in metadata if isinstance(key, str) and key.startswith("continuity_")}

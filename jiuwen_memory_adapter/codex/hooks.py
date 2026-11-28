@@ -16,6 +16,17 @@ import json
 MAX_PAYLOAD_BYTES = 1024 * 1024
 RECALL_EVENTS = {"UserPromptSubmit"}
 CAPTURE_EVENTS = {"Stop"}
+CONTEXT_OPEN = "<agent-memory-context>"
+CONTEXT_CLOSE = "</agent-memory-context>"
+NEUTRAL_OPEN = "‹agent-memory-context›"
+NEUTRAL_CLOSE = "‹/agent-memory-context›"
+
+
+def _neutralize_markers(text: str) -> str:
+    """Keep recalled text from closing the wrapper or forging a new block."""
+    return text.replace(CONTEXT_OPEN, NEUTRAL_OPEN).replace(
+        CONTEXT_CLOSE, NEUTRAL_CLOSE
+    )
 
 
 def parse_event(event: str, payload: object) -> dict | None:
@@ -63,7 +74,7 @@ def render_recall(view: dict | None, candidates: list[dict], notice: str | None)
         lines.append(notice)
     items = (view or {}).get("items") or []
     for item in items:
-        content = str(item.get("content") or "").strip()
+        content = _neutralize_markers(str(item.get("content") or "").strip())
         if content:
             lines.append(f"- {content}")
     if candidates and not items:
@@ -76,7 +87,7 @@ def render_recall(view: dict | None, candidates: list[dict], notice: str | None)
     seen = [str(item.get("unit_id", "")) for item in items if item.get("unit_id")]
     if seen:
         lines.append("<!-- agent-memory: " + ",".join(seen) + " -->")
-    return "\n".join(lines)
+    return f"{CONTEXT_OPEN}\n" + "\n".join(lines) + f"\n{CONTEXT_CLOSE}"
 
 
 def output(event: str, text: str) -> dict:

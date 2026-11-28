@@ -16,7 +16,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from jiuwen_memory.api import ConflictError, ValidationError
@@ -29,7 +29,7 @@ from jiuwen_memory_entry.local.discovery import (
     read_discovery,
 )
 from jiuwen_memory_entry.local.home import MemoryHome, ModelSettings, init_home, resolve_home
-from jiuwen_memory_entry.local.hosts.registry import HOOK_HOSTS, HOST_NAMES, SYNC_HOSTS
+from jiuwen_memory_entry.local.hosts.registry import HOOK_HOSTS, HOST_NAMES, HOSTS, SYNC_HOSTS
 from jiuwen_memory_entry.local.install import connect, disconnect
 
 _BUILDERS: dict[str, Callable[[argparse.ArgumentParser], None]] = {}
@@ -124,7 +124,10 @@ def _run_init(args) -> int:
         "model keys are references; export the named variables in the service environment "
         "before starting it"
     )
-    return 0
+    if not sys.stdin.isatty():
+        _out('run "jiuwen-memory scan" to find and connect local agents')
+        return 0
+    return _run_scan(_scan_run_namespace(home))
 
 
 # -- service ---------------------------------------------------------------- #
@@ -606,6 +609,7 @@ def _sync_egress(home, install) -> str:
 
 def _run_sync(args) -> int:
     from jiuwen_memory_entry.local.install import set_sync_grant
+    from jiuwen_memory_entry.local.scan import resolve_pending_sync
     from jiuwen_memory_entry.local.sync.grant import SyncGrant, change_grant, new_grant
 
     home = _home(args)
@@ -671,6 +675,7 @@ def _run_sync(args) -> int:
         if not _sync_confirm(args)(message):
             return 1
         set_sync_grant(home, install.install_id, candidate)
+        resolve_pending_sync(home, install.install_id)
         _out(f"grant {candidate.grant_id} v{candidate.version}")
         return 0
     if grant is None:
@@ -748,6 +753,358 @@ def _run_sync(args) -> int:
     return 0
 
 
+# -- scan -------------------------------------------------------------------- #
+
+_SCAN_ACTIONS = frozenset({"run", "status", "include", "auto-connect", "revoke"})
+
+
+def _scan_depth(text: str) -> int:
+    """``--depth`` value: a positive number of directory levels."""
+    try:
+        depth = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("depth must be an integer") from exc
+    if depth < 1:
+        raise argparse.ArgumentTypeError("depth must be at least 1")
+    return depth
+
+
+def _scan_parser(parser: argparse.ArgumentParser) -> None:
+    actions = parser.add_subparsers(dest="scan_action", required=True)
+    run = actions.add_parser("run", help="scan the allowed locations and connect what is found")
+    run.add_argument("--home")
+    run.add_argument(
+        "--add-dir", action="append", default=[], metavar="DIR",
+        help="project directory to scan as well (repeatable)",
+    )
+    run.add_argument(
+        "--remove-dir", action="append", default=[], metavar="DIR",
+        help="user-added directory to stop scanning (repeatable)",
+    )
+    run.add_argument(
+        "--depth", type=_scan_depth, help="levels to descend in user-added directories"
+    )
+    run.add_argument("--dry-run", action="store_true", help="list only, connect nothing")
+    run.add_argument("--yes", action="store_true", help="allow the scan without interaction")
+    run.add_argument(
+        "--background", action="store_true",
+        help="unattended run: asks nothing and never grants the scan itself",
+    )
+    status = actions.add_parser("status", help="show the scan grant and what is waiting")
+    status.add_argument("--home")
+    include = actions.add_parser(
+        "include", help="make an ignored instance eligible for auto-connect again"
+    )
+    include.add_argument("key", help="instance key as listed by `scan status`")
+    include.add_argument("--home")
+    auto = actions.add_parser(
+        "auto-connect", help="turn automatic connecting of new instances on or off"
+    )
+    auto.add_argument("state", choices=("on", "off"))
+    auto.add_argument("--home")
+    revoke = actions.add_parser(
+        "revoke", help="stop scanning and auto-connecting; installs and sync grants stay"
+    )
+    revoke.add_argument("--home")
+
+
+def _scan_run_namespace(home: MemoryHome) -> argparse.Namespace:
+    """Arguments of ``scan run`` with every option at its default."""
+    return argparse.Namespace(
+        scan_action="run",
+        home=str(home.root),
+        add_dir=[],
+        remove_dir=[],
+        depth=None,
+        dry_run=False,
+        yes=False,
+        background=False,
+    )
+
+
+def _ask(text: str, prompt: str, *, default: bool) -> bool:
+    """Show ``text``, then ask ``prompt``; without a terminal ``default`` answers."""
+    if text:
+        _out(text)
+    if not sys.stdin.isatty():
+        return default
+    answer = input(f"{prompt} [{'Y/n' if default else 'y/N'}] ").strip().lower()
+    return default if not answer else answer in {"y", "yes"}
+
+
+def _instance_label(instance: dict) -> str:
+    """Readable form of a scanned instance."""
+    fields = [
+        f"{name}={instance[name]}"
+        for name in ("profile", "edition", "scope", "project_root")
+        if instance.get(name)
+    ]
+    return " ".join((*fields, f"config_root={instance.get('config_root', '')}"))
+
+
+def _scan_candidate_text(result) -> str:
+    from jiuwen_memory_entry.local.scan import instance_key
+
+    lines = [
+        f"{result.state}: {result.host} {_instance_label(result.instance)}",
+        f"  key: {instance_key(result.host, result.instance)}",
+        f"  evidence: {', '.join(result.evidence)}",
+        f"  hooks: {'on' if HOSTS[result.host].default_hooks else 'off'} by default",
+        f"  importable: {', '.join(result.importable) or 'none'}",
+    ]
+    if result.reason:
+        lines.append(f"  reason: {result.reason}")
+    return "\n".join(lines)
+
+
+def _scan_consent(extra_dirs: Sequence[str], depth: int) -> str:
+    """What the scan will do, shown before the user allows it (nothing was looked at yet)."""
+    from jiuwen_memory_entry.local.scan import default_locations
+
+    lines = ["scan authorization: agents are looked for in"]
+    lines.extend(f"  {path}" for path in default_locations())
+    lines.extend(f"  {path} (user-added)" for path in extra_dirs)
+    if extra_dirs:
+        lines.append(f"user-added directories are descended at most {depth} levels")
+    lines.extend(
+        (
+            "only paths are checked (stat and directory listing); no file content is read",
+            "found instances are connected automatically, and so are instances that appear later",
+        )
+    )
+    return "\n".join(lines)
+
+
+def _scan_extra_dirs(grant, added: list[str], removed: list[str]) -> tuple[str, ...]:
+    """The user-added directories after ``--add-dir`` and ``--remove-dir``."""
+    kept = list(grant.extra_dirs)
+    for item in removed:
+        target = str(Path(item).expanduser().resolve())
+        kept = [path for path in kept if path != target]
+    return tuple(dict.fromkeys((*kept, *added)))
+
+
+def _scan_notes(report) -> None:
+    for note in report.truncated:
+        _out(f"not fully scanned: {note}")
+    for note in report.skipped:
+        _out(f"skipped: {note}")
+
+
+def _scan_run(home: MemoryHome, args) -> int:
+    from jiuwen_memory_entry.local.scan import (
+        candidates,
+        change_scan_grant,
+        connect_results,
+        dismiss_instance,
+        instance_key,
+        load_scan_grant,
+        probe_all,
+        save_scan_grant,
+    )
+
+    grant = load_scan_grant(home)
+    changes: dict = {}
+    if args.add_dir or args.remove_dir:
+        changes["extra_dirs"] = _scan_extra_dirs(grant, args.add_dir, args.remove_dir)
+    if args.depth is not None:
+        changes["depth"] = args.depth
+    if not grant.allowed:
+        if args.background:
+            _out("scan is not allowed: nothing was looked at")
+            return 0
+        if not args.yes:
+            if not sys.stdin.isatty():
+                _out(
+                    "scan is not allowed: run \"jiuwen-memory scan\" in an interactive "
+                    "terminal to allow it"
+                )
+                return 0
+            consent = _scan_consent(
+                changes.get("extra_dirs", grant.extra_dirs),
+                changes.get("depth", grant.depth),
+            )
+            if not _ask(consent, "allow scanning?", default=True):
+                _out("scan not allowed: nothing was looked at")
+                return 0
+        changes["allowed"] = True
+    if changes:
+        grant = change_scan_grant(grant, **changes)
+        save_scan_grant(home, grant)
+    report = probe_all(grant)
+    found = candidates(home, report, grant)
+    listed = [result for result in report.results if result.state != "found"]
+    _out(f"scan: {len(found)} instance(s) to connect, {len(listed)} only listed")
+    for result in (*found, *listed):
+        _out(_scan_candidate_text(result))
+    if args.dry_run:
+        _scan_notes(report)
+        return 0
+    chosen = found
+    if args.background:
+        if not grant.auto_connect:
+            _out("auto-connect is off: nothing was connected")
+            _scan_notes(report)
+            return 0
+    else:
+        chosen = []
+        asked = sys.stdin.isatty()
+        for result in found:
+            label = f"{result.host} {_instance_label(result.instance)}"
+            if _ask("", f"connect {label}?", default=grant.auto_connect):
+                chosen.append(result)
+                continue
+            if not asked:
+                continue
+            dismiss_instance(home, result.host, result.instance)
+            key = instance_key(result.host, result.instance)
+            _out(f"dismissed: {label}; `jiuwen-memory scan include {key}` restores it")
+        if not asked and not grant.auto_connect and found:
+            _out("auto-connect is off: nothing was connected")
+    outcomes = (
+        connect_results(home, chosen, confirm=_auto_confirm, background=args.background)
+        if chosen
+        else []
+    )
+    failed = False
+    for outcome in outcomes:
+        text = f"{outcome.state}: {outcome.host}"
+        if outcome.install_id:
+            text += f" install={outcome.install_id}"
+        if outcome.message:
+            text += f" ({outcome.message})"
+        _out(text)
+        failed = failed or outcome.state in {"incomplete", "aborted"}
+    if not args.background:
+        failed = not _scan_sync_prompts(home, chosen, outcomes) or failed
+    _scan_notes(report)
+    return 1 if failed else 0
+
+
+def _scan_sync_prompts(home: MemoryHome, chosen, outcomes) -> bool:
+    """Offer, per freshly connected install, to authorize syncing the host's own memory.
+
+    The scan never grants sync itself (F16 D16): the user decides per install,
+    and the grant flow shows what would be read and where it goes. Sessions are
+    left out by default, as in ``sync grant``.
+    """
+    from jiuwen_memory_entry.local.scan import instance_key
+
+    by_key = {instance_key(result.host, result.instance): result for result in chosen}
+    granted = True
+    for outcome in outcomes:
+        if outcome.state != "complete":
+            continue
+        result = by_key.get(outcome.key)
+        if result is None:
+            continue
+        types = [item for item in result.importable if item != "session_turn"]
+        if not result.memory_roots or not types:
+            continue
+        question = f"authorize syncing {outcome.host}'s existing memory now?"
+        if not _ask("", question, default=False):
+            continue
+        granted = _run_sync(
+            argparse.Namespace(
+                sync_action="grant",
+                host=outcome.host,
+                install=outcome.install_id,
+                home=str(home.root),
+                dir=list(result.memory_roots),
+                types=",".join(types),
+                sessions=False,
+                profile=None,
+                edition=None,
+                scope=None,
+                project=None,
+                mirror_deletes=False,
+                interval=0,
+                yes=False,
+            )
+        ) == 0 and granted
+    return granted
+
+
+def _scan_status(home: MemoryHome, grant) -> None:
+    from jiuwen_memory_entry.local.install import _load_install
+    from jiuwen_memory_entry.local.scan import default_locations
+
+    _out(f"scan: {'allowed' if grant.allowed else 'not allowed'} (v{grant.version})")
+    _out("locations:")
+    for path in default_locations():
+        _out(f"  {path}")
+    for path in grant.extra_dirs:
+        _out(f"  {path} (user-added)")
+    _out(f"depth: {grant.depth}")
+    _out(f"auto-connect: {'on' if grant.auto_connect else 'off'}")
+    _out(f"dismissed: {', '.join(grant.dismissed) or 'none'}")
+    _out(f"included again: {', '.join(grant.included) or 'none'}")
+    _out(f"needs manual action: {', '.join(grant.manual) or 'none'}")
+    _out("waiting for sync authorization:")
+    if not grant.pending_sync:
+        _out("  none")
+    for install_id in grant.pending_sync:
+        install = _load_install(home, install_id)
+        state = f"{install.host}, {install.state}" if install is not None else "no install record"
+        _out(f"  {install_id} ({state})")
+
+
+def _run_scan(args) -> int:
+    from jiuwen_memory_entry.local.scan import (
+        change_scan_grant,
+        include_instance,
+        load_scan_grant,
+        save_scan_grant,
+    )
+
+    home = _home(args)
+    if not home.service_config.exists():
+        return _not_initialized(home)
+    if args.scan_action == "run":
+        return _scan_run(home, args)
+    grant = load_scan_grant(home)
+    if args.scan_action == "status":
+        _scan_status(home, grant)
+        return 0
+    if args.scan_action == "include":
+        if args.key not in grant.dismissed and args.key not in grant.manual:
+            _err(f"not ignored: {args.key}")
+            return 1
+        include_instance(home, args.key)
+        _out(f"included: {args.key}")
+        return 0
+    if args.scan_action == "auto-connect":
+        save_scan_grant(home, change_scan_grant(grant, auto_connect=args.state == "on"))
+        _out(f"auto-connect: {args.state}")
+        return 0
+    if args.scan_action == "revoke":
+        if grant.allowed:
+            save_scan_grant(home, change_scan_grant(grant, allowed=False))
+        _out(
+            "scan revoked: no more scanning or auto-connecting; "
+            "existing installs and sync grants are unchanged"
+        )
+        return 0
+    return 2
+
+
+def _pending_sync_hint(args) -> None:
+    """Remind about installs connected by scan whose sync is not authorized yet."""
+    if args.command in {"hook", "scan"} or not sys.stdin.isatty():
+        return
+    from jiuwen_memory_entry.local.scan import load_scan_grant
+
+    try:
+        pending = load_scan_grant(_home(args)).pending_sync
+    except Exception:
+        return
+    if pending:
+        _err(
+            f"{len(pending)} agent(s) connected by scan are waiting for sync authorization: "
+            'run "jiuwen-memory scan status"'
+        )
+
+
 # -- hooks ------------------------------------------------------------------- #
 
 
@@ -792,6 +1149,130 @@ def _run_hooks(args) -> int:
     )
     _out(f"{result.state}: {result.message}")
     return 0 if result.state == "complete" else 1
+
+
+# -- takeover ---------------------------------------------------------------- #
+
+
+def _takeover_parser(parser: argparse.ArgumentParser) -> None:
+    actions = parser.add_subparsers(dest="takeover_action", required=True)
+    on = actions.add_parser(
+        "on", help="switch the host's own memory off: agent memory takes over"
+    )
+    off = actions.add_parser("off", help="switch the host's own memory back on")
+    status = actions.add_parser("status", help="show which installs are taken over")
+    for action in (on, off, status):
+        action.add_argument("host", choices=HOST_NAMES)
+        action.add_argument("--install")
+        action.add_argument("--profile")
+        action.add_argument("--home")
+        action.add_argument("--yes", action="store_true")
+
+
+def _takeover_confirm(args):
+    if args.yes:
+        return _auto_confirm
+    return _confirm_capture
+
+
+def _takeover_sync_ok(home: MemoryHome, install) -> bool:
+    """Whether ``install`` may be taken over: a live sync grant and a finished sync.
+
+    The service knows whether the last sync finished; an operation still
+    unconfirmed means it did not. A service that cannot be asked counts the
+    same way: takeover waits instead of guessing.
+    """
+    from jiuwen_memory_entry.local.sync.grant import SyncGrant
+
+    grant = SyncGrant.from_dict(install.sync or {})
+    if grant is None or grant.revoked:
+        return False
+    discovery = live_discovery(home)
+    if discovery is None:
+        return False
+    try:
+        token = (home.installs_dir / install.install_id / "token").read_text(
+            encoding="utf-8"
+        ).strip()
+        status, result = ServiceClient(discovery, token).post("/local/sync/status", {})
+    except (OSError, ServiceUnavailable):
+        return False
+    return status == 200 and not result.get("unconfirmed")
+
+
+def _takeover_status_text(home: MemoryHome, install) -> str:
+    from jiuwen_memory_entry.local.install import takeover_blocker, takeover_current
+
+    entry = install.takeover.get("entry") or {}
+    lines = [
+        f"takeover: {'on' if entry else 'off'}: {install.host} install={install.install_id}"
+    ]
+    if entry:
+        lines.append(f"  setting: {entry.get('path', '')} {entry.get('section', '')}")
+        lines.append(f"  original value: {entry.get('value')!r}")
+        lines.append(f"  own memory setting now: {takeover_current(home, install)!r}")
+        if not install.hooks:
+            lines.append(
+                "  hooks are off, so nothing records this host: turn its own memory "
+                f"back on with `jiuwen-memory takeover off {install.host}`"
+            )
+    else:
+        reason = takeover_blocker(install)
+        if reason:
+            lines.append(f"  not offered: {reason}")
+    return "\n".join(lines)
+
+
+def _takeover_status(home: MemoryHome, args) -> int:
+    from jiuwen_memory_entry.local.install import STATE_CONNECTED, _load_install
+
+    shown = False
+    if home.installs_dir.is_dir():
+        for record in sorted(home.installs_dir.glob("*/install.json")):
+            install = _load_install(home, record.parent.name)
+            if install is None:
+                continue
+            if install.host != args.host or install.state != STATE_CONNECTED:
+                continue
+            if args.install and install.install_id != args.install:
+                continue
+            if args.profile and install.profile != args.profile:
+                continue
+            shown = True
+            _out(_takeover_status_text(home, install))
+    if not shown:
+        _err(f"no connected install for {args.host}")
+        return 1
+    return 0
+
+
+def _run_takeover(args) -> int:
+    from jiuwen_memory_entry.local.install import select_install, set_takeover
+
+    home = _home(args)
+    if not home.service_config.exists():
+        return _not_initialized(home)
+    if args.takeover_action == "status":
+        return _takeover_status(home, args)
+    install = select_install(
+        home,
+        args.host,
+        install_id=args.install or None,
+        profile=args.profile or None,
+    )
+    if install is None:
+        _err(f"no connected install for {args.host}")
+        return 1
+    enabled = args.takeover_action == "on"
+    result = set_takeover(
+        home,
+        install.install_id,
+        enabled,
+        confirm=_takeover_confirm(args) if enabled else None,
+        sync_ok=lambda current: _takeover_sync_ok(home, current),
+    )
+    _out(f"{result.state}: install={result.install_id} {result.message}".strip())
+    return {"complete": 0, "unsupported": 3}.get(result.state, 1)
 
 
 # -- migrate ----------------------------------------------------------------- #
@@ -896,6 +1377,12 @@ def _build_parser() -> argparse.ArgumentParser:
     _hooks_parser(hooks)
     sync = sub.add_parser("sync", help="import host-owned memory into agent memory")
     _sync_parser(sync)
+    scan = sub.add_parser("scan", help="find installed local agents and connect them")
+    _scan_parser(scan)
+    takeover = sub.add_parser(
+        "takeover", help="let agent memory replace a host's own memory, or give it back"
+    )
+    _takeover_parser(takeover)
     for name, builder in _BUILDERS.items():
         extra = sub.add_parser(name)
         builder(extra)
@@ -914,7 +1401,13 @@ def main(argv: list[str] | None = None) -> int:
         }
     ):
         raw.insert(1, "run")
+    scan_action = raw[1] if len(raw) > 1 else ""
+    if raw and raw[0] == "scan":
+        unknown = scan_action not in _SCAN_ACTIONS and scan_action not in {"-h", "--help"}
+        if not scan_action or unknown:
+            raw.insert(1, "run")
     args = parser.parse_args(raw)
+    _pending_sync_hint(args)
     handlers = {
         "init": _run_init,
         "service": _run_service,
@@ -926,6 +1419,8 @@ def main(argv: list[str] | None = None) -> int:
         "op": _run_op,
         "hooks": _run_hooks,
         "sync": _run_sync,
+        "scan": _run_scan,
+        "takeover": _run_takeover,
     }
     registered = _REGISTERED_HANDLERS.get(args.command)
     if registered is not None:

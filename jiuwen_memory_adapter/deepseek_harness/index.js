@@ -10,6 +10,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export const CONTEXT_NAME = "jiuwen-memory";
+export const CONTEXT_OPEN = "<agent-memory-context>";
+export const CONTEXT_CLOSE = "</agent-memory-context>";
+export const NEUTRAL_OPEN = "‹agent-memory-context›";
+export const NEUTRAL_CLOSE = "‹/agent-memory-context›";
 export const DEFAULT_HOME = join(homedir(), ".jiuwen-memory");
 export const RECALL_TIMEOUT_MS = 2000;
 
@@ -69,15 +73,24 @@ export function buildCaptureRequest({ hostSessionId, turnId, prompt, answer }) {
   return { host_session_id: hostSessionId, turn_id: turnId, prompt, answer };
 }
 
+// Recalled text must not close the wrapper or forge a new block.
+export function neutralizeMarkers(text) {
+  return String(text)
+    .replaceAll(CONTEXT_OPEN, NEUTRAL_OPEN)
+    .replaceAll(CONTEXT_CLOSE, NEUTRAL_CLOSE);
+}
+
 // The plugin injects only the rendered memory text; the service decides what is written.
 export function renderContext(view, notice) {
   const lines = [];
   if (notice) lines.push(notice);
   for (const item of (view && view.items) || []) {
-    const content = String(item.content || "").trim();
+    const content = neutralizeMarkers(String(item.content || "").trim());
     if (content) lines.push(`- ${content}`);
   }
-  return lines.join("\n");
+  const text = lines.join("\n");
+  if (!text) return "";
+  return `${CONTEXT_OPEN}\n${text}\n${CONTEXT_CLOSE}`;
 }
 
 export function parseContexts(payload) {

@@ -391,6 +391,12 @@ supported_in_conditions 由已确认 `supports` 关系提升其语义 target 的
   重写，partial/unknown 保留回执不重试，探针失败时 fail closed（不写入）。回显前仍逐个 `get`
   校验调用方读权限。
 - 本机 hook 的冻结、写入判定与恢复语义见本机记忆服务 F17 D8/D9。宿主适配器只转发，不自行判定写没写。
+- **召回注入标记**：宿主适配器把自动召回注入宿主上下文的文本整体包在 `<agent-memory-context>` 与
+  `</agent-memory-context>` 之间；拼接前把记忆正文中出现的这两个字面量替换为
+  `‹agent-memory-context›` / `‹/agent-memory-context›`，避免正文提前闭合或伪造标记块。本机服务的
+  capture 与宿主记忆同步在入账前用 `strip_context_blocks` 剥除完整标记块、未闭合块（至文本末尾）与
+  孤立闭标记，宿主原样记下的注入内容不会被写回或导入（F17 D16 第 7 节）。三个内置适配器
+  （Codex、Hermes、DSH）各自定义同名常量，一致性由单测核对。
 
 ## Adapter 接入契约
 
