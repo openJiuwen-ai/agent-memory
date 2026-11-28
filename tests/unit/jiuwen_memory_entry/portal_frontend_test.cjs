@@ -66,7 +66,7 @@ function memoryStorage() {
   return {getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value)};
 }
 function setup(handler, listHandler, {
-  bootstrap, hash=bootstrap?'#access=grant':'', onHeaders,
+  bootstrap, bootstrapStatus=200, hash=bootstrap?'#access=grant':'', onHeaders,
   history={state:null,replaceState(state){this.state=state;}},
   storage=memoryStorage(),
 } = {}) {
@@ -105,7 +105,7 @@ function setup(handler, listHandler, {
     fetch: async (url, args) => {
       if (url === '/portal/api/bootstrap' && bootstrap) {
         assert.deepEqual(JSON.parse(args.body), {token:'grant', embedded:false});
-        return response(bootstrap);
+        return response(bootstrap, bootstrapStatus===200, bootstrapStatus);
       }
       assert.match(url, /^\/v1\//);
       onHeaders?.(args.headers);
@@ -805,7 +805,91 @@ async function sharedPageManagesBothInstances(){
   assert.equal(reloaded.run('fields[0].base'),0.7);
   assert.ok(tokens.length&&tokens.every(token=>token==='tab-token'));
 }
+async function experienceTabHandlesBootstrapFailure() {
+  const page = setup(() => assert.fail('no experience request after bootstrap fails'), undefined, {
+    bootstrap:{}, bootstrapStatus:503,
+    onHeaders:() => assert.fail('no API request after bootstrap fails'),
+  });
+  page.get('experience-dialog').showModal();
+  await page.get('topic-experience').onclick();
+  assert.equal(page.get('experience-dialog').open,false);
+  assert.match(page.get('notice').textContent,/无法打开记忆管理/);
+}
+
+async function experiencesUseReadOnlyDetailAndBoundSession() {
+  const item = {
+    id:'tip',counts:{helpful:0,neutral:0,harmful:0},content:'Review CI\nRead the failure output',category:'dev',tier:'procedural',
+    condition:'On a failed job',capability:'CI access',action:'Inspect the log',
+    updated_at:'2026-11-25T10:00:00Z',
+  };
+  const calls = [];
+  const tokens = [];
+  const history = {state:null,replaceState(state){this.state=state;}};
+  const handler = async (action, payload) => {
+    calls.push([action,payload]);
+    const feedback={mine:null,can_rate:true,counts:{helpful:2,harmful:1,neutral:0}};
+    if (action==='experience_rate') return response({...feedback,mine:payload.choice});
+    if (action==='experience_get') return response({...item,feedback,sources:[{task:'build',session:'s1',agent:'runner'}],skills:[{name:'ci-check',content:'Read the build log'}],action:'Inspect the latest log'});
+    return response({available:true,items:[item],count:21,categories:['dev','other']});
+  };
+  const page = setup(handler,undefined,{
+    bootstrap:{session_token:'experience-token',experience_bound:true},history,
+    onHeaders:headers=>tokens.push(headers['X-Memory-Portal-Session']),
+  });
+  await page.run("switchTab('experience')");
+  assert.equal(page.get('browse-results').hidden,false);
+  assert.equal(page.get('memories').hidden,false);
+  assert.equal(page.get('open-add').hidden,true);
+  assert.match(page.get('memory-list').textContent,/Review CI.*dev.*Read the failure output/);
+  const heading=page.get('memory-list').children[0].children[1].children[0];
+  assert.equal(heading.children[1].textContent,'有效');
+  assert.equal(heading.children[1].className,'badge green');
+  const meta=page.get('memory-list').children[0].children.at(-1);
+  assert.equal(meta.children.at(-2).textContent,'☺ 0⊖ 0☹ 0');
+  assert.equal(meta.children.at(-1).className,'memory-time');
+  page.get('memory-filter').value='failure';
+  page.get('experience-category').value='dev';
+  await page.get('search-form').onsubmit({preventDefault(){}});
+  assert.deepEqual(calls.at(-1),['experience_list',{query:'failure',category:'dev',source:null,agent:null,project:null,lifecycle:'active',offset:0,limit:20}]);
+  await page.get('memory-list').children[0].children[1].onclick();
+  assert.deepEqual(calls.at(-1),['experience_get',{unit_id:'tip'}]);
+  assert.match(page.get('experience-detail').textContent,/On a failed job.*CI access.*Inspect the latest log/);
+  assert.doesNotMatch(page.get('experience-detail').textContent,/纠正|遗忘/);
+  const detail=page.get('experience-detail');
+  assert.doesNotMatch(detail.textContent,/任务反馈/);
+  assert.equal(detail.children[0].className,'experience-intro');
+  assert.equal(detail.textContent.split('Review CI').length,2,'show the title only once');
+  assert.equal(detail.children[2].className,'experience-step');
+  for(const [target,content] of [['build','runner'],['s1','build'],['ci-check','Read the build log']]){
+    const link=detail.children.find(el=>el.onclick&&el.textContent.includes(target));
+    await link.onclick();
+    assert.ok(detail.textContent.includes(content));
+    await detail.children[0].onclick();
+  }
+  const feedback=page.get('experience-detail').children.at(-1);
+  await feedback.children.at(-2).children[0].onclick();
+  assert.deepEqual(calls.at(-1),['experience_rate',{unit_id:'tip',choice:'helpful'}]);
+  assert.equal(feedback.children.at(-2).children[0]['aria-pressed'],'true');
+  page.get('language-toggle').onclick();
+  assert.match(page.get('experience-detail').textContent,/When to use/);
+  await page.get('next').onclick();
+  assert.deepEqual(calls.at(-1),['experience_list',{query:'failure',category:'dev',source:null,agent:null,project:null,lifecycle:'active',offset:20,limit:20}]);
+  assert.equal(page.get('page-info').textContent,'21–21 / 21');
+  page.run("cards('memory-list',[])");
+  assert.doesNotMatch(page.get('memory-list').textContent,/Add Memory/i);
+  await page.get('topic-all').onclick();
+  assert.equal(page.get('open-add').hidden,false);
+  assert.equal(page.get('browse-results').hidden,false);
+  assert.equal(page.get('experience-category-field').hidden,true);
+  const reloaded = setup(handler,undefined,{history,onHeaders:headers=>tokens.push(headers['X-Memory-Portal-Session'])});
+  await reloaded.run("switchTab('experience')");
+  assert.ok(tokens.length&&tokens.every(token=>token==='experience-token'));
+  assert.equal(reloaded.run('sharedPortal'),false);
+}
+
 (async () => {
+  await experienceTabHandlesBootstrapFailure();
+  await experiencesUseReadOnlyDetailAndBoundSession();
   await languageSwitchKeepsFiltersAndResults();
   await collectiveClassLabelsUseRawFilterValues();
   await teamTopicShowsLandingAndLabelWithoutExtraFilters();

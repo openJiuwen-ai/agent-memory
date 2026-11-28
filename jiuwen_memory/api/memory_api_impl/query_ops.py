@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
@@ -27,6 +28,7 @@ from jiuwen_memory.common.errors import (
     PermissionDeniedError,
     ValidationError,
 )
+from jiuwen_memory.common.experience import UtilityStore
 from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_log
 from jiuwen_memory.common.plaintext import PlaintextDataError
 from jiuwen_memory.common.security import principal, space_predicates
@@ -49,6 +51,7 @@ from jiuwen_memory.common.type_def import (
     FilterOp,
     HierarchyKind,
     HierarchyRole,
+    LifecycleState,
     MemoryUnit,
     Scope,
     and_merge,
@@ -169,6 +172,14 @@ def _copy_search_extensions(extensions: dict[str, Any]) -> dict[str, Any]:
         else:
             memo[object_id] = current
     return deepcopy(extensions, memo)
+
+
+def _is_active_experience(unit: MemoryUnit, scope: Scope) -> bool:
+    return (
+        unit.scope == scope
+        and unit.lifecycle is LifecycleState.ACTIVE
+        and unit.system_metadata.get("memory_type") == "experience"
+    )
 
 
 class QueryOpsMixin:
@@ -968,6 +979,74 @@ class QueryOpsMixin:
             result.count = max(0, result.count - (len(result.items) - len(visible)))
             result.items = visible
         return result
+
+    def experience_task_sources(self, unit_id, scope, *, security):
+        """Disclose only the current user's authorized session and task references."""
+        unit = self.get(unit_id, scope, security=security)
+        actor = security.auth.actor
+        if not actor.user or actor.org != scope.org or not _is_active_experience(unit, scope):
+            return []
+        sources = {}
+        store = UtilityStore(self._engine.kv)
+        for coordinates, key, event in store.reproduction_sources(scope, unit_id):
+            org, space, user, agent, session = coordinates
+            if (org, user) != (actor.org, actor.user):
+                continue
+            target = Scope(org=org, space=space, user=user, agent=agent, session=session)
+            try:
+                self._authorize(security, target, Action.READ, "experience_source")
+            except (NotFoundError, PermissionDeniedError):
+                continue
+            ref = (session, key.trajectory_id)
+            if ref not in sources or key.revision > sources[ref]["revision"]:
+                sources[ref] = {
+                    "session": session, "task": key.trajectory_id, "revision": key.revision,
+                    "agent": agent, "outcome": event.get("outcome", ""),
+                    "occurred_at": event.get("occurred_at", ""),
+                }
+        return [sources[ref] for ref in sorted(sources)]
+
+    def experience_feedback(
+        self, unit_id: str, scope: Scope, *, security: RequestSecurityContext,
+        choice: str = "read",
+    ) -> tuple[MemoryUnit, dict]:
+        """Read an authorized experience and its stats; optionally replace my own assessment."""
+        unit = self.get(unit_id, scope, security=security)
+        actor = security.auth.actor
+        if scope.org != actor.org or not scope.space or not _is_active_experience(unit, scope):
+            raise NotFoundError("memory_unit", unit_id)
+        if choice not in ("read", "clear", "helpful", "neutral", "harmful"):
+            raise ValidationError("invalid personal experience feedback")
+        kv = self._engine.kv
+        stats = UtilityStore(kv).load_stats(scope, unit_id)
+        counts = {
+            "helpful": sum(stats.helpful.values()) if stats else 0,
+            "neutral": stats.neutral if stats else 0,
+            "harmful": sum(stats.harmful.values()) if stats else 0,
+        }
+        feedback = {"counts": counts, "can_rate": bool(actor.user), "mine": None}
+        if not actor.user:
+            if choice != "read":
+                raise PermissionDeniedError(message="personal feedback requires a user")
+            return unit, feedback
+        owner = Scope(org=actor.org, user=actor.user)
+        target = json.dumps([actor.org, actor.user, scope.space, unit_id]).encode()
+        key = f"/experience/personal-rating/{hashlib.sha256(target).hexdigest()}"
+        if choice == "clear":
+            kv.delete(owner, key)
+        elif choice == "read":
+            try:
+                feedback["mine"] = kv.get(owner, key).decode("ascii")
+            except NotFoundError:
+                pass
+        else:
+            value = choice.encode("ascii")
+            try:
+                kv.insert(owner, key, value)
+            except ConflictError:
+                kv.update(owner, key, value)
+            feedback["mine"] = choice
+        return unit, feedback
 
     def get(
         self,

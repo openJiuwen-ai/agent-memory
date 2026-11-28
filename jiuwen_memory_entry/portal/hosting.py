@@ -21,7 +21,11 @@ from jiuwen_memory.api import (
     new_request_context,
 )
 from jiuwen_memory_entry.core.api_contract import CONFIG_VERBS
-from jiuwen_memory_entry.portal.requests import BROWSER_VERBS, invoke_browser_api
+from jiuwen_memory_entry.portal.requests import (
+    BROWSER_VERBS,
+    invoke_browser_api,
+    portal_experience_space,
+)
 from jiuwen_memory_entry.portal.sessions import (
     SESSION_HEADER,
     BrowserSessions,
@@ -66,11 +70,13 @@ class _BoundedServer(ThreadingHTTPServer):
             self.slots.release()
 
 
-def runtime_request(runtime, auth, verb, payload, write_scope, *, peer="127.0.0.1"):
+def runtime_request(
+    runtime, auth, verb, payload, write_scope, *, peer="127.0.0.1", experience_space=None,
+):
     security = new_request_context(auth, surface=Surface.HTTP, peer=peer)
     return invoke_browser_api(
         runtime.api, verb, payload, security=security, write_scope=write_scope,
-        configuration=getattr(runtime, "configuration", None),
+        configuration=getattr(runtime, "configuration", None), experience_space=experience_space,
     )
 
 
@@ -190,10 +196,11 @@ class _PortalServer:
             self.server.server_close()
             raise
 
-    def launch_url(self, write_scope=None):
+    def launch_url(self, write_scope=None, *, page_bound=False):
         if self.closed:
             return None
-        return self.address + "#access=" + self.sessions.issue(deepcopy(write_scope))
+        token = self.sessions.issue(deepcopy(write_scope), page_bound=page_bound)
+        return self.address + "#access=" + token
 
     def close(self):
         with self.close_lock:
@@ -256,7 +263,9 @@ class PortalHandle(_PortalServer):
                 return None
             return self._providers.get(identity)
 
-    def launch_url(self, write_scope=None, *, identity=None):
+    def launch_url(self, write_scope=None, *, identity=None, experience_space=None):
+        if experience_space is not None:
+            experience_space = portal_experience_space(experience_space)
         with self._providers_lock:
             if self.closed:
                 return None
@@ -266,7 +275,10 @@ class PortalHandle(_PortalServer):
                 identity = next(iter(self._providers))
             if identity not in self._providers:
                 raise PermissionDeniedError(message="Portal provider is not registered")
-            return super().launch_url({"write_scope": write_scope, "identity": identity})
+            return super().launch_url({
+                "write_scope": write_scope, "identity": identity,
+                "experience_space": experience_space,
+            }, page_bound=experience_space is not None)
 
     def dispatch(self, verb, payload, binding, peer):
         identity = binding.get("identity") if isinstance(binding, dict) else None
@@ -283,6 +295,7 @@ class PortalHandle(_PortalServer):
             }
         return 200, runtime_request(
             self.runtime, auth, verb, payload, binding.get("write_scope"), peer=peer,
+            experience_space=binding.get("experience_space"),
         )
 
     def close(self):

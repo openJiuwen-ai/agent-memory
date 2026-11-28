@@ -1064,11 +1064,16 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         if handle is None:
             return None
         scope = self._portal_write_scope()
-        if self._portal_identity is None:
-            link = handle.launch_url(scope)
-        else:
-            link = handle.launch_url(scope, identity=self._portal_identity)
+        link = handle.launch_url(scope, **self._portal_launch_options())
         return self._with_portal_language(link) if link is not None else None
+
+    def _portal_launch_options(self):
+        options = {}
+        if self._portal_identity is not None:
+            options["identity"] = self._portal_identity
+        if self._experience_enabled:
+            options["experience_space"] = self._experience_space
+        return options
 
     def _with_portal_language(self, link: str) -> str:
         if self._portal_language is None:
@@ -1110,9 +1115,11 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 try:
                     scope = self._portal_write_scope()
                     if self._portal_identity is None:
-                        link = await asyncio.to_thread(handle.launch_url, scope)
+                        link = await asyncio.to_thread(
+                            handle.launch_url, scope, **self._portal_launch_options(),
+                        )
                     else:
-                        link = handle.launch_url(scope, identity=self._portal_identity)
+                        link = handle.launch_url(scope, **self._portal_launch_options())
                 except Exception as exc:
                     self._portal_error = type(exc).__name__
                     raise
@@ -1121,7 +1128,10 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         opener = getattr(self._client, "open_portal", None)
         if callable(opener):
             try:
-                link = await opener(self.bound_scope())
+                options = (
+                    {"experience_space": self._experience_space} if self._experience_enabled else {}
+                )
+                link = await opener(self.bound_scope(), **options)
             except Exception as exc:
                 self._portal_error = type(exc).__name__
                 raise
@@ -2858,7 +2868,7 @@ class _HttpClient(_AgentMemoryClient):
         job_id = await self._post_verb("evolve", payload, write=True)
         logger.info("[AgentMemoryMemoryProvider/http] /v1/evolve -> job_id=%s", job_id)
 
-    async def open_portal(self, scope=None):
+    async def open_portal(self, scope=None, *, experience_space=None):
         self.portal_available = False
         if self._http is None:
             await self.initialize()
@@ -2866,6 +2876,8 @@ class _HttpClient(_AgentMemoryClient):
         if scope is not None:
             mapped = self._scope_payload(scope)
             payload["write_target"] = {name: mapped[name] for name in ("space", "agent", "session")}
+        if experience_space is not None:
+            payload["experience_space"] = experience_space
         response = await self._http.post(
             f"{self._base_url}/portal/api/launch",
             json=payload,

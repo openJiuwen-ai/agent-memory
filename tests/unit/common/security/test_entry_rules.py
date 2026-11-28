@@ -67,6 +67,11 @@ def test_every_authorize_call_site_has_an_entry_rule() -> None:
     assert not missing, f"入口未登记到 ENTRY_RULES: {sorted(missing)}"
 
 
+def test_experience_source_requires_content_read() -> None:
+    rule = ENTRY_RULES["experience_source"]
+    assert (rule.axis, rule.action) == (SpaceAxis.CONTENT, SpaceAction.READ)
+
+
 def test_owner_entry_grades_do_not_overlap() -> None:
     """两级清单不重叠：逐维相同者自然满足覆盖，重叠即判据二义。"""
     assert not (OWNER_ENTRY_SAME_DIMS & OWNER_ENTRY_COVERS)
