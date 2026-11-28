@@ -325,7 +325,8 @@ def test_infer_evolve_transfers_snapshot_through_real_llm_extractors(
     source = snapshot_test_unit("source")
     source.system_metadata["infer"] = True
     response = json.dumps([{
-        "source_id": source.id, "target": "fact", "content": "Derived fact",
+        "source_id": 1 if extractor_kind == "llm" else source.id,
+        "target": "fact", "content": "Derived fact",
         "evidence": source.content, "confidence": 1.0,
     }])
     llm = MockLLM([response])

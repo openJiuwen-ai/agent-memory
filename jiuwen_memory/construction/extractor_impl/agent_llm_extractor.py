@@ -32,13 +32,12 @@ from jiuwen_memory.construction.common import (
 from jiuwen_memory.construction.message_role import message_role_of
 
 from ..base import ExtractContext
-from ..common import reject_deprecated_llm_attempt_keys
+from ..common import reject_deprecated_llm_attempt_keys, strip_batch_reference_shell
 from ..extractor import ExtractorProducer
 from .llm_extractor import (
     _DEFAULT_EXTRACT_BATCH_SIZE,
     ExtractionCandidate,
     ExtractorImpl,
-    _strip_source_id_shell,
 )
 
 logger = get_logger(__name__)
@@ -501,6 +500,8 @@ class AgentLlmExtractor(ExtractorImpl):
        Router 判定的一次独立 LLM 调用，F09）。
     """
 
+    BATCH_SOURCE_REFERENCES = False
+
     def __init__(self, language: str = "cn", **kwargs: object) -> None:
         # 覆写基类 ExtractorImpl 的 prompt 类属性（全大写常量名受基类契约约束，
         # 不可改 snake_case）；pylint 误判 self.XXX= 为新建实例属性。
@@ -533,7 +534,7 @@ class AgentLlmExtractor(ExtractorImpl):
             if not isinstance(item, dict):
                 scoped_items.append(item)
                 continue
-            source_id = _strip_source_id_shell(str(item.get("source_id", "")))
+            source_id = strip_batch_reference_shell(str(item.get("source_id", "")))
             source = sources.get(source_id)
             source_role = message_role_of(source).casefold() if source else ""
             if source_role in _NON_USER_PROFILE_ROLES:

@@ -6,10 +6,11 @@
   Phase 2  LLM 提取 — 批量拼一个 prompt 调 LLM → 解析 JSON → ExtractionCandidate
   Phase 3  构建 MemoryUnit — candidate → MemoryUnit(provenance=[source_id])
 
-Phase 2 采用批量提取策略：全部 unit 拼一个 prompt，每条带 ``[ID: unit_id]`` 标记，
-LLM 在每个候选里输出裸 ``source_id`` 回指来源。解析时校验 source_id 存在于本批 unit，
-缺失/错配的候选丢弃。``_strip_source_id_shell`` 兜底剥掉 LLM 误带的 ``[ID: ]`` 外壳，
-避免 source_id 恒不匹配导致候选全丢。
+Phase 2 采用批量提取策略：全部 unit 拼一个 prompt，每条带批内 ``[ID: N]`` 编号标记，
+LLM 在每个候选里输出该编号作 ``source_id``。解析端先把编号映射回真实 ``MemoryUnit.id``，
+再沿用既有候选校验与来源绑定。``strip_batch_reference_shell`` 兜底剥掉 LLM 误带的
+``[ID: ]`` 外壳（与分类/路由共用 ``construction.common`` 实现）；短编号只作用于本次
+prompt，不进入存储身份或溯源字段。
 
 tier 与 tags 均由 LLM 在抽取时一并产出（同一 prompt，不另调 LLM、不走 FeatureExtractor）：
 - ``tier``：候选认知角色，限定 ``episodic`` / ``semantic`` / ``procedural`` 三选一
@@ -44,7 +45,6 @@ NOOP/UPDATE）。
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -71,12 +71,15 @@ from jiuwen_memory.common.type_def import (
     inherited_user_metadata,
 )
 from jiuwen_memory.construction.common import (
+    batch_source_table,
     importance_category_map_from_config,
     importance_category_prompt,
     importance_category_prompt_enabled_from_config,
     inferred_attribution,
+    is_ordinal_reference,
     parse_importance_category,
     reject_deprecated_llm_attempt_keys,
+    strip_batch_reference_shell,
 )
 from jiuwen_memory.construction.llm_retry import call_llm_with_retry
 from jiuwen_memory.construction.message_role import (
@@ -145,7 +148,7 @@ class ExtractionCandidate:
 
 
 # ---------------------------------------------------------------------------
-# LLM prompt — 批量提取，每条 unit 带 [ID: uuid] 标记，LLM 输出裸 uuid 作 source_id
+# LLM prompt — 批量提取，每条 unit 带批内 [ID: N] 标记，LLM 输出该编号作 source_id
 # ---------------------------------------------------------------------------
 
 _EXTRACT_SYSTEM_PROMPT = """\
@@ -220,9 +223,9 @@ Rules:
   set aside; return [] only when nothing is left.
 
 Fields:
-- "source_id": the bare UUID from the "[ID: ...]" marker, no wrapper or quotes - the line
-  the item is about. Context may supply a referent or what an elliptical line answers, and
-  never changes this id; a matter only the context raises is not an item.
+- "source_id": the integer from the "[ID: ...]" marker of the line the item is about.
+  Context may supply a referent or what an elliptical line answers, and never changes this
+  id; a matter only the context raises is not an item.
 - "confidence": 1.0 stated outright, 0.7 directly entailed, 0.5 weakly suggested. Never
   emit below 0.5.
 - "tier": "episodic" happened at a point in time; "semantic" a fact, concept or
@@ -237,7 +240,7 @@ Fields:
 
 Output schema:
 [{
-  "source_id": "32049cd0-5f7c-419f-928f-503b24318f7c",
+  "source_id": 1,
   "target": "fact" | "event" | "preference" | "context" | "structured_record" | "artifact",
   "tier": "episodic" | "semantic" | "procedural",
   "content": "one self-contained statement, every specific kept",
@@ -297,9 +300,6 @@ _SOURCE_PREFIX = """\
 """
 
 
-# 匹配 LLM 误带 [ID: ...] 外壳的 source_id（prompt 已要求裸 uuid，此处为防御性兜底）
-_SOURCE_ID_SHELL_RE = re.compile(r"^\s*\[ID:\s*(?P<id>[^\]]+)\]\s*$", re.IGNORECASE)
-
 # 批量提取的子批大小：把 accepted 拆成若干子批，每子批独立一次 LLM 调用。
 # 单个子批失败与其它子批隔离；仅当整次抽取没有产生任何可用候选时向上抛错，
 # 避免把完全失败伪装成模型明确返回的正常空抽取。
@@ -307,14 +307,29 @@ _SOURCE_ID_SHELL_RE = re.compile(r"^\s*\[ID:\s*(?P<id>[^\]]+)\]\s*$", re.IGNOREC
 _DEFAULT_EXTRACT_BATCH_SIZE = 10
 
 
-def _strip_source_id_shell(raw: str) -> str:
-    """剥掉 source_id 可能带的 ``[ID: ...]`` 外壳，返回裸 id。
+def _resolve_batch_source_ids(items: list, units: list[MemoryUnit]) -> list:
+    """将批内数字引用还原为真实来源 id，并保留原始引用供拒绝原因回显。
 
-    prompt 已要求 LLM 输出裸 uuid，但部分模型仍会原样回带 ``[ID: ...]`` 标记——
-    解析端兜底剥壳，避免 source_id 恒不匹配 unit_map 导致候选全被丢弃。
+    序号表、序号校验与 ``[ID: ...]`` 去壳与分类/路由共用（``construction.common``）。
+    布尔、零、前导零、越界和真实 UUID 都不解析，交给候选校验拒绝；解析不改变
+    模型返回的原始引用，便于区分协议违规与越界。
     """
-    m = _SOURCE_ID_SHELL_RE.match(raw)
-    return m.group("id").strip() if m else raw.strip()
+    source_ids = {
+        reference: unit.id for reference, unit in batch_source_table(units).items()
+    }
+    resolved: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            resolved.append({"source_id": None})
+            continue
+        raw = item.get("source_id")
+        if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+            resolved.append({**item, "source_id": None, "source_reference": str(raw)})
+            continue
+        reference = strip_batch_reference_shell(str(raw))
+        source_id = source_ids.get(reference) if is_ordinal_reference(reference) else None
+        resolved.append({**item, "source_id": source_id, "source_reference": reference})
+    return resolved
 
 
 def _parse_event_date(raw: str) -> datetime | None:
@@ -486,6 +501,8 @@ class ExtractorImpl(Extractor):
     CONTEXT_SECTION_TEMPLATES: dict[str, str] = _CONTEXT_SECTION_TEMPLATES
     # 追加到 EXTRACT_SYSTEM_PROMPT 末尾的 importance_category 字段说明的语言（F10）
     IMPORTANCE_PROMPT_LANGUAGE: str = "en"
+    # 使用同一 prompt/响应协议的子类继承批内短引用；改用自有协议的子类显式关闭。
+    BATCH_SOURCE_REFERENCES: bool = True
 
     def __init__(
         self,
@@ -690,12 +707,19 @@ class ExtractorImpl(Extractor):
                 invalid_reasons.append(f"item {item_index} confidence is outside [0, 1]")
                 continue
 
-            source_id = _strip_source_id_shell(str(item.get("source_id", "")))
+            reference = item.get("source_reference")
+            source_id = strip_batch_reference_shell(str(item.get("source_id", "")))
             if source_id not in unit_map:
                 unmatched += 1
-                invalid_reasons.append(
-                    f"item {item_index} source_id {source_id!r} is not in the batch"
-                )
+                if reference is not None and not is_ordinal_reference(str(reference)):
+                    invalid_reasons.append(
+                        f"item {item_index} source_id {reference!r} is not a batch ordinal"
+                    )
+                else:
+                    displayed = reference if reference is not None else source_id
+                    invalid_reasons.append(
+                        f"item {item_index} source_id {displayed!r} is not in the batch"
+                    )
                 continue
 
             content = item.get("content")
@@ -1035,8 +1059,18 @@ class ExtractorImpl(Extractor):
         from jiuwen_memory.common.type_def import ChatMessage
 
         # Each source keeps its own date and the extractor-specific prefix template.
+        # Extractors whose prompt still uses real source IDs opt out explicitly.
+        use_batch_references = self.BATCH_SOURCE_REFERENCES
+        source_labels = (
+            [str(index) for index, _unit in enumerate(units, start=1)]
+            if use_batch_references
+            else None
+        )
         user_text = observation_sources(
-            units, _SOURCE_PREFIX, date_prefix=self.OBSERVATION_DATE_PREFIX,
+            units,
+            _SOURCE_PREFIX,
+            date_prefix=self.OBSERVATION_DATE_PREFIX,
+            labels=source_labels,
         )
         # 追加 context 参考段（仅本轮 units 作提取来源，context 只供 LLM 参考）
         context_block = _format_context_block(context, self.CONTEXT_SECTION_TEMPLATES)
@@ -1089,6 +1123,8 @@ class ExtractorImpl(Extractor):
         )
         trace_event(type(self).__name__, "extraction_items", lambda: {"items": items},
                     level=TraceLevel.DEBUG)
+        if use_batch_references:
+            items = _resolve_batch_source_ids(items, units)
         candidates = self.build_candidates(items, units)
         trace_event(
             type(self).__name__,

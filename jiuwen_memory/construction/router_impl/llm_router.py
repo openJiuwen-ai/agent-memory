@@ -14,15 +14,17 @@ LLM 不可用或输出无法解析时抛出，由调用处（:func:`~constructio
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
-from jiuwen_memory.common.log import get_logger, metadata_for_log
+from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_log
 from jiuwen_memory.common.type_def import ChatMessage, MemoryUnit
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.common import (
+    batch_source_table,
+    is_ordinal_reference,
     reject_deprecated_llm_attempt_keys,
+    strip_batch_reference_shell,
     validate_llm_attempt_policy,
 )
 from jiuwen_memory.construction.llm_retry import call_llm_with_retry
@@ -51,7 +53,7 @@ OWNERSHIP COORDINATES: {coords}
 Output ONLY a JSON array. No explanation, no markdown fences. One entry per input memory, in \
 the SAME order as input. Each entry:
 
-- "source_id": the bare id of the input memory (the UUID shown in the [ID: ...] marker).
+- "source_id": the integer shown in the input memory's [ID: ...] marker.
 - "memory_class": the name of exactly one class from the CLASSES list below. Pick the class \
 whose ownership entity the memory would stop being true for if you swapped it out. When no \
 class clearly fits, use the class marked FALLBACK.
@@ -66,17 +68,10 @@ NARROWING DIMENSIONS:
 {dims}
 
 Output schema:
-[{{"source_id": "...", "memory_class": "...", "narrow": {{"...": true}}, "discard": false}}]
+[{{"source_id": 1, "memory_class": "...", "narrow": {{"...": true}}, "discard": false}}]
 """
 
 _SOURCE_PREFIX = "[ID: {unit_id}]\n{unit_content}\n"
-
-# LLM 有时把 id 包在 [ID: ...] 里回传，去壳后再比对。
-_ID_SHELL = re.compile(r"^\[?ID:\s*|\]$")
-
-
-def _strip_source_id_shell(raw: str) -> str:
-    return _ID_SHELL.sub("", raw.strip()).strip()
 
 
 class LLMRouter(Router):
@@ -124,37 +119,37 @@ class LLMRouter(Router):
     def _route_batch(
         self, units: list[MemoryUnit], ctx: RouteContext
     ) -> list[RouteDecision]:
+        references = batch_source_table(units)
         messages = [
             ChatMessage(role="system", content=self._system_prompt(ctx)),
             ChatMessage(
                 role="user",
                 content="\n".join(
                     _SOURCE_PREFIX.format(
-                        unit_id=unit.id, unit_content=truncate_unit_content(unit.content)
+                        unit_id=int(reference),
+                        unit_content=truncate_unit_content(unit.content),
                     )
-                    for unit in units
+                    for reference, unit in references.items()
                 ),
             ),
         ]
         raw_items = _parse_response(self._call_llm_with_retry(messages))
         items = [item for item in raw_items if isinstance(item, dict)]
-        by_id: dict[str, dict[str, Any]] = {
-            _strip_source_id_shell(str(item.get("source_id", ""))): item for item in items
-        }
-        # id 缺失或重复时按 id 比对必然错位：空串键互相覆盖，整批取到同一条结论，且失效
-        # 方向是静默错落点。此时退回按输入顺序取，并记 WARNING——调用方应给唯一 id。
-        by_position = self._ids_unusable(units)
-        if by_position:
-            logger.warning(
-                "LLMRouter: %d 条输入的 id 缺失或重复，改按输入顺序比对判定结论", len(units)
-            )
+        by_reference: dict[str, dict[str, Any]] = {}
+        for item in items:
+            reference = strip_batch_reference_shell(str(item.get("source_id", "")))
+            if not is_ordinal_reference(reference):
+                logger.warning(
+                    "LLMRouter: invalid batch reference %s, skip",
+                    redact_for_log(reference),
+                )
+                continue
+            if reference not in by_reference:
+                by_reference[reference] = item
 
         results: list[RouteDecision] = []
-        for index, unit in enumerate(units):
-            if by_position:
-                item = items[index] if index < len(items) else None
-            else:
-                item = by_id.get(unit.id)
+        for reference, unit in references.items():
+            item = by_reference.get(reference)
             if item is None:
                 # 单条缺判：落 fallback，不牵连同批其余条目。
                 results.append(build_decision(unit, "", (), ctx, reason="no decision for unit"))
@@ -186,12 +181,6 @@ class LLMRouter(Router):
             )
             results.append(decision)
         return results
-
-    @staticmethod
-    def _ids_unusable(units: list[MemoryUnit]) -> bool:
-        """id 是否不足以比对：任一条为空，或存在重复。"""
-        ids = [unit.id for unit in units]
-        return not all(ids) or len(set(ids)) != len(ids)
 
     def _system_prompt(self, ctx: RouteContext) -> str:
         classes = "\n".join(

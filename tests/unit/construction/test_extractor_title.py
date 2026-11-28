@@ -111,7 +111,7 @@ def test_extracted_title_lands_in_system_metadata() -> None:
                 json.dumps(
                     [
                         {
-                            "source_id": "u1",
+                            "source_id": 1,
                             "target": "fact",
                             "tier": "semantic",
                             "content": "Alice likes coffee",
@@ -141,7 +141,7 @@ def test_title_and_prompt_trace_preserves_data_without_logging_secrets(caplog) -
     body = "private-memory-zephyr"
     title = "private-title-zephyr"
     response = json.dumps(
-        [{"source_id": "u1", "target": "fact", "content": body, "title": title, "confidence": 1.0}]
+        [{"source_id": 1, "target": "fact", "content": body, "title": title, "confidence": 1.0}]
     )
     extractor = ExtractorImpl(llm=MockLLM(responses=[response]), min_confidence=0.0)
     logger.addHandler(caplog.handler)
@@ -166,7 +166,7 @@ def test_no_title_leaves_metadata_absent() -> None:
                 json.dumps(
                     [
                         {
-                            "source_id": "u1",
+                            "source_id": 1,
                             "target": "fact",
                             "tier": "semantic",
                             "content": "Alice likes coffee",

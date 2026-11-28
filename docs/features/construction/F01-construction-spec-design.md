@@ -4,10 +4,10 @@
 
 | 项 | 值 |
 |---|---|
-| 日期 | 2026-06-24 |
+| 日期 | 2026-11-28 |
 | 影响范围 | jiuwen_memory/construction/（七个算子 + 实现包）、docs/specs/S05-construction.md、jiuwen_memory/construction/AGENTS.md |
-| 测试基线 | tests/unit/construction/（82 passed，含 test_evolver_dedup.py / test_extractor.py）、examples/demo_classifier.py、examples/quickstart*.py 端到端跑通 |
-| Refs | — |
+| 测试基线 | tests/unit/construction/（1702 passed，含 test_classifier.py / test_llm_router.py / test_extractor.py / test_evolver_dedup.py / test_evolver_appraiser.py 及日期/标题回归） |
+| Refs | #328 |
 
 > 本文是构建层的特性文档（features）——记来龙去脉与决策取舍 + 各算子实现的落地规约。接口契约见 [`docs/specs/S05-construction.md`](../../specs/S05-construction.md)；当前实现地图见 [`jiuwen_memory/construction/AGENTS.md`](../../../jiuwen_memory/construction/AGENTS.md)。
 
@@ -54,7 +54,7 @@
 | target | 类 | 依赖 | 产出 | 关键语义 |
 |---|---|---|---|---|
 | `keyword` | `KeywordExtractor` | `chunker`（注入） | `list[MemoryUnit]` | 用 Chunker 把原始 active unit 内容切成 chunk，每个 chunk 提升为 SEMANTIC 派生 unit（provenance 回指、`extracted` 标签）；可复现占位，只处理原始 active 单元避免反复再抽取 |
-| `llm` | `LLMExtractor` | `llm`、`feature_extractor`（`dep`） | `list[MemoryUnit]` | 4 Phase：预处理→**批量** LLM 提取（全部 unit 拼一个 prompt 一次调用，每条带 `[ID:unit_id]` 标记，LLM 输出裸 `source_id` 回指来源，解析时校验 source_id 在本批 unit 内；同 source 同主题合并成一条自包含陈述）→特征富化→构建 unit（provenance=[source_id]）；temperature=0 幂等 |
+| `llm` | `LLMExtractor` | `llm`、`feature_extractor`（`dep`） | `list[MemoryUnit]` | 4 Phase：预处理→**批量** LLM 提取（全部 unit 拼一个 prompt 一次调用，每条带批内 `[ID:序号]` 标记，LLM 输出整数 `source_id` 回指本批序号，解析端剥壳并校验序号在本批来源表内；同 source 同主题合并成一条自包含陈述）→特征富化→构建 unit（provenance=[source_id]）；temperature=0 幂等 |
 
 ### Abstractor（`abstractor.py` · `AbstractorProducer`）
 
@@ -185,3 +185,53 @@
 3. **去重 access_frequency 未实现**：Classifier 的 importance 计算中 `access_frequency` 项（被召回 M 次 → +0.05×min(M,10)）当前未实现——检索层尚无访问频次统计数据源。待检索层 recall 统计对接后补齐。
 
 4. **部分算子仍是占位实现**：M1 阶段部分算子（如 KeywordExtractor/KeywordAssociator）是轻量占位，真实 LLM 驱动实现（llm_*）需配 LLM API。装配按配置切换。
+
+## 普通构建算子的模型可见短引用
+
+Issue #328 只调整普通分类、LLM 路由、普通 LLM 抽取和普通去重四条路径。长 UUID 仍是
+存储、Scope、`source_ref`、`provenance` 和公开 API 的真实身份；模型只在当前 LLM 调用
+内看到短引用。
+
+- 分类、路由和普通抽取使用批内整数 `1..N`。消息标记、system prompt 示例和响应协议
+  都使用整数，解析端只在该批来源表中还原真实 ID；布尔值、零、越界和真实 UUID 不按顺序
+  猜测。使用自有 prompt/响应协议的抽取子类通过 `BATCH_SOURCE_REFERENCES = False`
+  显式保持原协议，避免基类按具体类名分支。
+- 普通去重的候选使用 `cN`，已有记忆使用 `eN`。单条与批量 prompt 都只展示这些句柄；
+  批量 prompt 的 `eN` 在整次调用内唯一，每个候选只解析自己块内出现的命中编号，防止
+  跨候选误改。
+- 短引用不做全局 UUID 正则替换，也不进入通用 LLM 插件。正文、证据和用户内容中的 UUID
+  保持原样；分片、子批和独立 LLM 调用各自从本批编号重新开始。
+
+**为什么不用长 UUID**：批内几十条单元时，仅 ID 就占数千 token；模型抄写 36 字符
+UUID 易出错，抄错一位轻则绑定失败整批丢候选，重则静默绑到另一条来源；真实 ID 进入
+模型可见文本还会把存储身份泄漏给模型与日志，并给 prompt 注入留下可篡改的绑定键——
+正文里出现的其他 unit UUID 可被模型直接当 `source_id` 引用造成跨源绑定。
+
+**拒绝的方案**：
+
+- 放进通用 LLM 插件做全局替换：替换无法区分「模型可见文本」与「正文、证据、用户
+  内容」，会把正文与证据里的 UUID 一起改写，破坏 provenance、证据摘要校验和审计；
+  插件层也没有批内来源表，无法在解析端校验引用归属。因此短引用由各算子在拼 prompt
+  时生成、解析时还原，序号表、序号校验（`[1-9]\d*`）与 `[ID: ...]` 去壳集中在
+  `construction/common.py`（`batch_source_table` / `is_ordinal_reference` /
+  `strip_batch_reference_shell`），各算子不得复刻。
+- 去重沿用每候选独立的 `e1..eN` 编号：批量去重中每个候选的第一条命中都会是
+  「第 1 条」，独立编号让模型无法区分「c1 的 e1」与「c2 的 e1」，会把 update /
+  supersede 指到别的候选块。批量 prompt 因此使用整次调用唯一的 `eN` 全局表，而每个
+  候选只解析自己块内的编号；单条去重路径保持候选内 `eN`。
+
+**仍在发真实 UUID 的路径**（本 issue 不改，接入时各自评估）：
+
+- `agent_llm` 及其子类 `document_fact` / `team_llm`：`BATCH_SOURCE_REFERENCES = False`
+  保持 `[ID: uuid]` 原协议。
+- `dynamic_llm`：prompt 由 PromptRegistry 配置，协议随配置内容而定。
+- `DynamicEvolver._llm_judge`：`[Memory ID: {unit.id}]`。
+- `entity_schema` 抽取：`[unit_id={unit.id}]`。
+- `llm_abstractor`：`[ID: {u.id}]`。
+
+验证覆盖 `test_classifier.py`、`test_llm_router.py`、`test_extractor.py` 及其日期/标题
+回归、`test_evolver_dedup.py` 和 `test_evolver_appraiser.py`。分类、路由和抽取都断言
+prompt 不含真实单元 ID，布尔、零、前导零、真实 UUID 与越界引用不会绑定来源，且拒绝
+原因回显模型返回的原始引用并区分「序号协议违规」与「越界」；序号校验放宽成 `\d+` 时
+这些用例会失败。批量去重断言不会把其他候选的 `eN` 解析为修改目标，且去重夹具的真实
+单元 ID 不使用 `eN`/`cN` 形式，旧协议（模型返回真实 ID）无法通过。

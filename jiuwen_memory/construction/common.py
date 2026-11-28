@@ -17,7 +17,8 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+import re
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from jiuwen_memory.common._support import as_bool
@@ -49,12 +50,53 @@ __all__ = [
     "inferred_attribution",
     "merge_importance_max",
     "merge_unit_tags",
+    "batch_source_table",
+    "is_ordinal_reference",
     "parse_importance",
     "parse_importance_category",
     "parse_tags",
     "reject_deprecated_llm_attempt_keys",
     "validate_llm_attempt_policy",
+    "strip_batch_reference_shell",
 ]
+
+# ---------------------------------------------------------------------------
+# 模型可见短引用协议（F01）：分类、路由、普通 LLM 抽取共用同一套
+# 「批内序号表 + 序号校验 + [ID: ...] 去壳」。协议见 F01「普通构建算子的
+# 模型可见短引用」；去重的 cN/eN 前缀引用复用同一个序号校验。
+# ---------------------------------------------------------------------------
+
+_BATCH_REFERENCE_SHELL_RE = re.compile(
+    r"^\s*\[ID:\s*(?P<id>[^\]]+)\]\s*$", re.IGNORECASE,
+)
+_ORDINAL_REFERENCE_RE = re.compile(r"[1-9]\d*")
+
+
+def strip_batch_reference_shell(raw: str) -> str:
+    """剥掉 LLM 误带回的 ``[ID: ...]`` 外壳，返回裸引用。
+
+    prompt 已要求批内整数序号，但部分模型会原样回带标记——解析端统一去壳，
+    避免引用恒不匹配编号表导致整批候选被丢弃。
+    """
+    matched = _BATCH_REFERENCE_SHELL_RE.match(raw)
+    return matched.group("id").strip() if matched else raw.strip()
+
+
+def is_ordinal_reference(reference: str) -> bool:
+    """批内序号协议：从 1 开始的十进制整数。
+
+    ``0``、前导零（``01``）、负数、小数和真实 UUID 都不是合法序号——模型返回
+    它们属于协议违规，不得按顺序猜测或回退到真实 ID 绑定。
+    """
+    return _ORDINAL_REFERENCE_RE.fullmatch(reference) is not None
+
+
+def batch_source_table(units: Sequence[MemoryUnit]) -> dict[str, MemoryUnit]:
+    """批内序号（``"1"`` 起始）到真实 unit 的编号表；分类/路由/抽取共用。
+
+    编号只在当前批的 prompt 与响应解析内有效，不进入存储身份或溯源字段。
+    """
+    return {str(index): unit for index, unit in enumerate(units, start=1)}
 
 if TYPE_CHECKING:
     from jiuwen_memory.storage.kv import KVStore

@@ -6,7 +6,10 @@ import pytest
 
 from jiuwen_memory.construction.extractor_impl.dynamic_llm_extractor import DynamicLLMExtractor
 from jiuwen_memory.construction.extractor_impl.llm_extractor import ExtractorImpl
-from jiuwen_memory.construction.extractor_impl.observation_time import observation_date
+from jiuwen_memory.construction.extractor_impl.observation_time import (
+    observation_date,
+    observation_sources,
+)
 from tests.unit.construction.test_dynamic_extraction_consolidation import (
     _FallbackExtractor,
     _ScriptedLLM,
@@ -32,14 +35,28 @@ def test_each_source_has_its_own_date(dynamic):
     prompt = llm.messages[0][1].content
     assert "observation_date: 2026-05-01" in prompt
     assert "observation_date: 2026-06-01" in prompt
-    assert prompt.index("2026-05-01") < prompt.index("first")
-    assert prompt.index("2026-06-01") < prompt.index("second")
+    first_marker, second_marker = (
+        ("[ID: first]", "[ID: second]") if dynamic else ("[ID: 1]", "[ID: 2]")
+    )
+    assert prompt.index("2026-05-01") < prompt.index(first_marker)
+    assert prompt.index("2026-06-01") < prompt.index(second_marker)
 
 
 def test_explicit_observation_date_wins_and_preserves_day_precision():
     source = _unit("source", "yesterday")
     source.system_metadata["observation_date"] = "2026-04-09T03:30:00+08:00"
     assert observation_date(source) == "2026-04-09"
+
+
+def test_explicit_source_labels_keep_ordinary_extraction_ids_short():
+    source = _unit("11111111-1111-1111-1111-111111111111", "fact")
+    rendered = observation_sources(
+        [source],
+        "[ID: {unit_id}]\n{unit_content}",
+        labels=["1"],
+    )
+    assert "[ID: 1]" in rendered
+    assert source.id not in rendered
 
 
 def test_source_local_calendar_day_is_not_shifted_to_utc():
@@ -63,8 +80,8 @@ def test_custom_date_prefix_is_applied_to_each_source():
     prompt = llm.messages[0][1].content
     assert "Date context [2026-05-01]" in prompt
     assert "Date context [2026-06-01]" in prompt
-    assert prompt.index("2026-05-01") < prompt.index("first")
-    assert prompt.index("2026-06-01") < prompt.index("second")
+    assert prompt.index("2026-05-01") < prompt.index("[ID: 1]")
+    assert prompt.index("2026-06-01") < prompt.index("[ID: 2]")
 
 
 @pytest.mark.parametrize("dynamic", [False, True])
@@ -84,7 +101,8 @@ def test_oversized_source_keeps_date_and_complete_content_across_chunks(dynamic)
     prompts = [messages[1].content for messages in llm.messages]
     assert len(prompts) == 2, "oversized source must be consumed in bounded chunks"
     assert all("observation_date: 2026-05-01" in prompt for prompt in prompts)
-    assert all("large-source" in prompt for prompt in prompts)
+    marker = "[ID: large-source]" if dynamic else "[ID: 1]"
+    assert all(marker in prompt for prompt in prompts)
     assert sum(prompt.count("x") for prompt in prompts) >= CONTENT_MAX_UNIT_CHARS + 100
     assert "SOURCE_TAIL" in prompts[-1], "the final chunk must retain the source tail"
     assert all("[TRUNCATED" not in prompt for prompt in prompts)

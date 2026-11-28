@@ -31,7 +31,7 @@ from tests.unit.construction.fixtures import (
 # ---------------------------------------------------------------------------
 
 
-_EXTRACT_PROMPT_15419DC_SHA256 = "0cd7cfbffb40d74472e0c656e60d0991691737a9b7bc606ec4a49afb6acd494a"
+_EXTRACT_PROMPT_15419DC_SHA256 = "9c1ca7134e2e4f3c81c5885dd1ec742546c7a92ec62038c46d9e5752a9598116"
 
 
 def _make_extractor(
@@ -63,7 +63,7 @@ def test_extract_preference():
             json.dumps(
                 [
                     {
-                        "source_id": "u1",
+                        "source_id": 1,
                         "target": "preference",
                         "content": "用户偏好用 Python 写代码",
                         "evidence": "偏好 Python",
@@ -95,7 +95,7 @@ def test_extract_fact():
             json.dumps(
                 [
                     {
-                        "source_id": "u1",
+                        "source_id": 1,
                         "target": "fact",
                         "content": "系统已确认数据备份完成",
                         "evidence": "确认",
@@ -124,7 +124,7 @@ def test_extract_event():
             json.dumps(
                 [
                     {
-                        "source_id": "u1",
+                        "source_id": 1,
                         "target": "event",
                         "content": "昨天发生了数据库迁移",
                         "evidence": "昨天发生",
@@ -194,21 +194,21 @@ def test_extract_batch():
     # 每条候选的 source_id 回指对应源 unit（u1/u2/u3），实现会校验 source_id 在本批 unit 内。
     payloads = [
         {
-            "source_id": "u1",
+            "source_id": 1,
             "target": "fact",
             "content": "用户偏好 Python",
             "evidence": "偏好",
             "confidence": 1.0,
         },
         {
-            "source_id": "u2",
+            "source_id": 2,
             "target": "event",
             "content": "系统报错",
             "evidence": "报错",
             "confidence": 0.9,
         },
         {
-            "source_id": "u3",
+            "source_id": 3,
             "target": "preference",
             "content": "用户喜欢简洁回答",
             "evidence": "喜欢",
@@ -230,6 +230,11 @@ def test_extract_batch():
     assert "u1" in provenance_ids
     assert "u2" in provenance_ids
     assert "u3" in provenance_ids
+    assert {r.content: r.provenance for r in result} == {
+        "用户偏好 Python": ["u1"],
+        "系统报错": ["u2"],
+        "用户喜欢简洁回答": ["u3"],
+    }
 
 
 def test_extract_batch_size_splits_llm_calls():
@@ -241,8 +246,8 @@ def test_extract_batch_size_splits_llm_calls():
         "confidence": 1.0,
     }
     responses = [
-        json.dumps([{**unit_payload, "source_id": "u1"}, {**unit_payload, "source_id": "u2"}]),
-        json.dumps([{**unit_payload, "source_id": "u3"}]),
+        json.dumps([{**unit_payload, "source_id": 1}, {**unit_payload, "source_id": 2}]),
+        json.dumps([{**unit_payload, "source_id": 1}]),
     ]
     llm = MockLLM(responses=responses)
     extractor = ExtractorImpl(llm=llm, extract_batch_size=2)
@@ -271,7 +276,7 @@ def test_extract_provenance():
             json.dumps(
                 [
                     {
-                        "source_id": "u1",
+                        "source_id": 1,
                         "target": "fact",
                         "content": "用户偏好 Python",
                         "evidence": "偏好",
@@ -303,7 +308,7 @@ def test_extract_tags_from_llm():
             json.dumps(
                 [
                     {
-                        "source_id": "u1",
+                        "source_id": 1,
                         "target": "preference",
                         "tier": "semantic",
                         "content": "用户偏好用 Python 写代码",
@@ -337,7 +342,7 @@ def test_extract_tier_by_llm():
             json.dumps(
                 [
                     {
-                        "source_id": "u1",
+                        "source_id": 1,
                         "target": "event",
                         "tier": "episodic",
                         "content": "昨天发生了数据库迁移",
@@ -363,7 +368,7 @@ def test_extract_tier_invalid_fallback_semantic():
             json.dumps(
                 [
                     {
-                        "source_id": "u1",
+                        "source_id": 1,
                         "target": "fact",
                         "tier": "core",  # 越界，抽取阶段不允许
                         "content": "用户是资深工程师",
@@ -393,7 +398,7 @@ def test_extract_tags_sanitized_and_capped():
             json.dumps(
                 [
                     {
-                        "source_id": "u1",
+                        "source_id": 1,
                         "target": "fact",
                         "tier": "semantic",
                         "content": "用户偏好 Python",
@@ -426,7 +431,7 @@ def test_extract_inherits_write_tags():
             json.dumps(
                 [
                     {
-                        "source_id": "u1",
+                        "source_id": 1,
                         "target": "fact",
                         "tier": "semantic",
                         "content": "用户名叫张明",
@@ -457,7 +462,7 @@ def test_extract_write_tags_dedup_with_extracted_marker():
             json.dumps(
                 [
                     {
-                        "source_id": "u1",
+                        "source_id": 1,
                         "target": "fact",
                         "tier": "semantic",
                         "content": "用户喜欢苹果",
@@ -507,7 +512,7 @@ def test_extract_confidence_filter():
             json.dumps(
                     [
                         {
-                            "source_id": "u1",
+                            "source_id": 1,
                             "target": "fact",
                             "content": "用户可能使用 Python",
                         "evidence": "可能",
@@ -541,7 +546,7 @@ def test_extract_llm_non_json():
 
 def test_extract_llm_trailing_text_preserves_valid_json_result():
     response = (
-        '[{"source_id":"u1","target":"fact","content":"user prefers Python",'
+        '[{"source_id":1,"target":"fact","content":"user prefers Python",'
         '"confidence":1.0}]!'
     )
     extractor = _make_extractor([response])
@@ -564,7 +569,7 @@ def test_extract_llm_trailing_text_preserves_valid_json_result():
 def test_extract_llm_trailing_text_is_redacted_after_formatter():
     trailing_text = "private trailing response text"
     response = (
-        '[{"source_id":"u1","target":"fact","content":"user prefers Python",'
+        '[{"source_id":1,"target":"fact","content":"user prefers Python",'
         f'"confidence":1.0}}]{trailing_text}'
     )
     extractor = _make_extractor([response])
@@ -599,12 +604,12 @@ def test_extract_llm_trailing_text_is_redacted_after_formatter():
     [
         (
             "Here is the extraction:\n"
-            '[{"source_id":"u1","target":"fact","content":"user prefers Python",'
+            '[{"source_id":1,"target":"fact","content":"user prefers Python",'
             '"confidence":1.0}]'
         ),
         (
             "Template syntax is {placeholder}.\n"
-            '[{"source_id":"u1","target":"fact","content":"user prefers Python",'
+            '[{"source_id":1,"target":"fact","content":"user prefers Python",'
             '"confidence":1.0}]'
         ),
     ],
@@ -622,8 +627,8 @@ def test_extract_recovers_the_complete_array_after_text_prefix():
     response = (
         "Here is the extraction:\n"
         "["
-        '{"source_id":"u1","target":"fact","content":"first memory","confidence":1.0},'
-        '{"source_id":"u2","target":"fact","content":"second memory","confidence":1.0}'
+        '{"source_id":1,"target":"fact","content":"first memory","confidence":1.0},'
+        '{"source_id":2,"target":"fact","content":"second memory","confidence":1.0}'
         "]"
     )
     extractor = _make_extractor([response])
@@ -648,7 +653,7 @@ def test_extract_treats_empty_json_as_empty_result(response):
 def test_extract_continues_past_empty_json_to_non_empty_json():
     response = (
         "[]\n"
-        '[{"source_id":"u1","target":"fact","content":"user prefers Python",'
+        '[{"source_id":1,"target":"fact","content":"user prefers Python",'
         '"confidence":1.0}]'
     )
     extractor = _make_extractor([response])
@@ -695,7 +700,7 @@ def test_extract_merged_topic_produces_one_unit():
     extractor = _make_extractor([
         json.dumps([
             {
-                "source_id": "u1",
+                "source_id": 1,
                 "target": "preference",
                 "content": "Alice 的咖啡偏好：早上喝美式、下午喝拿铁，且不加糖",
                 "evidence": "咖啡偏好",
@@ -719,7 +724,7 @@ def test_extract_l2_is_compact_statement_with_source_reference():
     statement = "Alice owns three bicycles."
     extractor = _make_extractor([
         json.dumps([{
-            "source_id": "u1",
+            "source_id": 1,
             "target": "fact",
             "content": statement,
             "evidence": "two red bicycles and one blue bicycle",
@@ -740,7 +745,7 @@ def test_extract_skips_invalid_candidate_and_preserves_valid_candidate():
     extractor = _make_extractor([
         json.dumps([
             {
-                "source_id": "u1",
+                "source_id": 1,
                 "target": "fact",
                 "content": "valid statement",
                 "confidence": 1.0,
@@ -765,8 +770,8 @@ def test_extract_skips_invalid_candidate_and_preserves_valid_candidate():
     "item",
     [
         {},
-        {"source_id": "u1", "content": "statement"},
-        {"source_id": "u1", "content": "statement", "confidence": "nan"},
+        {"source_id": 1, "content": "statement"},
+        {"source_id": 1, "content": "statement", "confidence": "nan"},
     ],
 )
 def test_extract_rejects_missing_or_invalid_confidence(item):
@@ -782,7 +787,7 @@ def test_extract_continues_after_one_sub_batch_fails():
             "not valid JSON",
             json.dumps([
                 {
-                    "source_id": "u9",
+                    "source_id": 1,
                     "target": "fact",
                     "content": "valid statement from the second sub-batch",
                     "confidence": 1.0,
@@ -800,6 +805,92 @@ def test_extract_continues_after_one_sub_batch_fails():
     assert result[0].provenance == ["u9"]
 
 
+def test_extract_binds_shell_number_and_rejects_bad_references():
+    true_uuid = "32049cd0-5f7c-419f-928f-503b24318f7c"
+    extractor = _make_extractor([
+        json.dumps([
+            {
+                "source_id": "[ID: 1]",
+                "content": "shell statement",
+                "confidence": 1.0,
+            },
+            {
+                "source_id": True,
+                "content": "boolean reference",
+                "confidence": 1.0,
+            },
+            {
+                "source_id": 2,
+                "content": "out-of-range reference",
+                "confidence": 1.0,
+            },
+            {
+                "source_id": true_uuid,
+                "content": "legacy uuid reference",
+                "confidence": 1.0,
+            },
+            {
+                "source_id": 0,
+                "content": "zero reference",
+                "confidence": 1.0,
+            },
+            {
+                "source_id": "01",
+                "content": "leading zero reference",
+                "confidence": 1.0,
+            },
+        ])
+    ])
+
+    result = extractor.extract([create_test_unit(true_uuid, "source")])
+
+    assert len(result) == 1
+    assert result[0].content == "shell statement"
+    assert result[0].provenance == [true_uuid]
+
+
+def test_extract_reject_reasons_keep_original_references():
+    """拒绝原因回显模型返回的原始引用，区分协议违规与越界。
+
+    ``0``/前导零/UUID/布尔是批内序号协议违规（``[1-9]\\d*``）；越界序号才是
+    「not in the batch」。把序号校验放宽成 ``\\d+`` 时，零引用会变成越界，
+    本用例的违规原因断言随之失败。
+    """
+    true_uuid = "32049cd0-5f7c-419f-928f-503b24318f7c"
+    extractor = _make_extractor([
+        json.dumps([
+            {"source_id": 0, "content": "zero", "confidence": 1.0},
+            {"source_id": "01", "content": "leading zero", "confidence": 1.0},
+            {"source_id": true_uuid, "content": "uuid", "confidence": 1.0},
+            {"source_id": True, "content": "bool", "confidence": 1.0},
+            {"source_id": 2, "content": "out of range", "confidence": 1.0},
+        ])
+    ])
+
+    with pytest.raises(InvalidExtractionCandidateError) as exc_info:
+        extractor.extract([create_test_unit("u1", "source")])
+
+    message = str(exc_info.value)
+    assert "source_id '0' is not a batch ordinal" in message
+    assert "source_id '01' is not a batch ordinal" in message
+    assert f"source_id '{true_uuid}' is not a batch ordinal" in message
+    assert "source_id 'True' is not a batch ordinal" in message
+    assert "source_id '2' is not in the batch" in message
+
+
+def test_extract_prompt_uses_batch_number_not_true_id():
+    llm = _RecordingLLM([json.dumps([{"source_id": 1, "content": "x", "confidence": 1.0}])])
+    extractor = ExtractorImpl(llm=llm, min_confidence=0.5, max_attempts=3, retry_backoff_ms=0)
+
+    extractor.extract([create_test_unit("u1", "source")])
+
+    system_text, user_text = (message.content for message in llm.captured_messages[0])
+    assert "[ID: 1]" in user_text
+    assert "u1" not in user_text
+    assert '"source_id": 1' in system_text
+    assert "32049cd0-5f7c-419f-928f-503b24318f7c" not in system_text + user_text
+
+
 def test_extract_does_not_hide_failed_sub_batch_as_empty_result():
     extractor = _make_extractor(
         ["not valid JSON", "[]"],
@@ -813,7 +904,7 @@ def test_extract_does_not_hide_failed_sub_batch_as_empty_result():
 
 def test_extract_deduplicates_same_statement_within_source():
     item = {
-        "source_id": "u1",
+        "source_id": 1,
         "target": "fact",
         "content": "Alice owns three bicycles.",
         "confidence": 1.0,
@@ -828,7 +919,7 @@ def test_extract_deduplicates_same_statement_within_source():
 def test_extract_preserves_structured_record_target():
     extractor = _make_extractor([
         json.dumps([{
-            "source_id": "u1",
+            "source_id": 1,
             "target": "structured_record",
             "content": "Sunday: Admon works from 8 a.m. to 4 p.m.",
             "evidence": "Sunday | Admon | 8am-4pm",
@@ -877,7 +968,7 @@ class _RecordingLLM(MockLLM):
 def test_extract_prompt_keeps_full_presplit_unit():
     """8000 字预切分产物完整进抽取 prompt：不截断、无省略标记。"""
     content = "事实" * 4000  # 恰为内容护栏上限 8000 chars
-    resp = json.dumps([{"source_id": "u1", "target": "fact", "content": "x", "confidence": 0.9}])
+    resp = json.dumps([{"source_id": 1, "target": "fact", "content": "x", "confidence": 0.9}])
     llm = _RecordingLLM([resp])
     extractor = ExtractorImpl(
         llm=llm, min_confidence=0.5, max_attempts=3, retry_backoff_ms=1000
@@ -898,7 +989,7 @@ def test_extract_beyond_content_limit_fully_consumed():
     （8000 = A3000+B3000+C2000），C 的前 2000 字在首批、后 1000 字在次批。
     """
     content = "A" * 3000 + "B" * 3000 + "C" * 3000 + "D" * 3000
-    resp = json.dumps([{"source_id": "u1", "target": "fact", "content": "x", "confidence": 0.9}])
+    resp = json.dumps([{"source_id": 1, "target": "fact", "content": "x", "confidence": 0.9}])
     llm = _RecordingLLM([resp])
     extractor = ExtractorImpl(
         llm=llm, min_confidence=0.5, max_attempts=3, retry_backoff_ms=1000
@@ -926,13 +1017,13 @@ def test_extract_oversized_unit_fully_consumed_in_chunks():
     content = "X" * 8000 + middle_fact + "Y" * 7984  # 16000 chars
     r1 = json.dumps(
         [{
-            "source_id": "u1", "target": "preference", "content": "头部事实",
+            "source_id": 1, "target": "preference", "content": "头部事实",
             "evidence": "头部", "confidence": 1.0,
         }]
     )
     r2 = json.dumps(
         [{
-            "source_id": "u1", "target": "preference", "content": "中段事实已抽取",
+            "source_id": 1, "target": "preference", "content": "中段事实已抽取",
             "evidence": middle_fact, "confidence": 1.0,
         }]
     )
@@ -957,7 +1048,7 @@ def test_extract_oversized_unit_fully_consumed_in_chunks():
 
 def _f09_extractor(item: dict, category_map: dict[str, str] | None = None) -> ExtractorImpl:
     payload = {
-        "source_id": "u1",
+        "source_id": 1,
         "target": "fact",
         "content": "用户叫张三",
         "confidence": 1.0,
@@ -1037,7 +1128,7 @@ def test_extract_category_prompt_off_matches_baseline_and_ignores_category():
                 [
                     {
                         "content": "用户叫张三",
-                        "source_id": "u1",
+                        "source_id": 1,
                         "confidence": 0.9,
                         "importance_category": "identity",
                     }
@@ -1124,7 +1215,7 @@ def test_extraction_trace_level_exposes_counts_and_gates_content(level):
 
     register_plugins()
     extractor = _make_extractor([json.dumps([{
-        "source_id": "trace-source", "target": "preference",
+        "source_id": 1, "target": "preference",
         "content": "用户偏好 Python", "evidence": "偏好 Python", "confidence": 1.0,
     }])])
     token = begin_trace("memory", level=level)

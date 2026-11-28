@@ -230,6 +230,7 @@ class _MockLLM(LLM):
     def __init__(self, responses=None) -> None:
         self._responses = responses or []
         self._call_count = 0
+        self._messages: list[list[object]] = []
 
     def plugin_type(self):
         return PluginType.LLM
@@ -240,7 +241,12 @@ class _MockLLM(LLM):
     def chat(self, messages, **options):
         r = self._responses[self._call_count % len(self._responses)] if self._responses else ""
         self._call_count += 1
+        self._messages.append(list(messages))
         return r
+
+    @property
+    def messages(self) -> list[list[object]]:
+        return self._messages
 
 
 # ---------------------------------------------------------------------------
@@ -900,9 +906,9 @@ class TestDedupDirectNoopDelta:
             plugins["llm"],
             dedup_high_similarity=0.9,
         )
-        existing_unit = _make_unit("e1", "会议定于3月举行")
+        existing_unit = _make_unit("existing-real-1", "会议定于3月举行")
         _index_unit(existing_unit, stores["kv"], stores["vector"], plugins["embedder"])
-        candidate = _make_unit("c1", "会议定于5月举行")
+        candidate = _make_unit("candidate-real-1", "会议定于5月举行")
 
         def fake_recall(unit: MemoryUnit):
             return [(existing_unit, 0.95)]
@@ -913,7 +919,7 @@ class TestDedupDirectNoopDelta:
 
         assert private(llm, "_call_count") == 1, "有实质差异时应走 LLM 而非 direct_noop"
         assert decision == DedupDecision.SUPERSEDE
-        assert existing.id == "e1"
+        assert existing.id == "existing-real-1"
         assert similarity == pytest.approx(0.95)
 
     @staticmethod
@@ -931,9 +937,9 @@ class TestDedupDirectNoopDelta:
             plugins["llm"],
             dedup_high_similarity=0.9,
         )
-        existing_unit = _make_unit("e1", "会议定于3月举行")
+        existing_unit = _make_unit("existing-real-1", "会议定于3月举行")
         _index_unit(existing_unit, stores["kv"], stores["vector"], plugins["embedder"])
-        candidate = _make_unit("c1", "会议定于5月举行")
+        candidate = _make_unit("candidate-real-1", "会议定于5月举行")
 
         def fake_recall(unit: MemoryUnit):
             return [(existing_unit, 0.95)]
@@ -943,8 +949,8 @@ class TestDedupDirectNoopDelta:
         result = private(evolver, "_dedup_batch")([candidate])
 
         assert private(llm, "_call_count") == 1, "有实质差异时 batch 应走 LLM"
-        assert result.superseded_ids == ["e1"]
-        assert result.created_ids == ["c1"]
+        assert result.superseded_ids == ["existing-real-1"]
+        assert result.created_ids == ["candidate-real-1"]
         assert result.updated_ids == []
 
 
@@ -976,9 +982,9 @@ class TestDedupLLMTargetSelection:
             plugins["embedder"],
             plugins["llm"],
         )
-        existing = _make_unit("e1", "中午吃了麦当劳")
+        existing = _make_unit("existing-real-1", "中午吃了麦当劳")
         _index_unit(existing, stores["kv"], stores["vector"], plugins["embedder"])
-        candidate = _make_unit("c1", "中午实际吃了汉堡王")
+        candidate = _make_unit("candidate-real-1", "中午实际吃了汉堡王")
 
         setattr(
             private(evolver, "_dedup"),
@@ -988,16 +994,55 @@ class TestDedupLLMTargetSelection:
 
         result = private(evolver, "_dedup_batch")([candidate])
 
-        assert result.created_ids == ["c1"]
+        assert result.created_ids == ["candidate-real-1"]
         if existing_id is None:
-            assert result.superseded_ids == ["e1"]
+            assert result.superseded_ids == ["existing-real-1"]
             expected_lifecycle = LifecycleState.SUPERSEDED
         else:
             assert result.superseded_ids == []
             expected_lifecycle = LifecycleState.ACTIVE
         assert loads(
-            stores["kv"].get(_DEFAULT_SCOPE, memory_key("e1"))
+            stores["kv"].get(_DEFAULT_SCOPE, memory_key("existing-real-1"))
         ).lifecycle == expected_lifecycle
+
+    @staticmethod
+    def test_batch_uses_unique_existing_references_and_rejects_cross_candidate_target():
+        stores = _create_stores()
+        llm = _MockLLM(responses=[
+            json.dumps([
+                {"candidate_id": "c1", "decision": "add", "existing_id": None},
+                {"candidate_id": "c2", "decision": "update", "existing_id": "e1"},
+            ])
+        ])
+        evolver = _make_evolver(
+            stores["kv"], stores["vector"], _HashEmbedder(), llm,
+        )
+        first = _make_unit("candidate-real-1", "用户喜欢咖啡")
+        second = _make_unit("candidate-real-2", "用户住在杭州")
+        first_hit = _make_unit("existing-real-1", "用户喝咖啡")
+        second_hit = _make_unit("existing-real-2", "用户住在上海")
+        targets: dict[str, MemoryUnit] = {}
+
+        result = evolver._llm_dedup_decide_batch(  # pylint: disable=protected-access
+            [
+                (first, [(first_hit, 0.8)]),
+                (second, [(second_hit, 0.8)]),
+            ],
+            targets=targets,
+        )
+
+        prompt = "\n".join(message.content for message in llm.messages[0])
+        assert prompt.count("e|e1|") == 1
+        assert prompt.count("e|e2|") == 1
+        assert first.id not in prompt
+        assert second.id not in prompt
+        assert first_hit.id not in prompt
+        assert second_hit.id not in prompt
+        assert result == {
+            first.id: DedupDecision.ADD,
+            second.id: DedupDecision.ADD,
+        }
+        assert targets == {}, "e1 只属于第一个候选，第二个候选不得跨块引用"
 
 
 class TestDedupSupersede:
