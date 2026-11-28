@@ -14,11 +14,12 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from jiuwen_memory.common.errors import AgentMemoryError, WriteIncompleteError
+from jiuwen_memory.common.errors import AgentMemoryError, LLMTimeoutError, WriteIncompleteError
 from jiuwen_memory.common.ingest_cancellation import IngestCancelled
 from jiuwen_memory.common.log import get_logger, metadata_for_log
 from jiuwen_memory.common.trace import TraceLevel, trace_event, traced
@@ -33,6 +34,7 @@ from jiuwen_memory.construction import (
     UnitCommitStatus,
 )
 from jiuwen_memory.construction.index_builder import align_unit_receipts
+from jiuwen_memory.control.executor import finish_on_cancel
 from jiuwen_memory.control.ingest_job import (
     begin_ingest_write,
     record_ingest_ids,
@@ -158,9 +160,38 @@ class GroupedWriteMixin:
 
     # -- 入口 ---------------------------------------------------------------- #
 
+    @staticmethod
+    def _concurrent_document_binding(binding: PipelineBinding | None) -> bool:
+        if binding is None or binding.name != "document_fact":
+            return False
+        supports = getattr(binding.evolver, "supports_concurrent_document_extract", None)
+        return callable(supports) and supports() is True
+
+    def supports_concurrent_document_write(self, items: list[BatchWriteItem]) -> bool:
+        if getattr(self.write_group, "__func__", None) is not GroupedWriteMixin.write_group:
+            # 重写 write_group 的旧引擎只接受基础端口的参数。
+            return False
+        return all(
+            (item.system_metadata or {}).get("pipeline") == "document_fact"
+            and self._concurrent_document_binding(self._binding_for_item(item)) for item in items
+        )
+
+    def _can_split_prepared(self, entry: PreparedWrite) -> bool:
+        # Ingest 后才确定实际路由。特殊单元须走原 Evolver 入口及其过滤语义。
+        return (
+            entry.path is WritePath.INFER and self._concurrent_document_binding(entry.binding)
+            and bool(entry.units) and all(
+                not unit.system_metadata.get("continuity_event")
+                and not unit.system_metadata.get("continuity_kind")
+                and not unit.system_metadata.get("collective_destination")
+                and str(unit.system_metadata.get("procedural", "")).strip().lower() != "true"
+                for unit in entry.units
+            )
+        )
+
     @traced("write", level=TraceLevel.SIMPLE)
     async def write_group(
-        self, items: list[BatchWriteItem], *, merge_extract: bool,
+        self, items: list[BatchWriteItem], *, merge_extract: bool, guard=None,
     ) -> list[BatchWriteOutcome]:
         """批量写入：逐条 prepare，再按路径分段执行。结果与 ``items`` 逐条对齐。
 
@@ -170,6 +201,27 @@ class GroupedWriteMixin:
         outcomes = [
             BatchWriteOutcome(index=index, item=item) for index, item in enumerate(items)
         ]
+        async with AsyncExitStack() as locks:
+            owns_lock = guard is not None
+            if owns_lock:
+                await locks.enter_async_context(guard())
+            prepared, positions = await finish_on_cancel(
+                self._prepare_items(items, outcomes), shield=owns_lock,
+            )
+            if owns_lock and all(self._can_split_prepared(entry) for entry in prepared):
+                await locks.aclose()
+            else:
+                guard = None
+            group_outcomes = await finish_on_cancel(
+                self._execute_group(prepared, merge_extract=merge_extract, guard=guard),
+                shield=owns_lock and guard is None,
+            )
+        for position, outcome in zip(positions, group_outcomes):
+            outcome.index = position
+            outcomes[position] = outcome
+        return outcomes
+
+    async def _prepare_items(self, items, outcomes):
         prepared: list[PreparedWrite] = []
         positions: list[int] = []
         for index, item in enumerate(items):
@@ -180,13 +232,7 @@ class GroupedWriteMixin:
                 _set_failure(outcomes[index], exc)
                 continue
             positions.append(index)
-        if not prepared:
-            return outcomes
-        group_outcomes = await self._execute_group(prepared, merge_extract=merge_extract)
-        for position, outcome in zip(positions, group_outcomes):
-            outcome.index = position
-            outcomes[position] = outcome
-        return outcomes
+        return prepared, positions
 
     def _supports_grouped_write(self, items: list[BatchWriteItem]) -> bool:
         return self._grouped_write_blocker(items) is None
@@ -223,7 +269,7 @@ class GroupedWriteMixin:
         return await self._run_blocking(_io_lane(), self._prepare, item)
 
     async def _execute_group(
-        self, prepared: list[PreparedWrite], *, merge_extract: bool,
+        self, prepared: list[PreparedWrite], *, merge_extract: bool, guard=None,
     ) -> list[BatchWriteOutcome]:
         outcomes = [
             BatchWriteOutcome(index=index, item=entry.item)
@@ -251,7 +297,9 @@ class GroupedWriteMixin:
                             batch_size=len(segment),
                             reason="evolver.supports_grouped_extract() is False",
                         )
-                    await self._execute_extract(segment, outcomes, indices, merge=merge)
+                    await self._execute_extract(
+                        segment, outcomes, indices, merge=merge, guard=guard,
+                    )
             except Exception as exc:  # noqa: BLE001 —— 失败按段归集，不中断其他段
                 _raise_if_cancelled(exc)
                 self._fail_segment(segment, outcomes, indices, exc)
@@ -282,6 +330,38 @@ class GroupedWriteMixin:
 
     # -- 各路径 -------------------------------------------------------------- #
 
+    async def _evolve_units(self, segment: list[PreparedWrite], units, *, grouped, guard):
+        evolver = segment[0].evolver
+
+        async def commit(fn, *args):
+            try:
+                result = await self._run_blocking(_llm_lane(), fn, *args)
+            except (ExtractNotCommittedError, IngestCancelled):
+                raise
+            except Exception as exc:  # 提交入口已执行，无法确认整批的落盘状态。
+                if grouped:
+                    self.write_signals.record(
+                        DegradeEvent.UNKNOWN_NO_REPLAY, scope=_segment_scope(segment),
+                        batch_size=len(segment), reason=type(exc).__name__,
+                    )
+                raise
+            record_ingest_ids((result.result if grouped else result).created_ids)
+            return result
+
+        if guard is None:
+            if grouped:
+                return await commit(evolver.evolve_grouped, units)
+            return await commit(evolver.evolve, units, EvolveMode.EXTRACT)
+
+        async def run_stage(fn, *args, committing=False):
+            # 只等待已提交给线程的工作；等锁期间可取消。已落盘的 ID 随提交一起记账。
+            work = commit(fn, *args) if committing else self._run_blocking(_llm_lane(), fn, *args)
+            return await finish_on_cancel(work)
+
+        return await evolver.evolve_document_facts(
+            units, grouped=grouped, run=run_stage, guard=guard,
+        )
+
     async def _execute_extract(
         self,
         segment: list[PreparedWrite],
@@ -289,43 +369,37 @@ class GroupedWriteMixin:
         indices: list[int],
         *,
         merge: bool,
+        guard=None,
     ) -> None:
-        first = segment[0]
         units = [unit for entry in segment for unit in entry.units]
         if merge:
             try:
-                grouped = await self._run_blocking(
-                    _llm_lane(), first.evolver.evolve_grouped, units
-                )
+                grouped = await self._evolve_units(segment, units, grouped=True, guard=guard)
             except ExtractNotCommittedError as exc:
+                cause = exc.__cause__
+                if len(segment) == 1 and isinstance(cause, LLMTimeoutError):
+                    _set_failure(outcomes[indices[0]], cause)
+                    return
                 self.write_signals.record(
                     DegradeEvent.MERGE_FALLBACK,
                     scope=_segment_scope(segment),
                     batch_size=len(segment),
                     reason=type(exc).__name__,
                 )
-                await self._execute_extract_per_item(segment, outcomes, indices)
+                await self._execute_extract_per_item(segment, outcomes, indices, guard=guard)
                 return
-            except Exception as exc:  # noqa: BLE001 —— 提交状态未知，禁止自动重放
-                _raise_if_cancelled(exc)
-                self.write_signals.record(
-                    DegradeEvent.UNKNOWN_NO_REPLAY,
-                    scope=_segment_scope(segment),
-                    batch_size=len(segment),
-                    reason=type(exc).__name__,
-                )
-                raise
-            record_ingest_ids(grouped.result.created_ids)
             _distribute(segment, indices, outcomes, units, grouped, self.write_signals)
             self._trace_segment(segment, grouped.result, merged=True)
             return
-        await self._execute_extract_per_item(segment, outcomes, indices)
+        await self._execute_extract_per_item(segment, outcomes, indices, guard=guard)
 
     async def _execute_extract_per_item(
         self,
         segment: list[PreparedWrite],
         outcomes: list[BatchWriteOutcome],
         indices: list[int],
+        *,
+        guard=None,
     ) -> None:
         loader = getattr(self, "_load", None)
         for index, entry in zip(indices, segment):
@@ -333,10 +407,9 @@ class GroupedWriteMixin:
                 raise RuntimeError(f"{type(self).__name__} requires an Evolver for extract")
             try:
                 begin_ingest_write()
-                result = await self._run_blocking(
-                    _llm_lane(), entry.evolver.evolve, entry.units, EvolveMode.EXTRACT
+                result = await self._evolve_units(
+                    [entry], entry.units, grouped=False, guard=guard,
                 )
-                record_ingest_ids(result.created_ids)
                 derived = list(result.created_units)
                 if not derived and loader is not None and entry.units:
                     derived = [

@@ -31,16 +31,36 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from enum import Enum
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from jiuwen_memory.common.factory.factory import Factory
 
 from .base import ControlOperator
 
 T = TypeVar("T")
+
+
+async def finish_on_cancel(write: Coroutine[Any, Any, T], *, shield: bool = True) -> T:
+    """线程可在协程取消后继续写入。持锁调用须先等已启动的操作结束再释锁。"""
+    if not shield:
+        return await write
+    task = asyncio.create_task(write)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # 再次取消也不能传给在飞线程的包装任务，否则持锁方会误以为线程已结束。
+        while not task.done():
+            try:
+                await asyncio.wait([task])
+            except asyncio.CancelledError:
+                continue
+        if not task.cancelled():
+            task.exception()  # 消费线程异常，调用方仍收到原取消
+        raise
 
 
 class ExecutorLane(str, Enum):

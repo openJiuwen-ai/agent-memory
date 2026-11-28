@@ -22,11 +22,14 @@ import asyncio
 import json
 import re
 import sys
+import threading
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import yaml
@@ -1085,6 +1088,205 @@ class TestSdkMode:
         asyncio.run(run())
 
 
+_DOCUMENT_FACT = "用户喜欢园艺"
+
+
+def _fact_response(messages):
+    source = re.search(r"\[ID: ([^\]]+)\]", messages[1].content).group(1)
+    return json.dumps([{
+        "source_id": source, "content": _DOCUMENT_FACT, "project_fact": False,
+        "memory_class": "user_profile", "tier": "semantic", "confidence": 1.0,
+    }])
+
+
+@pytest.fixture
+def document_writer(monkeypatch, tmp_path):
+    from jiuwen_memory.control.types import BatchWriteItem
+
+    model = Mock(side_effect=_fact_response)
+    monkeypatch.setattr(AgentLlmExtractor, "_call_llm_with_retry", model)
+    scope = ApiScope(org="tenant-sdk", user="alice")
+    provider = AgentMemoryMemoryProvider(
+        config_dict={"extractor": {"document_fact": {"target": "document_fact"}}},
+        security_provider=_security_provider(scope, role=Role.ROOT),
+    )
+    with asyncio.Runner() as runner:
+        runner.run(provider.initialize(user_id=scope.user, scope_id=scope.org))
+        client = provider._client
+        orchestrator = client._api._commands._orchestrator
+        write_scope = client._to_api_scope(provider.bound_scope())
+
+        async def write(*, continue_on_error=True):
+            result = await client._api.batch_add_async(
+                [BatchWriteItem(content="第一轮", scope=write_scope)], security=client._security(),
+                system_metadata={"infer": "true", "pipeline": "document_fact"},
+                continue_on_error=continue_on_error,
+            )
+            outcome, = result.outcomes
+            return outcome
+
+        try:
+            yield SimpleNamespace(
+                run=runner.run, write=write, sync_turn=provider.sync_turn, model=model,
+                orchestrator=orchestrator, path=tmp_path / "USER.md",
+                guard=partial(orchestrator._lock.guard, scope, "infer_write"),
+            )
+        finally:
+            runner.run(provider.shutdown())
+
+
+class _WriteGate:
+    """在指定工作线程处暂停首笔写入，断言失败时也会放行并回收任务。"""
+
+    def __init__(self):
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def pause(self):
+        self.entered.set()
+        assert self.release.wait(10), "测试未释放工作线程"
+
+    @asynccontextmanager
+    async def writing(self, operation):
+        pending = asyncio.create_task(operation)
+        try:
+            assert await asyncio.to_thread(self.entered.wait, 3), "写入未到达预期阶段"
+            yield pending
+        finally:
+            self.release.set()
+            await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.parametrize("mode", ["grouped", "fail_fast", "fallback"])
+def test_document_fact_slow_extract_allows_same_user_commit(document_writer, mode):
+    doc = document_writer
+    gate = _WriteGate()
+
+    def extract(messages):
+        if mode == "fallback" and doc.model.call_count == 1:
+            raise ValueError("invalid model output")
+        if not gate.entered.is_set():
+            gate.pause()
+        return _fact_response(messages)
+
+    doc.model.side_effect = extract
+
+    async def run():
+        async with gate.writing(doc.write(continue_on_error=mode != "fail_fast")) as first:
+            await asyncio.wait_for(doc.sync_turn("第二轮", "记下了。"), timeout=3)
+            assert doc.path.read_text(encoding="utf-8").count(_DOCUMENT_FACT) == 1
+        assert not first.result().error and first.result().units == []
+        assert doc.path.read_text(encoding="utf-8").count(_DOCUMENT_FACT) == 1
+        assert doc.orchestrator.degrade_counters().get("merge_fallback", 0) == (mode == "fallback")
+
+    doc.run(run())
+
+
+@pytest.mark.parametrize("case", ["timeout", "backend_error", "empty_candidates"])
+def test_document_commit_lock_contention(monkeypatch, document_writer, case):
+    from jiuwen_memory.common.errors import BackendError
+    from jiuwen_memory.common.lock import LockTimeoutError
+
+    doc = document_writer
+    gate = _WriteGate()
+
+    def extract(messages):
+        gate.pause()
+        return "[]" if case == "empty_candidates" else _fact_response(messages)
+
+    doc.model.side_effect = extract
+    monkeypatch.setattr(doc.orchestrator, "_lock_wait_ms", 0)
+
+    async def run():
+        async with gate.writing(doc.write()) as pending, doc.guard():
+            if case == "backend_error":
+                failure = AsyncMock(side_effect=BackendError("lock backend unavailable"))
+                monkeypatch.setattr(doc.orchestrator._lock, "_acquire", failure)
+            gate.release.set()
+            outcome = await asyncio.wait_for(pending, timeout=3)
+        if case == "empty_candidates":
+            assert not outcome.error and not outcome.units
+        else:
+            error = BackendError if case == "backend_error" else LockTimeoutError
+            assert isinstance(outcome.error_obj, error)
+        assert doc.model.call_count == 1
+        expected = {"lock_timeout": 1} if case == "timeout" else {}
+        assert doc.orchestrator.degrade_counters() == expected
+        assert not doc.path.exists() or _DOCUMENT_FACT not in doc.path.read_text(encoding="utf-8")
+
+    doc.run(run())
+
+
+@pytest.mark.parametrize("stage", ["admission", "commit"])
+def test_document_cancel_while_waiting_for_lock(monkeypatch, document_writer, stage):
+    doc = document_writer
+
+    async def run():
+        waiting, release = asyncio.Event(), asyncio.Event()
+        acquire = doc.orchestrator._lock._acquire
+
+        async def blocked_acquire(*args, **kwargs):
+            if stage == "admission" or doc.model.called:
+                waiting.set()
+                await release.wait()
+            return await acquire(*args, **kwargs)
+
+        monkeypatch.setattr(doc.orchestrator._lock, "_acquire", blocked_acquire)
+        pending = asyncio.create_task(doc.write())
+        try:
+            await asyncio.wait_for(waiting.wait(), timeout=3)
+            pending.cancel()
+            done, _ = await asyncio.wait([pending], timeout=1)
+            assert pending in done and pending.cancelled()
+        finally:
+            release.set()
+            await asyncio.gather(pending, return_exceptions=True)
+        assert doc.model.call_count == (1 if stage == "commit" else 0)
+        assert not doc.path.exists() or _DOCUMENT_FACT not in doc.path.read_text(encoding="utf-8")
+
+    doc.run(run())
+
+
+@pytest.mark.parametrize("continue_on_error", [True, False])
+def test_document_cancel_during_commit_keeps_lock_and_records_ids(
+    monkeypatch, document_writer, continue_on_error,
+):
+    from jiuwen_memory.common.lock import LockTimeoutError
+    from jiuwen_memory.construction.evolver_impl.orchestrating_evolver import OrchestratingEvolver
+    from jiuwen_memory.control.ingest_job import IngestCancellation, ingest_cancellation
+
+    doc = document_writer
+    gate = _WriteGate()
+    commit = OrchestratingEvolver._commit_candidates
+
+    def blocked_commit(evolver, state):
+        gate.pause()
+        return commit(evolver, state)
+
+    monkeypatch.setattr(OrchestratingEvolver, "_commit_candidates", blocked_commit)
+
+    async def run():
+        job = IngestCancellation(requested=threading.Event())
+        token = ingest_cancellation.set(job)
+        try:
+            async with gate.writing(doc.write(continue_on_error=continue_on_error)) as pending:
+                pending.cancel()
+                await asyncio.sleep(0)  # 让第一次取消进入等待在途提交的清理分支
+                pending.cancel()
+                done, _ = await asyncio.wait([pending], timeout=0.1)
+                assert not done
+                with pytest.raises(LockTimeoutError):
+                    async with doc.guard(wait_timeout_ms=0):
+                        pytest.fail("工作线程仍在写入时锁已释放")
+        finally:
+            ingest_cancellation.reset(token)
+        assert pending.cancelled() and len(job.unit_ids) == 1
+        async with doc.guard(wait_timeout_ms=0):
+            assert doc.path.read_text(encoding="utf-8").count(_DOCUMENT_FACT) == 1
+
+    doc.run(run())
+
+
 # --------------------------------------------------------------------------- #
 # _merge_config_over_default：上层 config_dict 深合并到内置 agent 默认装配
 # --------------------------------------------------------------------------- #
@@ -1212,8 +1414,6 @@ class TestMergeConfigOverDefault:
 
 
 def test_source_metadata_added_to_each_provider_write_path(monkeypatch):
-    from unittest.mock import Mock
-
     import agent_memory_provider as provider_module
 
     async def run():

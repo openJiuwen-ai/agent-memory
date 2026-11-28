@@ -296,6 +296,9 @@ prompt_guard 对受保护 unit 的内容分批保留原子引用，过小的正�
 
 ## 本地约束
 
+普通文档事实使用每次调用独立的 `ExtractState`。候选抽取只消费上下文快照，
+路由、标注、语义去重与落盘共用 `_commit_candidates`，在写编排提供的提交锁内执行。
+
 1. 所有 Operator 必须实现 `operator_type()` 和 `health()`（继承自 `ConstructionOperator`）。
 2. 算子实现通过 `@XxxProducer.register("name")` 自注册。
 3. IndexBuilder 必须实现四个方法：`build(units, *, mode=IndexWriteMode.ALL)` /
