@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MindVault</title>
+  <link rel="stylesheet" href="settings.css">
+  <script src="settings.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>MindVault</h1>
+      <p>九问记忆安全插件</p>
+    </header>
+
+    <section class="protection" aria-labelledby="protection-title">
+      <div class="setting-row">
+        <div>
+          <h2 id="protection-title">敏感记忆使用保护</h2>
+          <p id="transition">设置应用于新建的 Work／Code 会话。已有会话保留原来的保护状态。</p>
+        </div>
+        <button id="protection-switch" type="button" role="switch" aria-checked="false"
+                aria-labelledby="protection-title" aria-describedby="transition" disabled>
+          <span class="thumb"></span>
+        </button>
+      </div>
+      <div class="setting-row runtime">
+        <span id="status" role="status" data-state="loading">正在读取 AgentServer 状态</span>
+        <button id="refresh" type="button">刷新状态</button>
+      </div>
+      <p id="error" role="alert" hidden></p>
+    </section>
+
+    <section id="policy-section" class="configuration" aria-labelledby="policy-title" hidden>
+      <form id="policy-form">
+        <div class="policy-header">
+          <div>
+            <h2 id="policy-title">记忆使用与扫描策略</h2>
+            <p>策略仅用于九问记忆。修改在新建的 Work／Code 会话中生效。</p>
+          </div>
+          <div class="policy-actions">
+            <button id="policy-discard" type="button">放弃更改</button>
+            <button id="policy-save" type="submit">保存策略</button>
+          </div>
+        </div>
+        <p id="policy-feedback" role="status" hidden></p>
+        <fieldset class="configuration-panel">
+          <legend>记忆使用权限</legend>
+          <div id="outbound-settings"></div>
+        </fieldset>
+        <fieldset class="configuration-panel category-panel">
+          <legend>敏感记忆扫描</legend>
+          <p class="panel-description">选择扫描类别及其分级。九问记忆已标注的来源等级仍参与判定。</p>
+          <div id="category-settings"></div>
+        </fieldset>
+      </form>
+    </section>
+
+    <section class="configuration" aria-labelledby="config-title">
+      <h2 id="config-title">当前配置</h2>
+      <div class="configuration-panel">
+        <dl class="write-redaction">
+          <div>
+            <dt>记忆写入脱敏</dt>
+            <dd id="write-redaction" role="status">正在读取</dd>
+          </div>
+        </dl>
+        <p id="config-empty">等待 AgentServer 回报配置。</p>
+        <dl id="config" hidden></dl>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

@@ -129,6 +129,7 @@ exclude = [
 
 [tool.setuptools.package-data]
 "jiuwen_memory_entry.portal" = ["index.html"]
+"jiuwen_memory_adapter.jiuwenswarm" = ["extension.yaml", "frontend/*.html", "frontend/*.css", "frontend/*.js"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

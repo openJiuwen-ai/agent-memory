@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/`、`jiuwen_memory_adapter/agent_security/` |
-| 最近一次修订日期 | 2026-11-24 |
+| 最近一次修订日期 | 2026-11-25 |
 | 关联特性文档 | [F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 显式明文记忆维护
@@ -808,6 +808,31 @@ PrivacyProtection 不处理浏览器证明或自行调用 Authorizer；调用方
 `authorize(operation)`、`authorize_input(actor, hook, producer)`、
 `authorize_transfer(sender, recipient, snapshot)` 是独立授权端口，必须明确返回 `True`。
 批准外发不是 memory 使用授权、接收方授权或人类原文查看授权；这些权限不能互相替代。
+
+Swarm Work／Code 的受保护文本会话复用 openjiuwen 驱动。宿主在对话和审批请求上
+重新验证主体与会话；后台调用和调度必须同时匹配原生会话与本轮装配标识，才可进入
+安全上下文。嵌套回调按同一任务内的生命周期顺序恢复上下文。模型或工具准入失败时，
+必须中止原生回调链。原生审批答复只能消费当前会话待处理请求中登记的单一选择。
+个人版 Worker 的远程模型地址须使用 HTTPS，本地 HTTP 仅限回环地址。
+动态 MCP 的允许集合及连接来自可信宿主，发现时冻结工具身份、目标及输入 schema；
+执行只向该连接传递通过最终门禁的参数。自动召回仅可向上下文释放已登记来源的 SDK
+脱敏文本，审批与恢复都不能取回隐藏的记忆原文。
+Work／Code 安全装配绑定 Swarm 原生 DeepAgent。父子消息须在执行或入队前绑定真实
+接收会话，继承记忆来源。记忆衍生的子 Agent 答复须经交付门禁后，才可进入父侧
+结果聚合及 transcript。普通记忆文本无额外风险时直接交付。未知的恢复状态不得
+作为新来源放行。
+个人版 Swarm 的管理请求必须重验 Swarm 登录会话及实例所有权。设置写入应检查当前
+修订号。公开读状态须区分期望开关、已应用开关及不可用，并以实际处理受保护会话的
+Worker 回执为依据。Worker 只有在回执写入成功后才可应用该状态，状态读写失败或回执
+所有权冲突时须暂停准入并重试。开关状态只参与新会话装配，已有会话的外发和审批不可借此改走其他
+执行路径。管理接口只返回明确列出的公开设置，排除模型凭据、认证会话及记忆内容。
+写入脱敏状态为管理接口的只读字段 `memory_write_redaction`。`configured` 表示记忆配置
+是否显式启用 `globals.privacy_enabled`，无法判定时为 `null`。`effective` 仅在已完成
+隐私保护装配且 Worker 回执仍有效时为 `true`，其余为 `null`。该字段不参与开关写入。
+所有者通过 `plugin.mindvault.policy.set` 提交当前 `revision` 及完整 `policy`，与总开关
+共用修订号。策略包含布尔 `model`、`tools`、`agents` 及检测目录内类别的启用和分级。
+关闭模型使用时跳过九问记忆召回。工具和子 Agent 权限仅约束使用了九问记忆的上下文；
+关闭扫描类别不能移除可信记忆的来源或等级。审批选项由实际外发决定产生。
 
 ### 统一边界
 
