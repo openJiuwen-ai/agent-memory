@@ -18,7 +18,8 @@ from jiuwen_memory_entry.core.api_contract import (
     to_jsonable,
 )
 
-BROWSER_VERBS = CONFIG_VERBS | {"list", "search", "add", "get", "update", "delete"}
+PROFILE_SUMMARY_VERBS = frozenset({"profile-summary", "profile-summary-edit"})
+BROWSER_VERBS = CONFIG_VERBS | PROFILE_SUMMARY_VERBS | {"list", "search", "add", "get", "update", "delete"}
 
 
 def _label(value, name):
@@ -56,6 +57,23 @@ def invoke_browser_api(api, verb, payload, *, security, write_scope=None, config
         raise ValidationError("unsupported browser API")
     if verb in CONFIG_VERBS:
         return invoke_configuration(configuration, verb, payload, security)
+
+    if verb in PROFILE_SUMMARY_VERBS:
+        actor = security.auth.actor
+        if not actor.org or not actor.user:
+            raise PermissionDeniedError(message="Profile summary requires a user identity")
+        scope = replace(actor, agent="", session="")
+        fields = {"body", "revision"} if verb == "profile-summary-edit" else set()
+        if not isinstance(payload, dict) or payload.keys() != fields:
+            raise ValidationError("invalid profile summary fields")
+        if verb == "profile-summary-edit":
+            result = api.edit_profile_summary(scope, **payload, security=security)
+        else:
+            result = api.read_profile_summary(scope, security=security)
+        if result is None:
+            return {"available": False}
+        body, revision = result
+        return {"available": True, "body": body, "revision": revision}
 
     if verb == "list":
         if (

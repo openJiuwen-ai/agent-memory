@@ -115,6 +115,11 @@ from jiuwen_memory.config.auto_overlay import (
     open_document_overlay,
     open_file_overlay,
 )
+from jiuwen_memory.config.document_dreaming import (
+    consolidation_interval,
+    document_root,
+    with_consolidation_scheduler,
+)
 
 # Private config normalization for the bundled adapter; not a public API export.
 from jiuwen_memory.config.document_flag import (
@@ -306,6 +311,9 @@ __all__ = [
     "Grant",
     "Action",
     "Credentials",
+    "consolidation_interval",
+    "document_root",
+    "with_consolidation_scheduler",
     "RequestSecurityContext",
     "SECRET_PARAM_KEYS",
     "Surface",

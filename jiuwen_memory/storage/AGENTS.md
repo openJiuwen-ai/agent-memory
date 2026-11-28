@@ -76,6 +76,8 @@
 
 ## 行为铁律
 
+- 默认本地用户的 Dreaming 画像存放于文档根下的 `memory/dreaming/user_profile.md`。其他用户范围通过摘要使用各自的子目录。看门狗跳过当前和旧版画像路径，画像正文及其游标由画像流程共同维护。
+
 - **显式维护能力**：内置 KV 通过公开 migration_identity、原子 compare_exchange 和声明过的有界 migration_records 迭代支持受控维护，不回退全量 scan。内存 KV 的读写、枚举和 CAS 在实例方法内持有同一把锁，过期清理也在锁内；SQLite 的 insert/CAS 在取得实例锁和数据库写锁后检查状态与到期时间，冲突插入不覆盖。EncryptedKV 的扫描/迁移能力不用于正常读取，保留到期语义且不复活扫描后消失的记录。缺少可靠枚举/CAS 时明确不支持。
 
 - **统一静态加密准入**：`StoreManagerProducer.resolve` 在开关开启时验证完整

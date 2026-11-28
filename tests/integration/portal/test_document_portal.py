@@ -84,6 +84,40 @@ def document_config(root, *, watch=False, registry=None):
     return config
 
 
+@pytest.mark.parametrize("mapped", [False, True])
+def test_standalone_document_profile_registration(tmp_path, mapped):
+    from jiuwen_memory_entry.core.dev_security import with_local_dev_security
+    from jiuwen_memory_entry.core.profiles import Config
+    from jiuwen_memory_entry.http_server.__main__ import HttpServer
+
+    memory = document_config(tmp_path)
+    memory.pop("security", None)
+    config = Config(settings={"memory_api": memory})
+    identities = {"key": {"actor": {"org": "local", "user": "alice"}}} if mapped else None
+    config = HttpServer.resident_config(with_local_dev_security(config, identities=identities))
+    owner = Scope(org="local", user="alice" if mapped else "developer")
+    for restart in (False, True):
+        server = HttpServer.build(config)
+        try:
+            server.restore_dreaming()
+            registry = server.api._dreaming._registry
+            mode = "memory_consolidate"
+            at_start = registry.find(owner, mode)
+            if not mapped or restart:
+                assert at_start is not None
+            else:
+                assert at_start is None
+            security = server._runtime.authenticate(Credentials(api_key="key" if mapped else ""))
+            server.register_profile_owner(security)
+            entry = registry.find(owner, mode)
+            assert entry is not None
+            assert entry.interval == 4 * 60 * 60
+            server.register_profile_owner(security)
+            assert registry.find(owner, mode).generation == entry.generation
+        finally:
+            server.close()
+
+
 def personal_list(**filters):
     return {"extensions": {"personal": filters}}
 
@@ -980,6 +1014,63 @@ def test_two_browser_sessions_keep_versions_monotonic(tmp_path):
             await provider.shutdown()
 
     asyncio.run(run())
+
+
+def test_profile_skips_document_store_without_summary_support(tmp_path, monkeypatch):
+    from jiuwen_memory.api import ValidationError, assemble_runtime
+    from jiuwen_memory.control.engine_impl.agent_engine import AgentEngine
+
+    monkeypatch.setattr(AgentEngine, "document_store", property(lambda engine: object()))
+    security = internal_context(build_dev_authenticator())
+    owner = security.auth.actor
+    runtime = assemble_runtime(config=document_config(tmp_path))
+    try:
+        assert runtime.api.summary(owner, security=security) is None
+        assert runtime.api.read_profile_summary(owner, security=security) is None
+        with pytest.raises(ValidationError, match="requires document memory"):
+            runtime.api.edit_profile_summary(owner, "body", "revision", security=security)
+    finally:
+        runtime.close()
+
+
+def test_portal_profile_summary_reads_and_edits_existing_dreaming_document(tmp_path):
+    from jiuwen_memory.api import PermissionDeniedError, assemble_runtime
+    from jiuwen_memory.storage.markdown_impl import profile_document
+    from jiuwen_memory_entry.portal.hosting import start_portal
+
+    security = internal_context(build_dev_authenticator())
+    owner = security.auth.actor
+    path = tmp_path / profile_document.relative_path(owner)
+    path.parent.mkdir(parents=True)
+    path.write_text(profile_document.pack("## 用户偏好\n- 先给结论。\n", 7), encoding="utf-8")
+    runtime = assemble_runtime(config=document_config(tmp_path))
+    try:
+        portal = start_portal(runtime, security_provider=lambda: security)
+        try:
+            browser = Browser(portal.launch_url())
+            with browser.opener.open(browser.origin + "/portal/", timeout=5) as page:
+                html = page.read().decode()
+            assert 'class="overview-emblem"' in html
+            assert html.index('id="overview-sources"') < html.index('id="profile-summary"')
+            assert html.index('id="profile-summary"') < html.index('id="memories"')
+            status, initial = browser.call("profile-summary", {})
+            assert status == 200 and initial["body"] == "## 用户偏好\n- 先给结论。\n"
+            assert browser.call("profile-summary", {"scope": {"user": "other"}})[0] == 400
+            with pytest.raises(PermissionDeniedError):
+                runtime.api.read_profile_summary(replace(owner, user="other"), security=security)
+            status, saved = browser.call("profile-summary-edit", {
+                "body": "## 用户偏好\n- 回答用中文。\n", "revision": initial["revision"],
+            })
+            assert status == 200
+            assert profile_document.unpack(path.read_text(encoding="utf-8")) == (saved["body"], 7)
+            assert browser.call("profile-summary-edit", {
+                "body": "stale", "revision": initial["revision"],
+            })[0] == 409
+            assert browser.call("profile-summary", {}) == (200, saved)
+        finally:
+            portal.close()
+    finally:
+        runtime.close()
 
 
 def test_correction_waits_for_watcher_and_preserves_history(

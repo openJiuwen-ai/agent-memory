@@ -17,10 +17,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.type_def import CandidateOutcome, MemoryUnit, Scope
 from jiuwen_memory.construction import EvolveMode, Evolver, EvolveResult
+from jiuwen_memory.construction.evolver import EvolveRequest, ProfileSummaryOperation
 from jiuwen_memory.construction.message_role import has_message_role, ingest_sort_key
 from jiuwen_memory.control.jobs import Job, JobCancelledError
 from jiuwen_memory.control.types import JobInfo, JobStatus
@@ -52,13 +54,15 @@ class EvolveJob(Job):
         interval: int = 0,
         resolver: CandidateResolver | None = None,
         evolver_for_unit: Callable[[MemoryUnit], Evolver | None] | None = None,
+        summarize_profile: ProfileSummaryOperation | None = None,
     ) -> None:
         super().__init__(scope=scope, interval=interval)
         self._kv = kv
         self._evolver = evolver
         self._mode = mode
         # None → 默认谓词源（list 全量）——不传 resolver 的旧调用路径行为不变。
-        self._resolver = resolver or PredicateResolver(scope=scope, kv=kv)
+        self._resolver = resolver
+        self._summarize_profile = summarize_profile
         # None → 全部条目交 self._evolver（现行为）；非 None → 逐条取所属
         # profile 的 evolver 按实例分组分别演进（mem2.0 §2.5.1 改动 1）：
         # Dreaming 读入的条目按 memory_type 分发，经验条目交经验 profile
@@ -87,7 +91,32 @@ class EvolveJob(Job):
 
     async def run(self) -> JobInfo:
         self.check_cancelled()
-        outcome = await self._resolver.resolve()
+        if self._mode is EvolveMode.MEMORY_CONSOLIDATE:
+            outcome = await self._resolver.resolve() if self._resolver is not None else None
+            groups = outcome.groups if outcome is not None else None
+            units = [unit for group in groups or [] for unit in group.units]
+            self.check_cancelled()
+            request = EvolveRequest(
+                units=units, mode=self._mode,
+                summarize_profile=partial(self._summarize_profile, self.check_cancelled, groups)
+                if self._summarize_profile is not None else None,
+            )
+            result = await asyncio.to_thread(self._evolver.evolve, request)
+            path = result.profile_path
+            detail = {"profile_path": path} if path is not None else {}
+            cancelled = self.cancellation_signal.is_set()
+            if outcome is not None or cancelled:
+                resolved = outcome or CandidateOutcome()
+                detail.update(self._result_detail(
+                    resolved, result.created_ids, result.updated_ids, result.superseded_ids,
+                    result.forgotten_ids, completed_groups=len(resolved.groups),
+                    cancelled=cancelled, profile_path=path,
+                ))
+            if cancelled:
+                raise JobCancelledError("memory consolidation cancelled", detail=detail)
+            return JobInfo(scope=self.scope, status=JobStatus.SUCCEEDED, detail=detail)
+        resolver = self._resolver or PredicateResolver(scope=self.scope, kv=self._kv)
+        outcome = await resolver.resolve()
         created: list[str] = []
         updated: list[str] = []
         superseded: list[str] = []
@@ -167,6 +196,7 @@ class EvolveJob(Job):
         *,
         completed_groups: int,
         cancelled: bool,
+        profile_path: str | None = None,
     ) -> dict[str, str]:
         detail: dict[str, str] = {
             "created_ids": ",".join(created),
@@ -179,7 +209,7 @@ class EvolveJob(Job):
         }
         if cancelled:
             detail["partial_write"] = "true" if any(
-                (created, updated, superseded, forgotten)
+                (created, updated, superseded, forgotten, profile_path)
             ) else "false"
             detail["retry_requires_reconciliation"] = "true"
         if outcome.requested_ids is not None:  # ② 点名源差集回显（dreaming F13 D3）

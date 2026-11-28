@@ -229,6 +229,7 @@ ENTRY_RULES: dict[str, EntryRule] = {
     # 去重与遗忘两种演进模式取 UPDATE，由鉴权点按模式覆盖本表的默认动作；
     # 两种模式都不放宽到「本人所写」——输入是一批条目，逐条判会使一次调用部分生效。
     "evolve": EntryRule(SpaceAxis.CONTENT, SpaceAction.WRITE, own_actions_apply=False),
+    "summary": EntryRule(SpaceAxis.CONTENT, SpaceAction.READ, own_actions_apply=False),
     # 任务状态查询与取消按发起该作业的演进模式取动作，因此与 evolve 同默认值、
     # 同样由鉴权点覆盖。这要求任务信息携带演进模式取值而非任务类名。
     "job_status": EntryRule(SpaceAxis.CONTENT, SpaceAction.WRITE, own_actions_apply=False),

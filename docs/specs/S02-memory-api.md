@@ -181,6 +181,8 @@ SDK 和 HTTP 共用定位顺序，优先使用文档根目录，其次使用实�
 | 页面操作 | HTTP 路径 | 请求内容 | 主要响应字段 |
 |---|---|---|---|
 | 列表、筛选和概览 | `/v1/list` | `offset`、`limit`；筛选、分页快照和概览计数选项放在 `extensions.personal` | 个人列表原始结果；浏览器会话额外取得 `add_context`，包含 `agent` 和 `agent_locked` |
+| 读取记忆摘要 | `/v1/profile-summary` | 空 JSON 对象 | `available`，可用时返回 Markdown `body` 与 `revision` |
+| 保存记忆摘要 | `/v1/profile-summary-edit` | Markdown `body` 与读取时取得的 `revision` | 保存后的 `body` 与新 `revision`；版本冲突返回 409 |
 | 语义检索 | `/v1/search` | `query`、`top_k`；来源放在 `context.extensions.personal.source` | `items`、`scores_comparable`；每个命中携带 `scope` 和 `item` |
 | 读取详情 | `/v1/get` | `scope`、`unit_id` | 一条 `MemoryUnit` |
 | 新增记忆 | `/v1/add` | `content`、`scope`（只允许选填 `agent`）、可选 `system_metadata.project` | 新增的 `MemoryUnit` 数组 |
@@ -196,6 +198,8 @@ SDK 和 HTTP 共用定位顺序，优先使用文档根目录，其次使用实�
 浏览器纠正使用 SUPERSEDE，遗忘使用 FORGET。两种操作都要求目标仍有效，否则返回 409。
 文档写入和索引仍使用原链路。
 启用文件监听时，普通文件同步会保留纠正历史和遗忘状态。
+
+记忆摘要接口只接受 Portal 会话，目标由认证身份的组织、空间和用户决定。共享 Portal 中的摘要绑定打开页面的实例。读取和保存分别调用 `MemoryAPI.read_profile_summary` 和 `edit_profile_summary`，由内核重新检查本人权限。保存沿用 Dreaming 的并发检查，保留增量游标。
 
 SDK 插件默认启动本地页面服务，`portal.enabled` 可关闭它。`portal.port=0` 时自动分配
 端口。重复初始化会复用原实例和监听。端口冲突时，记忆实例继续运行，`portal_status`
@@ -1684,6 +1688,9 @@ detail 为 `{"reason":"max_nodes","dropped":"N"}`，N 为本次检索捕获区�
 ### Channel / EvolveMode / JobInfo（evolve / 任务，`control/types.py`）
 
 - `Channel`：`HOT`（在线低时延）/ `BACKGROUND`（离线异步，默认）。
+- 独立常驻服务与 Swarm 共用文档摘要的周期配置和登记契约。固定个人身份在服务启动认证后登记，按请求认证的用户在首次成功使用后登记。相同组织、空间、用户和周期复用已有的摘要任务。
+- 文档模式支持 `summary(scope)` 生成用户画像。生成、读取、手动编辑均绑定当前认证用户的组织、空间和用户身份；生成另对来源范围逐一检查读权限。未装配画像生成能力时，该方法返回 `None`，`MEMORY_CONSOLIDATE` 跳过画像生成。
+- `MEMORY_CONSOLIDATE` 显式传入 `candidate` 时只合并同一用户已获准且符合画像条件的候选，保留默认增量游标。省略 `candidate` 时按用户增量窗口整合并在成功写入后推进游标。
 - `EvolveMode`：`EXTRACT`（抽取低抽象事实）/ `ASSOCIATE`（关联分析）/ `CONSOLIDATE`（升华画像）/ `EXPERIENCE_CONSOLIDATE`（有新增才整理经验）/ `CONFLICT_CONSOLIDATE`（属性冲突巩固）/ `FORGET`（遗忘/清理）。`HIERARCHY`（显式建树/区间替换，经 evolve(mode=HIERARCHY)）。
 - `JobInfo`（`job_status` 返回）：`id` / `channel` / `mode` / `scope` / `status`（`JobStatus`：PENDING/RUNNING/SUCCEEDED/FAILED/CANCELLED）/ `detail`。
 

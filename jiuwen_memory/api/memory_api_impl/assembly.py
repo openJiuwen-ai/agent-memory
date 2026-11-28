@@ -38,6 +38,7 @@ from jiuwen_memory.common.bootstrap import register_plugins
 from jiuwen_memory.common.errors import RateLimitedError, ValidationError
 from jiuwen_memory.common.experience import UtilityStore
 from jiuwen_memory.common.factory.factory import Factory
+from jiuwen_memory.common.llm.base import LlmProducer
 from jiuwen_memory.common.lock import LockProducer
 from jiuwen_memory.common.log import get_logger, setup_logging
 from jiuwen_memory.common.security._assembly_lifecycle import _assembly_lifecycle
@@ -95,6 +96,7 @@ from jiuwen_memory.config.encryption import (
 )
 from jiuwen_memory.construction.bootstrap import register_constructors
 from jiuwen_memory.construction.common import resolve_message_store
+from jiuwen_memory.construction.evolver_impl.user_profile_summary import UserProfileSummary
 from jiuwen_memory.construction.experience import (
     DEFAULT_SPACE_OWN,
     ExperienceConfig,
@@ -118,6 +120,7 @@ from jiuwen_memory.control.write_orchestrator import WriteOrchestratorProducer
 from jiuwen_memory.ingest.bootstrap import register_ingestors
 from jiuwen_memory.retrieval.bootstrap import register_operators
 from jiuwen_memory.storage.bootstrap import register_backends
+from jiuwen_memory.storage.domain_store_impl.composite_domain_store import CompositeDomainStore
 from jiuwen_memory.storage.kv import KvProducer, KVStore
 from jiuwen_memory.storage.store_manager import (
     StoreManager,
@@ -1032,12 +1035,23 @@ def _assemble_kernel(
         if storage.has_shadow_index():
             shadow_for_collective = storage.shadow_index()
             collective_dedup = partial(ProjectTeamDedup.contains_exact, shadow_for_collective)
+    dreaming_registry_store = root.get("dreaming_registry_store", "")
+    if not isinstance(dreaming_registry_store, str):
+        raise ValidationError("globals.dreaming_registry_store must name a KV store")
+    document_store = getattr(engine, "document_store", None)
+    profile_summary = (
+        UserProfileSummary(lambda: LlmProducer.build_named("default", ctx), document_store)
+        if document_mode and isinstance(document_store, CompositeDomainStore) else None
+    )
     api = LocalMemoryAPI(
         engine=engine,
         permission=permission,
         scheduler=scheduler,
         dreaming_lock=dreaming_lock,
         dreaming_standby=dreaming_standby,
+        dreaming_registry_kv=(
+            storage.kv(dreaming_registry_store) if dreaming_registry_store else None
+        ),
         policy=PolicyProducer.dep(root, default="dict"),
         governor=GovernorProducer.dep(root, default="in_memory"),
         audit_logger=audit_logger,
@@ -1081,6 +1095,7 @@ def _assemble_kernel(
             if erasure_callback is not None
             else None
         ),
+        profile_summary=profile_summary,
         authorizer=authorizer,
         credential_registry=credential_registry,
         continuity=continuity,

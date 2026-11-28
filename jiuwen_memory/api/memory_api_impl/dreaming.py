@@ -27,6 +27,7 @@ from concurrent.futures import Future
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from math import ceil
 from typing import Any
 
@@ -39,6 +40,7 @@ from jiuwen_memory.common.errors import (
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
 from jiuwen_memory.common.type_def import (
+    CandidateGroup,
     CandidateSource,
     FanOutCandidate,
     Scope,
@@ -229,6 +231,11 @@ class DreamingDriverJob(Job):
                 job_id=self.parent_job_id or None,
             )
             raise RecurringJobStoppedError("space_not_writable", str(exc)) from exc
+        if (
+            self._mode is EvolveMode.MEMORY_CONSOLIDATE
+            and not await coordinator.memory_consolidation_ready(self.scope)
+        ):
+            return JobInfo(scope=self.scope, status=JobStatus.SUCCEEDED)
         # 2) fan-out 逐桶裁决（API 层）：获准桶下发给 Engine，拒绝桶回显。
         buckets, denied = coordinator.authorize_fan_out(
             security, self.scope, self._candidate, self._mode
@@ -249,6 +256,7 @@ class DreamingDriverJob(Job):
             candidate=self._candidate,
             buckets=buckets,
             denied_scopes=denied,
+            security=security,
         )
         # 本轮已提交演进——回写注册记录的上次触发时间（改动 2）。generation
         # 不匹配（注册已换代）时 note_triggered 内部跳过，防旧代任务改写新代
@@ -293,6 +301,10 @@ class DreamingCoordinator:
         commands: Any = None,
         authorize: Callable[..., None] | None = None,
         ensure_space_writable: Callable[[Scope], None] | None = None,
+        summary: Callable[
+            [Scope, RequestSecurityContext, Callable[[], None], list[CandidateGroup] | None],
+            str | None,
+        ] | None = None,
         scope_supplier: Callable[[], list[Scope]] | None = None,
         mode_scope_supplier: Callable[[EvolveMode], list[Scope]] | None = None,
         mode_validator: Callable[[EvolveMode, CandidateSource | dict | None], None] | None = None,
@@ -331,6 +343,8 @@ class DreamingCoordinator:
         self._commands = commands
         self._authorize = authorize
         self._ensure_space_writable = ensure_space_writable
+        self._summary = summary
+        self._consolidation_ready: Callable[[Scope], Awaitable[bool]] | None = None
         self._scope_supplier = scope_supplier
         self._mode_scope_supplier = mode_scope_supplier
         self._mode_validator = mode_validator
@@ -579,6 +593,15 @@ class DreamingCoordinator:
         expected_interval, ready = policy
         return interval == expected_interval and await ready()
 
+    async def memory_consolidation_ready(self, scope: Scope) -> bool:
+        with self._mutation_lock:
+            ready = self._consolidation_ready
+        return ready is None or await ready(scope)
+
+    def set_memory_consolidation_readiness(self, ready: Callable[[Scope], Awaitable[bool]]) -> None:
+        with self._mutation_lock:
+            self._consolidation_ready = ready
+
     def register(
         self,
         *,
@@ -751,8 +774,14 @@ class DreamingCoordinator:
         candidate: CandidateSource | dict | None,
         buckets: list[Scope] | None,
         denied_scopes: list[str] | None,
+        security: RequestSecurityContext,
     ) -> str | None:
         """提交一次性 EvolveJob（tick 驱动与立即路径共用件，纯执行链）。"""
+        summary = self._summary
+        summarize_profile = (
+            partial(summary, scope, security)
+            if mode is EvolveMode.MEMORY_CONSOLIDATE and summary is not None else None
+        )
         return await self._commands.evolve(
             scope,
             mode,
@@ -760,6 +789,7 @@ class DreamingCoordinator:
             candidate=candidate,
             buckets=buckets,
             denied_scopes=denied_scopes,
+            **({"summarize_profile": summarize_profile} if summarize_profile else {}),
         )
 
     def link_spawned_job(self, job_id: str, parent_job_id: str) -> None:

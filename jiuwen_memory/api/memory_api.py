@@ -476,6 +476,22 @@ class MemoryAPI(ABC):
         （命中 (scope, mode) 注册则取消并删除，返回 None）。
         """
 
+    def summary(self, scope: Scope, *, security: RequestSecurityContext) -> str | None:
+        """Refresh the owner's Markdown profile and return its relative path, if available."""
+        return None
+
+    def read_profile_summary(
+        self, scope: Scope, *, security: RequestSecurityContext,
+    ) -> tuple[str, str] | None:
+        """Return the owner's Markdown body and revision, or None if unsupported."""
+        return None
+
+    def edit_profile_summary(
+        self, scope: Scope, body: str, revision: str, *, security: RequestSecurityContext,
+    ) -> tuple[str, str]:
+        """Replace the owner's Markdown body if its revision still matches."""
+        raise ValidationError("Profile summary requires document memory")
+
     @abstractmethod
     def read_md_file(
         self,

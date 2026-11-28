@@ -29,6 +29,7 @@ from jiuwen_memory_entry.core.api_contract import CONFIG_VERBS
 from jiuwen_memory_entry.local.locks import acquire_file_lock as _acquire_file_lock
 from jiuwen_memory_entry.local.locks import file_lock as _lock_file
 from jiuwen_memory_entry.portal.hosting import _PortalServer, request_error, runtime_request
+from jiuwen_memory_entry.portal.requests import PROFILE_SUMMARY_VERBS
 
 if os.name == "nt":
     from jiuwen_memory_entry.portal import _windows_ipc as _ipc
@@ -399,6 +400,7 @@ class _Registry:
             self.register(info, info["instance_id"], endpoint)
 
     def dispatch(self, verb, payload, access: _BrowserAccess, _peer):
+        provider_bound = access.provider_bound or verb in PROFILE_SUMMARY_VERBS
         with self.lock:
             opening_instance = self.registrations.get(access.registration)
             candidates = [
@@ -409,7 +411,7 @@ class _Registry:
             if opening_instance.identity != access.identity:
                 return _OFFLINE
             candidates.insert(0, opening_instance)
-        elif access.provider_bound:
+        elif provider_bound:
             return _OFFLINE
         else:
             candidates.sort(key=lambda source: source.instance_id != access.preferred_instance)
@@ -420,7 +422,7 @@ class _Registry:
             for source in candidates:
                 eligible.setdefault(source.instance_id, []).append(source)
             return self.configuration(verb, payload, access, eligible, opening_instance)
-        if access.provider_bound:
+        if provider_bound:
             # An SDK continuity session must never switch to another Provider.
             candidates = candidates[:1]
         for instance in candidates:

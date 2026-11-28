@@ -220,6 +220,288 @@ ENVELOPE_ZH = '你收到一条消息：\n{"source": "tui", "content": "记住常
 ENVELOPE_EN = 'You receive a new message:\n{"source": "tui", "content": "remember dark theme"}'
 
 
+@pytest.mark.usefixtures("_offline_in_process_config")
+def test_user_profile_dreaming_merges_scoped_history_and_manual_editor(tmp_path, monkeypatch):
+    from jiuwen_memory.common.errors import ConflictError, PermissionDeniedError
+    from jiuwen_memory.common.llm.llm_impl.echo_llm import EchoLLM
+    from jiuwen_memory.common.type_def import MemoryUnit, Segment
+    from jiuwen_memory.construction import EvolveMode
+    from jiuwen_memory.control.types import Channel
+    from jiuwen_memory.storage.markdown_impl import profile_document
+    from jiuwen_memory.storage.types import TextQuery
+    from jiuwen_memory.storage.watchdog_impl.local_watchdog import LocalWatchdog
+
+    scope = ApiScope(org="__default__", user="__default__")
+    auth = new_request_context(
+        AuthContext(actor=scope, role=Role.USER, authenticated_at=datetime.now(UTC)),
+        surface=Surface.INTERNAL,
+    )
+    prompts = []
+
+    def summarize(_model, messages, **_options):
+        request = json.loads(messages[-1].content)
+        prompts.append(request)
+        return request["current_profile"] + "\n\n" + "\n".join(request["new_memories"])
+
+    monkeypatch.setattr(EchoLLM, "chat", summarize)
+    provider = AgentMemoryMemoryProvider(
+        user_id=scope.user, security_provider=lambda: auth, portal={"enabled": False},
+    )
+
+    async def run():
+        await provider.initialize(scope_id=scope.org, user_id=scope.user, session_id="")
+        try:
+            api = provider._client._api
+            domain = api._engine.document_store
+            authorize = api._authorize
+
+            def reject_session(security, target, action, operation, *args, **kwargs):
+                if target.session == "turn-3" and operation == "summary":
+                    raise PermissionDeniedError("Restricted session")
+                return authorize(security, target, action, operation, *args, **kwargs)
+
+            monkeypatch.setattr(api, "_authorize", reject_session)
+
+            def add(identifier, owner, session, metadata=None):
+                source_scope = ApiScope(
+                    org=scope.org, user=owner, agent="work" if session else "", session=session,
+                )
+                domain.add(source_scope, [MemoryUnit(
+                    id=identifier, scope=source_scope, segments=[Segment(content=identifier)],
+                    system_metadata=metadata or {},
+                )])
+
+            async def evolve(candidate=None):
+                job = await asyncio.to_thread(
+                    api.evolve, scope, EvolveMode.MEMORY_CONSOLIDATE, Channel.HOT,
+                    candidate=candidate, security=auth,
+                )
+                result = await asyncio.to_thread(api.job_status, job, security=auth, scope=scope)
+                assert result.status.value == "succeeded", result.detail
+                return result.detail
+
+            add("role", scope.user, "turn-1", {"project": "default"})
+            add("style", scope.user, "turn-2")
+            add("restricted", scope.user, "turn-3")
+            add("team", scope.user, "turn-6", {"collective_destination": "team", "team": "A"})
+            add("project", scope.user, "turn-4", {
+                "collective_destination": "project", "project": "A", "shareable": True,
+            })
+            add("preference", scope.user, "", {
+                "collective_destination": "user_profile", "memory_class": "user_profile",
+                "shareable": True,
+            })
+            add("other", "bob", "turn-4")
+            other_owner = ApiScope(org=scope.org, user="bob")
+            with pytest.raises(PermissionDeniedError, match="owner identity"):
+                await asyncio.to_thread(api.summary, other_owner, security=auth)
+            assert domain.profile_snapshot(ApiScope(org=scope.org, user="bob")) is None
+            missing = await evolve({"type": "ids", "unit_ids": ["missing"]})
+            assert missing["skipped"] == "missing:not_found"
+            assert not prompts and domain.profile_snapshot(scope) is None
+            await evolve({"type": "ids", "unit_ids": ["preference"]})
+            assert prompts.pop()["new_memories"] == ["preference"]
+            assert profile_document.unpack(domain.profile_snapshot(scope))[1] == 0
+            await evolve({"type": "fan_out", "child": {"type": "predicate"}})
+            assert set(prompts.pop()["new_memories"]) == {"role", "style", "preference"}
+            assert profile_document.unpack(domain.profile_snapshot(scope))[1] == 0
+            await evolve()
+            assert set(prompts[0]["new_memories"]) == {"role", "style", "preference"}
+            first_body, first_cursor = profile_document.unpack(domain.profile_snapshot(scope))
+            assert "preference" in first_body
+            assert first_cursor > 0
+            await evolve({"type": "ids", "unit_ids": ["preference"]})
+            assert prompts.pop()["new_memories"] == ["preference"]
+            first_body, cursor_after_selection = profile_document.unpack(
+                domain.profile_snapshot(scope)
+            )
+            assert cursor_after_selection == first_cursor
+
+            relative = profile_document.relative_path(scope)
+            owner_id = profile_document.profile_id(scope)
+            assert relative == "memory/dreaming/user_profile.md"
+            assert domain.profile_snapshot(ApiScope(org=scope.org, user="bob")) is None
+            legacy = tmp_path / "users" / owner_id / "memory/dreaming/user_profile.md"
+            scoped = tmp_path / "memory/dreaming" / owner_id / "user_profile.md"
+            for old_path in (legacy, scoped):
+                old_path.parent.mkdir(parents=True)
+                (tmp_path / relative).rename(old_path)
+                assert domain.profile_snapshot(ApiScope(org=scope.org, user="bob")) is None
+                assert profile_document.unpack(domain.profile_snapshot(scope)) == (
+                    first_body, first_cursor,
+                )
+                assert (tmp_path / relative).is_file()
+                assert not old_path.exists()
+            edited = "# Role\n\nManual details\n\n## Preferences\n\nConcise\n"
+            (tmp_path / relative).write_text(
+                profile_document.pack(edited, first_cursor), encoding="utf-8",
+            )
+            shadow = domain._raw_shadow_index()
+            watcher = LocalWatchdog(shadow, str(tmp_path), ApiScope())
+            assert not watcher._sync_one(relative, False)
+            assert not watcher._sync_one(legacy.relative_to(tmp_path).as_posix(), False)
+            assert shadow.get_units(scope, [profile_document.profile_id(scope)]) == []
+            assert shadow.search_fulltext(scope, TextQuery("Concise")) == []
+
+            add("newtask", scope.user, "turn-5")
+            assert await asyncio.to_thread(api.summary, scope, security=auth) == relative
+            assert prompts[1] == {"current_profile": edited, "new_memories": ["newtask"]}
+            _, latest_cursor = profile_document.unpack(domain.profile_snapshot(scope))
+            assert latest_cursor > first_cursor
+            await evolve()
+            assert len(prompts) == 2
+
+            add("still-pending", scope.user, "turn-5")
+            manually_revised = profile_document.pack("Manually revised again\n", latest_cursor)
+
+            def edit_during_generation(model, messages, **options):
+                (tmp_path / relative).write_text(manually_revised, encoding="utf-8")
+                return summarize(model, messages, **options)
+
+            monkeypatch.setattr(EchoLLM, "chat", edit_during_generation)
+            with pytest.raises(ConflictError):
+                await asyncio.to_thread(api.summary, scope, security=auth)
+            assert domain.profile_snapshot(scope) == manually_revised
+            monkeypatch.setattr(EchoLLM, "chat", summarize)
+            await evolve()
+            assert prompts[-1]["new_memories"] == ["still-pending"]
+        finally:
+            await provider.shutdown()
+
+    asyncio.run(run())
+
+
+@pytest.mark.usefixtures("_offline_in_process_config")
+@pytest.mark.parametrize("enabled", [True, False])
+def test_shared_document_provider_initialization_registers_profile_once(enabled):
+    class Holder:
+        def acquire(self, config, security_provider, factory):
+            return factory()
+
+    scope = ApiScope(org="acme", user="owner")
+    security = new_request_context(
+        AuthContext(actor=scope, role=Role.USER, authenticated_at=datetime.now(UTC)),
+        surface=Surface.INTERNAL,
+    )
+    provider = AgentMemoryMemoryProvider(
+        user_id=scope.user, security_provider=lambda: security, portal={"enabled": False},
+        config_dict={"globals": {"memory_consolidation": {"enabled": enabled}}},
+        document_runtime_holder=Holder(),
+    )
+
+    async def run():
+        try:
+            for session in ("first", "second"):
+                await provider.initialize(
+                    scope_id=scope.org, user_id=scope.user, session_id=session,
+                )
+            entries = provider.runtime.api._dreaming._registry.load_all()
+            assert [(entry.scope, entry.mode) for entry in entries] == (
+                [(scope, "memory_consolidate")] if enabled else []
+            )
+        finally:
+            await provider.shutdown()
+
+    asyncio.run(run())
+
+
+def test_background_can_restart_after_close_error(tmp_path):
+    from unittest.mock import AsyncMock, Mock
+
+    from jiuwen_memory_adapter.jiuwenswarm.memory_background import start_memory_background
+
+    config = {
+        "globals": {"write_document": True},
+        "markdown_store": {"default": {"params": {"root": str(tmp_path)}}},
+    }
+    client = Mock(initialize=AsyncMock(), restore_dreaming=AsyncMock(), close=AsyncMock())
+    client.close.side_effect = [RuntimeError("close failed"), None]
+
+    async def run():
+        first = await start_memory_background(config, lambda _: client)
+        with pytest.raises(RuntimeError, match="close failed"):
+            await first.close()
+        second = await start_memory_background(config, lambda _: client)
+        await second.close()
+        assert client.initialize.await_count == 2
+
+    asyncio.run(run())
+
+
+@pytest.mark.usefixtures("_offline_in_process_config")
+def test_user_profile_periodic_dreaming_waits_for_user_idle(tmp_path, monkeypatch):
+    from jiuwen_memory.common.llm.llm_impl.echo_llm import EchoLLM
+    from jiuwen_memory.storage.markdown_impl import profile_document
+
+    def context(user):
+        owner = ApiScope(org="acme", user=user)
+        security = new_request_context(
+            AuthContext(actor=owner, role=Role.USER, authenticated_at=datetime.now(UTC)),
+            surface=Surface.INTERNAL,
+        )
+        return owner, security
+
+    alice, auth = context("__default__")
+    bob, bob_auth = context("bob")
+    monkeypatch.setattr(EchoLLM, "chat", lambda *_args, **_kwargs: "# Alice's work profile")
+    config = {"globals": {"memory_consolidation": {
+        "enabled": True, "interval_seconds": 1,
+    }}}
+    provider = AgentMemoryMemoryProvider(
+        user_id=alice.user, security_provider=lambda: auth, portal={"enabled": False},
+        config_dict=config,
+    )
+
+    async def expect_profile(path):
+        for _ in range(80):
+            if path.exists():
+                break
+            await asyncio.sleep(0.1)
+        body, _ = profile_document.unpack(path.read_text(encoding="utf-8"))
+        assert body == "# Alice's work profile\n"
+
+    async def write_and_close(session, user):
+        await session.initialize(scope_id="acme", user_id=user, session_id="")
+        try:
+            await session.sync_turn("I maintain Work documentation", "I will keep that in mind")
+        finally:
+            await session.shutdown()
+
+    async def run():
+        alice_path = tmp_path / profile_document.relative_path(alice)
+        bob_path = tmp_path / profile_document.relative_path(bob)
+        first = await provider.start_background_memory(
+            config_dict=config, security_provider=lambda: auth,
+        )
+        try:
+            with first.operation(alice):
+                await write_and_close(provider, alice.user)
+                await asyncio.sleep(2.1)
+                assert not alice_path.exists()
+            await expect_profile(alice_path)
+
+            bob_provider = AgentMemoryMemoryProvider(
+                user_id="bob", security_provider=lambda: bob_auth, portal={"enabled": False},
+                config_dict=config,
+            )
+            with first.operation(bob):
+                await write_and_close(bob_provider, "bob")
+                await asyncio.sleep(2.1)
+                assert not bob_path.exists()
+        finally:
+            await first.close()
+
+        restored = await provider.start_background_memory(
+            config_dict=config, security_provider=lambda: auth,
+        )
+        try:
+            await expect_profile(bob_path)
+        finally:
+            await restored.close()
+
+    asyncio.run(run())
+
+
 # --------------------------------------------------------------------------- #
 # §6.2-E：TUI 信封剥离（prefetch / sync_turn 共用的统一入口）
 # --------------------------------------------------------------------------- #

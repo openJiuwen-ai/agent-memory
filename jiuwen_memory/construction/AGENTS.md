@@ -50,6 +50,7 @@ IndexBuilder、Router、Dedup、LayerAnnotator 与 Evolver（默认 `Orchestrati
 | `dedup_impl/` | Dedup 实现目录（vector / keyword / shadow）；shadow 显式选配，读取文档机器真源 |
 | `index_builder_impl/document_index_builder.py` | document target：通过 DomainStore 写入 Markdown/shadow；不依赖某个 SQLite/Markdown 实现类 |
 | `evolver_impl/` | Evolver 实现目录（orchestrating=legacy / dynamic=动态 prompt 四步（可配 `dedup_decisions` 按抽取策略限定允许的去重结论）/ schema_orchestrating=Source-first Schema 属性抽取）；前两者共享 Appraiser/Curator 可选装配。`orchestrating_evolver.py` 定义每次调用独立的 `ExtractState` 及上下文、抽取、候选准备、整理、归纳、产物准备与持久化阶段；主方法显式编排路由、分层和判定 |
+| `evolver_impl/user_profile_summary.py` | 用户级文档画像的增量合并；`OrchestratingEvolver.evolve` 在 `MEMORY_CONSOLIDATE` 分支调用请求绑定的画像操作一次，返回文档路径 |
 | `evolver_impl/schema_update.py` | Schema source/property 对应、模式动作和提交前修订检查；记忆写入只调用 IndexBuilder，注入 KV 仅用于读取，不保存恢复记录 |
 | `evolver_impl/conflict_consolidator.py` | `CONFLICT_CONSOLIDATE` 的规划器：按 `(schema_entity_id, schema_property_name)` 成簇，两段 LLM 产出无副作用的 `ConsolidatePlan`；不落盘 |
 | `evolver_impl/temporal_validity.py` | UPDATE/SUPERSEDE 的时间护栏纯函数；只以显式 aware `t_message` 排陈述先后，已有 valid-time 区间独立校验 |

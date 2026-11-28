@@ -5,10 +5,12 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-26 |
+| 最近一次修订日期 | 2026-11-28 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F05-cloud-engine-design.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F05-storage-retrieval-pipelines.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F04-security-interfaces-and-encryption.md，docs/features/storage/F02-postgres-backend.md，docs/features/storage/F03-storage-ssl.md，docs/features/storage/F04-unified-storage-design.md，docs/features/storage/F06-composite-recaller-assembly.md，docs/features/storage/F07-storage-manager-domain-store-split.md，docs/features/storage/F08-document-memory.md |
 ## Markdown 块更新契约
+
+默认本地范围 `(org="__default__", space="", user="__default__")` 的 Dreaming 画像相对路径为 `memory/dreaming/user_profile.md`。其余范围使用 `memory/dreaming/<用户范围摘要>/user_profile.md`，摘要来自组织、空间与用户，不包含 agent 或 session。首次读取时可从同一范围的旧路径迁移，保留正文和游标。当前路径优先，其次是旧版 `memory/dreaming/<用户范围摘要>/user_profile.md`，最后是 `users/<用户范围摘要>/memory/dreaming/user_profile.md`。
 
 `MarkdownStore.replace_content(scope, md_filename, old_content, new_content, *,
 new_title=None, old_title=None) -> bool` 定位并替换首个符合条件的块。

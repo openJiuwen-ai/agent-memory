@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-11-27 |
+| 最近一次修订日期 | 2026-11-28 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/construction/F12-importance-and-source-attribution.md, docs/features/construction/F16-dialogue-message-roles.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
@@ -620,6 +620,7 @@ EXPERIENCE_CONSOLIDATE 在任何整理副作用前验证输入全部为 `memory_
 **EvolveMode**：
 - `EXTRACT` — 信息提取
 - `ASSOCIATE` — 关联分析
+- `MEMORY_CONSOLIDATE` — 按用户执行一次整合。请求携带已绑定用户身份和来源鉴权的画像生成函数时，调用一次并返回画像路径。未装配时跳过生成。
 - `CONSOLIDATE` — 冲突消解（近重复融合/矛盾标记失效）
 - `EXPERIENCE_CONSOLIDATE` — 专用经验整理与技能归纳，仅接受经验条目且要求 Curator
 - `CONFLICT_CONSOLIDATE` — Schema 属性记忆的簇内冲突巩固（需注入 `ConflictConsolidator`，未注入空跑）
@@ -634,6 +635,7 @@ class EvolveRequest:
     metadata: dict[str, str] = field(default_factory=dict)
     hierarchy_options: HierarchyComposeOptions | None = None
     hierarchy_incremental: HierarchyIncrementalContext | None = None
+    summarize_profile: Callable[[], str | None] | None = None
 ```
 
 `metadata` 承载 correlation id、触发来源等请求级透传信息，不写回 unit 核心字段。
@@ -653,6 +655,7 @@ class EvolveResult:
     forgotten_ids: list[str] = field(default_factory=list)
     created_units: list[MemoryUnit] = field(default_factory=list)
     hierarchy_result: HierarchyComposeResult | None = None
+    profile_path: str | None = None
 ```
 
 `hierarchy_result` 只在 HIERARCHY 模式返回结构结果与修复报告，其他 mode 为 `None`。
