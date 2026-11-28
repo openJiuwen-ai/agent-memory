@@ -66,8 +66,17 @@ def load_config(layers: list[dict[str, Any]], spaces: Any = None) -> Config:
     for layer in layers:
         if layer:
             merged.update(layer)
+    policies = merged.get("policies")
+    if policies is None:
+        # 空 YAML 段（``policies:``）解析为 None；与缺省一样表示“没有策略”，
+        # 不能把 None 交给 dict() 抛 TypeError——HTTP/CLI/MCP 都会在装配期崩。
+        policies = {}
+    if not isinstance(policies, dict):
+        raise ValidationError(
+            f"policies must be an object, got {type(policies).__name__}"
+        )
     return Config(
         profile=str(merged.get("profile", "offline")),
-        policies=dict(merged.get("policies", {})),
+        policies=dict(policies),
         settings=merged,
     )
