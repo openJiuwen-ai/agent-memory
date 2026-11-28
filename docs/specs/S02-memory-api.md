@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/api/ |
-| 最近一次修订日期 | 2026-11-27 |
+| 最近一次修订日期 | 2026-11-28 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/F05-personal-memory-portal.md |
 | 关联特性文档 | docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F05-http-memory-api-alignment.md，docs/features/api/F06-access-parameter-forwarding.md，docs/features/api/F07-access-surface-error-semantics.md，docs/features/api/F09-sdk-runtime-logging.md，docs/features/api/F10-batch-update-api.md，docs/features/F01-system-spec-design.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F05-construction-spec-multimodal-design.md，docs/features/construction/F08-entity-schema-extension.md，docs/features/common/F01-memory-layer.md，docs/features/common/F03-scope-space-isolation.md，docs/features/common/F08-memory-tree.md，docs/features/common/F09-log-privacy.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/retrieval/F09-query-rewrite.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/config/F01-config-source.md，docs/features/control/F07-collective-memory-design.md，docs/features/construction/F13-dreaming.md，docs/features/ingest/F02-assets-ingestor-boundary.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md，docs/features/control/F10-async-write-orchestration.md |
 
@@ -1722,8 +1722,16 @@ detail 为 `{"reason":"max_nodes","dropped":"N"}`，N 为本次检索捕获区�
 | `UnsupportedCapabilityError` | 请求的 `source` 模态不在当前 Normalizer 声明的能力集合内；在规约、落盘和建索引前失败 |
 | `PolicyError` | `admin_set` 的键未知或为不可变配置；树开关关闭时忽略树参数，不因此抛 PolicyError |
 | `ConflictError` | 写入冲突（如 id 重复）或目标结构前置条件与当前状态冲突 |
+| `LockTimeoutError` | 等待写锁超过配置的有界等待时间 |
 | `WriteIncompleteError` | `PartialFailureError` 子类，HTTP 409。带 `continuity` 的 `add` 回执停在 unknown / partial；携带 `operation_id`、`status`、`refs`、`retry_action` |
 | `BackendError` / `HealthCheckError` | 后端故障 / 健康探测失败 |
+
+`LockTimeoutError` 由 `jiuwen_memory.api` 重导出，复用内核原异常类型，
+供 SDK 和 Adapter 捕获；调用方不需要依赖内部锁模块。
+
+JiuwenSwarm 普通记忆写入工具沿用 `{"error": ...}` 返回失败，区分写锁等待超时、
+HTTP 请求超时和连接失败。HTTP 超时仅表示结果未确认，不能据此断言未落库；
+错误提示不包含底层连接、凭据或锁键。读取接口的降级及内核异常契约保持不变。
 
 ## 鉴权流程
 
