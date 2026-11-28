@@ -117,8 +117,20 @@ class Config:
         ``Config.from_yaml_str(text, DASHSCOPE_API_KEY="sk-...")``。值为 ``None`` 时视同未传，
         回落到环境变量与默认值。不支持嵌套占位符与含 ``}`` 的默认值，命中即抛
         :class:`~jiuwen_memory.common.errors.ValidationError`。
+
+        顶层必须是映射（可为空）：YAML 合法但顶层是 list/标量时报 ``ValidationError``，
+        与 ``jiuwen_memory_entry.core.config_loader`` 对配置文件的校验口径一致，而不是让
+        ``dict(...)`` 抛出难以理解的 ``TypeError``/``ValueError``。
         """
-        return cls.from_dict(_expand_env(_load_yaml(yaml_str), args))
+        document = _load_yaml(yaml_str)
+        if document is None:
+            document = {}
+        if not isinstance(document, Mapping):
+            raise ValidationError(
+                "config must be a JSON/YAML object at the top level, "
+                f"got {type(document).__name__}"
+            )
+        return cls.from_dict(_expand_env(document, args))
 
     def context(self, known_top_names: set | None = None) -> AssemblyContext:
         """解析成 :class:`AssemblyContext`；``known_top_names`` 非空时校验顶层段名。"""
@@ -128,7 +140,7 @@ class Config:
         return not self._data
 
 
-def _load_yaml(text: str) -> dict:
+def _load_yaml(text: str) -> Any:
     import yaml  # type: ignore
 
-    return yaml.safe_load(text) or {}
+    return yaml.safe_load(text)
