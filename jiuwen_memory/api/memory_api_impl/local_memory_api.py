@@ -8,6 +8,8 @@ Optional user access-control entries remain separate from ordinary machine queri
 from __future__ import annotations
 
 import asyncio
+import secrets
+import threading
 from collections.abc import Callable
 
 from jiuwen_memory.api.memory_api import MemoryAPI
@@ -46,6 +48,7 @@ from jiuwen_memory.control.permission import PermissionManager
 from jiuwen_memory.control.policy import PolicyManager
 from jiuwen_memory.control.scheduler import Scheduler
 from jiuwen_memory.control.space import SpaceManager
+from jiuwen_memory.control.types import AddReceipt
 
 from .admin_ops import AdminOpsMixin
 from .collective_ops import CollectiveOpsMixin
@@ -131,6 +134,11 @@ class LocalMemoryAPI(
         self._privacy = privacy
         self._init_human_view()
         self._runtime_close: Callable[[], None] | None = None
+        self._add_receipts: dict[tuple[str, str, str, str, str], AddReceipt] = {}
+        self._receipt_epoch = secrets.token_hex(8)
+        self._evicted_receipts: set[tuple[str, str, str, str, str]] = set()
+        self._receipt_guard = threading.Lock()
+        self._add_inflight: set[tuple[str, str, str, str, str]] = set()
         self._require_grant_management = False
         self._perm = permission
         if authorizer is None:
@@ -196,6 +204,11 @@ class LocalMemoryAPI(
         # （见 WriteOpsMixin._authorize_experience_space）；own 时落点就是写入
         # 落点，已由现有逻辑校验，鉴权逻辑空过。
         self._experience_default_space = str(experience_default_space or "own").strip()
+
+    @property
+    def receipt_epoch(self) -> str:
+        """Identity of this process-local receipt store (changes on reload)."""
+        return self._receipt_epoch
 
     def _flush_audit_logs(self, logs) -> None:
         """按入队顺序写审计；与主流程同线程执行，避免慢后端卡住事件循环。"""

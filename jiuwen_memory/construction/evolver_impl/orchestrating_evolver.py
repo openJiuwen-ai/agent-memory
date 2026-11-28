@@ -933,7 +933,13 @@ class OrchestratingEvolver(Evolver):
                 candidate.system_metadata.get(IMPORTANCE_KEY),
             )
             origin = existing_unit.system_metadata.get(ORIGIN_KEY)
+            sync_attribution = {
+                key: value
+                for key, value in existing_unit.system_metadata.items()
+                if key in {"sync_created_by", "sync_initial_digest"}
+            }
             existing_unit.system_metadata = inherited_system_metadata([existing_unit, candidate])
+            existing_unit.system_metadata.update(sync_attribution)
             # 标题描述本次更新后的事实，不是新旧记忆共有的属性。
             # 新候选无标题时清空旧标题，避免继续展示已经过时的事实。
             if MD_TITLE_KEY in candidate.system_metadata or had_md_title:

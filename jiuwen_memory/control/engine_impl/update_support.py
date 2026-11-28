@@ -27,6 +27,7 @@ from jiuwen_memory.common.type_def import (
     MemoryUnit,
     Scope,
     Segment,
+    filter_immutable_sync_metadata,
 )
 from jiuwen_memory.control.types import MemoryPatch
 
@@ -74,7 +75,12 @@ def apply_memory_patch(old: MemoryUnit, patch: MemoryPatch) -> MemoryUnit:
     if patch.tags is not None:
         new.tags = list(patch.tags)
     if patch.system_metadata is not None:
-        new.system_metadata.update(patch.system_metadata)
+        # 创建时的同步归属（sync_created_by / sync_initial_digest）只能由同步写入方设置；
+        # 普通 update 不得改写，否则来源账本与幂等摘要会对不上。
+        filtered = filter_immutable_sync_metadata(patch.system_metadata)
+        if len(filtered) != len(patch.system_metadata):
+            logger.warning("ignored attempt to rewrite creation-only sync metadata")
+        new.system_metadata.update(filtered)
     if content_changed:
         # 置于 system_metadata.update 之后，防止内部绕过 API 校验直调时把旧/新角色键写回。
         new.system_metadata.pop(MESSAGE_ROLE_KEY, None)

@@ -149,6 +149,7 @@ PostgreSQL JSONB 使用完整路径作 key；Elasticsearch 写入时展开为对
     `DELETE_IF_EMPTY`/`DELETE`→DELETE；空 batch 零授权，因为它不执行任何动作）；整批先授权、
     全部通过才执行；`ensure_index` → `ADMIN`。交给 `authorize` 的 Scope 是方法首参的**真实
     Scope**（契约 v2 起，不再由 `space_id` 有损近似）。
+26.1 **条件删除能力**：`DomainStore` / 引擎可实现 `supports_conditional_delete() -> bool`（默认 False）。为 True 时，`DeleteSelector.expected_digests` 的摘要比较与删除必须在同一事务内完成；不一致的单元不删除，`delete` 只返回实际删除的 ID。为 False 时收到非空 `expected_digests` 应拒绝，而不是退化为无条件删除。
 27. **写接口覆盖范围由实现决定**：`DomainStore.add`/`update`/`delete` 落成哪些索引形式取决于该
     实现的能力，调用方不得假定「只写记忆本体」。`IndexWriteMode` / `IndexRemoveMode` 表达调用方
     意图，能否拆分由实现按自身能力决定——不具备检索索引能力的实现在 `RETRIEVAL_ONLY` /

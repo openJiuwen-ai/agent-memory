@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 import threading
 import time
@@ -546,7 +547,7 @@ def test_index_polling_failed_state_transient_700_and_timeout_cause(
     with pytest.raises(BackendError, match="index OOM"):
         _ = store_failed.client
     assert sum(1 for name, _ in failed.calls if name == "describe_index") == 1
-    assert failed.clock[0] - t0 == 0.0
+    assert math.isclose(failed.clock[0] - t0, 0.0, rel_tol=0.0, abs_tol=0.0)
     _assert_connect_lock_released(store_failed)
 
     transient_700 = _ClusterState(
@@ -612,7 +613,7 @@ def test_load_polling_tolerates_101_but_fails_fast_on_connection_lost(
     with pytest.raises(BackendError, match="should create connection first"):
         _ = store_lost.client
     assert sum(1 for name, _ in conn_lost.calls if name == "get_load_state") == 1
-    assert conn_lost.clock[0] - t0 == 0.0
+    assert math.isclose(conn_lost.clock[0] - t0, 0.0, rel_tol=0.0, abs_tol=0.0)
     _assert_connect_lock_released(store_lost)
 
 
@@ -670,7 +671,7 @@ def test_polling_fails_fast_on_permission_and_param_errors(
     with pytest.raises(BackendError, match="permission denied"):
         _ = store_idx.client
     assert sum(1 for name, _ in idx_denied.calls if name == "describe_index") == 1
-    assert idx_denied.clock[0] - t0 == 0.0
+    assert math.isclose(idx_denied.clock[0] - t0, 0.0, rel_tol=0.0, abs_tol=0.0)
     _assert_connect_lock_released(store_idx)
 
     load_denied = _ClusterState(

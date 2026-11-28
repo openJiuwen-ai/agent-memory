@@ -45,6 +45,7 @@ from jiuwen_memory.common.type_def import (
     filter_field_metadata_key,
     iter_clauses,
 )
+from jiuwen_memory.common.type_def.memory import IMMUTABLE_SYNC_METADATA_KEYS
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.router import SpaceNaming
 from jiuwen_memory.control.policy import PolicyManager
@@ -228,12 +229,11 @@ def _reject_kernel_system_metadata(metadata: dict[str, Any] | None) -> None:
     """
     if not metadata:
         return
-    reserved = KERNEL_SYSTEM_METADATA_KEYS | {
-        "collective_destination",
-        "shareable",
-        "group",
-        "sources",
-    }
+    reserved = (
+        KERNEL_SYSTEM_METADATA_KEYS
+        | IMMUTABLE_SYNC_METADATA_KEYS
+        | {"collective_destination", "shareable", "group", "sources"}
+    )
     clash = sorted(
         (set(metadata) & reserved)
         | {key for key in metadata if isinstance(key, str) and key.startswith("continuity_")}

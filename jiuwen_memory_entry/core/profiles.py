@@ -15,7 +15,10 @@ from typing import Any
 from jiuwen_memory.api import SECRET_PARAM_KEYS, ValidationError
 
 OFFLINE: dict[str, Any] = {"profile": "offline"}
-_SERVICE_KEYS = frozenset({"profile", "policies", "http", "memory_api"})
+# ``local`` is the local-service section (data directory, default space, legacy
+# storages). It is read by the entry layer, never by the kernel, but it is a legitimate
+# top-level service key as long as kernel configuration stays under ``memory_api``.
+_SERVICE_KEYS = frozenset({"profile", "policies", "http", "local", "memory_api"})
 
 
 def _redact(obj: Any) -> Any:

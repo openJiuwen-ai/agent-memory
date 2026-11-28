@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 
 from jiuwen_memory.common.time_utils import as_utc
@@ -54,6 +55,11 @@ def matches_delete_selector(unit: MemoryUnit, selector: DeleteSelector) -> bool:
     wanted_tags = set(selector.tags)
     if wanted_ids and unit.id not in wanted_ids:
         return False
+    expected = selector.expected_digests.get(unit.id)
+    if expected is not None:
+        digest = hashlib.sha256(unit.content.encode("utf-8")).hexdigest()
+        if digest != expected:
+            return False
     if wanted_tags and not wanted_tags.intersection(unit.tags):
         return False
     if selector.before is not None:

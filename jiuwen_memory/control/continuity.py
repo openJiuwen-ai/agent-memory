@@ -3,6 +3,7 @@
 import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from jiuwen_memory.common.errors import (
@@ -71,10 +72,26 @@ def require_task_connector_policy(plugin: Any, target: str) -> None:
         )
 
 
+@dataclass(frozen=True)
+class TaskPolicy:
+    """``continuity_task`` authorization switches (D13).
+
+    ``self_bind`` defaults on: participants may bind/close only through a connector the
+    port re-validates at commit time, which is what SDK / HTTP deployments already do.
+    Setting it off restores the strict owner-only rule. ``admin_manage_tasks`` stays off
+    so existing deployments keep rejecting space managers without the WRITE grant.
+    """
+
+    self_bind: bool = True
+    admin_manage_tasks: bool = False
+
+
 class Continuity(ABC):
     # 部署档位，公开能力声明：``role``（含关系扩展）或 ``continuity``（仅接续）。
     # API 依赖该声明判断能否展开关系，不探测实现私有状态（S09 §1/§6/§7）。
     mode: str = "role"
+    # 任务授权策略（D13）：默认关闭，既有部署行为不变；本机模板显式开启。
+    task_policy: TaskPolicy = TaskPolicy()
 
     def retains(self, unit) -> bool:
         """Conservative automatic-cleanup guard; implementations must inspect references."""
@@ -121,6 +138,7 @@ class Continuity(ABC):
         read: ReadMemory,
         *,
         connector_policy: TaskConnectorPolicy,
+        managing: bool = False,
     ) -> dict:
         ...
 
@@ -131,6 +149,36 @@ class Continuity(ABC):
     @abstractmethod
     def binding_connector(self, scope: Scope, task_id: str, binding_id: str) -> str:
         ...
+
+    def binding(self, scope: Scope, task_id: str, binding_id: str) -> dict:
+        """Return one binding record, including inactive ones.
+
+        ``continuity_task``'s self-unbind policy needs the target binding's connector,
+        and a revoked binding must not be mistaken for a foreign one. Implementations
+        that cannot expose the record keep the closed default.
+        """
+        raise UnsupportedCapabilityError(
+            capability="binding",
+            value=binding_id,
+            component="continuity",
+            message="this continuity implementation cannot expose binding records",
+        )
+
+    def event_receipt(
+        self, scope: Scope, connector: str, binding_id: str, event_id: str
+    ) -> dict | None:
+        """Read-only receipt lookup by event key (D8).
+
+        Returns ``{status, operation_id, refs, retry_action}`` or ``None`` when the
+        event key was never registered. Never returns content and never changes state;
+        the local service uses it to settle ``prepared`` operations after a revocation.
+        """
+        raise UnsupportedCapabilityError(
+            capability="event_receipt",
+            value=event_id,
+            component="continuity",
+            message="this continuity implementation cannot query event receipts",
+        )
 
     @abstractmethod
     def record(

@@ -4,7 +4,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| agent_memory_provider.py | Provider、HTTP/普通 SDK 客户端、共享 SDK continuity 客户端；continuity_request 校验 DTO 并注入可信上下文 |
+| agent_memory_provider.py | Provider、HTTP/普通 SDK 客户端、共享 SDK continuity 客户端、本机服务客户端 `_LocalClient`；continuity_request 校验 DTO 并注入可信上下文 |
 | experience_author_key.py | 内置 SDK 装配经验评价器之前，获取或原子保存部署作者密钥 |
 | memory_scene.py / memory_scenes.py | 场景协议、请求级上下文与独立实例工厂注册表 |
 | base_document_scene.py | Code/Team 共用的项目绑定、文档写入配置及预取超时保护 |
@@ -45,6 +45,8 @@
 - continuity 调试日志使用 `[continuity.*]` 标记，记录操作、Session/task/binding/event 身份、条数、缺口和耗时；不记录正文、查询描述或凭证。Provider 沿用宿主 logger 名，sdk_runtime 使用本模块 logger，由宿主按需转发。
 
 ## 与其他子目录的边界
+
+本机连接模式（F17）：`connection="local"` 的 `_LocalClient` 经 `ensure_service` 发现本机服务，读 `installs/<install_id>/token`；scope 用 SDK 五维直映射，`prefetch` 调 `/local/hook/recall`、`sync_turn` 调 `/local/hook/capture`，轮次标识优先 `event_id`、否则由 prefetch 生成并在 sync 复用，两者皆无时不写入。租约随 Provider 生命周期获取/释放，退出不关闭服务。`export_actor()` 返回 `bound_scope()` 五维，供 `migrate jiuwenswarm --actor-from-host` 使用。本机模式不注册视频工具。
 
 MemoryAPI 执行授权和任务操作；Adapter 不维护任务目录或业务任务映射，也不为单个 Session 关闭共享内核。
 JiuwenSwarm 的 ContinuityRail、用户候选确认和 metadata.json 激活指针属于上游宿主。

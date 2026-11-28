@@ -322,7 +322,7 @@ class HttpServer(Server):
                     if (authenticator is not None and authenticator.mode() == "trusted"
                             and getattr(srv.api, "_document_mode", False)):
                         body["collective_document"] = True
-                    self._send(200, body, request_id=request_id)
+                    self.send(200, body, request_id=request_id)
                 else:
                     self._send_error("NotFound", self.path, request_id=request_id)
 
@@ -388,7 +388,7 @@ class HttpServer(Server):
                     if body is None:
                         self._send_error("AuthenticationError", request_id=request_id)
                     else:
-                        self._send(200, body, request_id=request_id, cookie=cookie)
+                        self.send(200, body, request_id=request_id, cookie=cookie)
                     return
                 credentials = credentials_from_headers(self.headers, peer_address=peer)
                 write_scope = None
@@ -476,7 +476,7 @@ class HttpServer(Server):
                                     raise ValidationError("invalid collective context") from exc
                                 security = bind_collective_context(security, coordinates)
                             body = invoke_api(srv.api, verb, payload, security)
-                        self._send(200, body, request_id=security.request_id)
+                        self.send(200, body, request_id=security.request_id)
                 except AuthenticationError:
                     self._send_error("AuthenticationError", request_id=request_id)
                 except RateLimitedError:
@@ -558,9 +558,9 @@ class HttpServer(Server):
                 body["request_id"] = request_id
                 if trace:
                     body["trace"] = trace
-                self._send(status, body, request_id=request_id, retry_after=retry_after)
+                self.send(status, body, request_id=request_id, retry_after=retry_after)
 
-            def _send(
+            def send(
                 self,
                 status: int,
                 body: Any,

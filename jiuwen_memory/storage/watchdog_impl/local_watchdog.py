@@ -229,6 +229,15 @@ class LocalWatchdog(Watchdog):
         self._observer.schedule(handler, watch_dir, recursive=True)
         self._observer.start()
 
+        # 启动对账：停机期间的新增/修改/删除先补进影子索引，再开事件准入。
+        # 对账失败不阻止监听（与事件路径一致：告警后继续），下一次手改仍会触发同步。
+        try:
+            reconciled = self.reconcile_all()
+            if reconciled:
+                logger.info("LocalWatchdog: startup reconcile synced %d file(s)", reconciled)
+        except Exception as exc:
+            logger.warning("LocalWatchdog: startup reconcile failed: %s", exc)
+
         # 延迟置 initialized：避开初始扫描风暴（lite 用 call_later(1.0)）
         self._watcher_initialized = False
         if self._loop is not None:
@@ -396,6 +405,61 @@ class LocalWatchdog(Watchdog):
             with self._sync_condition:
                 self._active_syncs -= 1
                 self._sync_condition.notify_all()
+
+    # -- 内部：启动对账 ------------------------------------------------------- #
+
+    def reconcile_all(self) -> int:
+        """Reconcile the shadow index with the md tree once at startup (D7).
+
+        Covers edits made while no process was watching: new files, changed files and
+        files deleted during downtime. Only files that actually drifted reach
+        :meth:`_sync_one`, so an unchanged tree costs one hash comparison per file and
+        triggers no writes. Returns the number of files synchronized.
+        """
+        if not os.path.isdir(self._markdown_root):
+            return 0
+        synced = 0
+        present: set[str] = set()
+        for root, _dirs, files in os.walk(self._markdown_root):
+            for name in files:
+                rel = self._to_rel_path(os.path.join(root, name))
+                if rel is None or not _is_watched_md(rel):
+                    continue
+                present.add(rel)
+                with document_operation(self._markdown_root, self._shadow.write_lock_key):
+                    if not self._has_drift(rel):
+                        continue
+                    self._sync_one(rel, deleted=False)
+                synced += 1
+        # Files the index still knows but the user deleted while the watchdog was down.
+        for rel in self._shadow.list_md_filenames(self._scope):
+            if rel in present or not _is_watched_md(rel):
+                continue
+            with document_operation(self._markdown_root, self._shadow.write_lock_key):
+                if not self._has_drift(rel):
+                    continue
+                self._sync_one(rel, deleted=True)
+            synced += 1
+        return synced
+
+    def _has_drift(self, md_filename: str) -> bool:
+        """Whether one md file disagrees with the shadow index (cheap pre-check).
+
+        Mirrors ``_sync_one``'s two-sided baseline: active rows missing a block mean a
+        delete, file blocks the index never saw mean an insert. History rows
+        (superseded/archived/forgotten) do not count as drift by themselves.
+        """
+        all_pairs = self._shadow.list_units_by_md(self._scope, md_filename)
+        known_hashes = {ch for _, ch in all_pairs}
+        active_pairs = self._shadow.list_units_by_md(
+            self._scope, md_filename, lifecycle=LifecycleState.ACTIVE.value
+        )
+        active_hashes = {ch for _, ch in active_pairs}
+        abs_path = os.path.join(self._markdown_root, md_filename)
+        if not os.path.isfile(abs_path):
+            return bool(active_hashes)
+        new_hashes = {h for h, _, _ in collect_md_blocks(abs_path)}
+        return bool(active_hashes - new_hashes or new_hashes - known_hashes)
 
     # -- 内部：同步逻辑（在 to_thread 线程跑） ------------------------------- #
 

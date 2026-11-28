@@ -67,3 +67,8 @@ def _build(config):
     # Tokenizer 经 TokenizerProducer 自取（缺省 whitespace），与索引/查询侧共享同一实例 → 同词表。
     tokenizer = TokenizerProducer.dep(config, default="whitespace")
     return HashingEmbedder(tokenizer, dim=config.get("embedder_dim", 64))
+
+# F17 D9: data-destination declaration (registered when this module loads).
+from jiuwen_memory.common.egress import declare  # noqa: E402
+
+declare('embedder', "hashing", remote=False, note="local hashing embedder")

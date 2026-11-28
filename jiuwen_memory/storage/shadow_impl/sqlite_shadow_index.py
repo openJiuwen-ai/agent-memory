@@ -1167,6 +1167,21 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
             rows = conn.execute(sql, params).fetchall()
         return [(uid, ch) for uid, ch in rows]
 
+    def list_md_filenames(self, scope: Scope) -> list[str]:
+        """Distinct md files registered in the shadow index (watchdog startup reconcile).
+
+        Cross-scope like ``list_units_by_md``: the md layout groups files by
+        memory_class/project, not by scope, so a single file can hold units from
+        several scopes and the reconcile list must not be narrowed by scope.
+        """
+        with self._lock:
+            conn = self._ensure_conn()
+            rows = conn.execute(
+                "SELECT DISTINCT md_filename FROM memory_unit "
+                "WHERE md_filename IS NOT NULL AND md_filename <> ''"
+            ).fetchall()
+        return [name for (name,) in rows]
+
     def latest_scope_by_md(self, scope: Scope, md_filename: str) -> Scope | None:
         """按 ``md_filename`` 查最新一条 unit 的 scope（rowid DESC LIMIT 1），无历史返 None。
 

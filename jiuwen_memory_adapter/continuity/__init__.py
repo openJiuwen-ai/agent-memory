@@ -37,7 +37,13 @@ def _schema(annotation):
     }
 
 
-def tool_schemas(*, mode: str = "role", include_governance: bool = False) -> list[dict]:
+def tool_schemas(
+    *,
+    mode: str = "role",
+    include_governance: bool = False,
+    include_io: bool = False,
+    hooks: bool = False,
+) -> list[dict]:
     """Agent-facing tool schemas for the continuity surface.
 
     ``continuity_relation`` only exists in role mode (D2); the source-governance tools are
@@ -52,7 +58,14 @@ def tool_schemas(*, mode: str = "role", include_governance: bool = False) -> lis
             "request_id and expected_revision. Find checks connector_id/context_id first; "
             "if no exact match, optional query searches task title/description. Omit both "
             "context fields to search for another task. Confirm semantic candidates before bind. "
-            "Bindings never grant source read permissions.",
+            "Bindings never grant source read permissions. "
+            + (
+                "The host hook already injects background for each turn; query only when "
+                "you need more detail."
+                if hooks
+                else "Start a task by checking its background first; after reaching a "
+                "conclusion, save it with add."
+            ),
         ),
     ]
     if mode == "role":
@@ -64,8 +77,31 @@ def tool_schemas(*, mode: str = "role", include_governance: bool = False) -> lis
             "stays candidate. Confirm with evidence; revoke with a new revision. To review "
             "a contradiction supply conflict_kind, resolution and resolution_reason.",
         ))
+    if include_io:
+        specs.append(
+            (
+                "add",
+                "content",
+                str,
+                "Write one memory entry. With continuity {task_id, binding_id, event_id} the "
+                "write joins that task; a 409 receipt keeps operation_id/refs/status so an "
+                "unknown result can be recovered instead of rewritten.",
+            )
+        )
+        specs.append(
+            (
+                "search",
+                "query",
+                str,
+                "Search memories. Pass context.scope and optionally task_id/duty/top_k for a "
+                "continuity-scoped view.",
+            )
+        )
     out = []
     for verb, arg, dto, description in specs:
+        if verb in {"add", "search"}:
+            out.append(_io_schema(verb, description))
+            continue
         properties = {
             "scope": {
                 "type": "object",
@@ -158,3 +194,53 @@ def tool_schemas(*, mode: str = "role", include_governance: bool = False) -> lis
         )
     )
     return out
+
+
+def _io_schema(verb: str, description: str) -> dict:
+    scope = {
+        "type": "object",
+        "properties": {"org": {"type": "string"}, "space": {"type": "string"}},
+        "required": ["org", "space"],
+        "additionalProperties": False,
+    }
+    if verb == "add":
+        properties = {
+            "content": {"type": "string"},
+            "scope": scope,
+            "continuity": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "binding_id": {"type": "string"},
+                    "event_id": {"type": "string"},
+                },
+                "required": ["task_id", "binding_id", "event_id"],
+                "additionalProperties": False,
+            },
+        }
+        required = ["content", "scope"]
+    else:
+        properties = {
+            "query": {"type": "string"},
+            "context": {
+                "type": "object",
+                "properties": {"scope": scope},
+                "required": ["scope"],
+                "additionalProperties": False,
+            },
+            "task_id": {"type": "string"},
+            "duty": {"anyOf": [{"type": "string"}, {"type": "array",
+                                                     "items": {"type": "string"}}]},
+            "top_k": {"type": "integer", "minimum": 1},
+        }
+        required = ["query", "context"]
+    return {
+        "name": f"agent_memory_{verb}",
+        "description": description,
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": False,
+        },
+    }

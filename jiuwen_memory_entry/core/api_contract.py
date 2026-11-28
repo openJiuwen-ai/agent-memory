@@ -57,18 +57,45 @@ class MethodContract:
     is_async: bool
 
     @property
-    def request_parameters(self) -> Mapping[str, inspect.Parameter]:
-        """Return JSON-supplied parameters, excluding ``self`` and ``security``."""
+    def contract_parameters(self) -> Mapping[str, inspect.Parameter]:
+        """Return every JSON-supplied parameter, including transport-hidden keys.
+
+        Agent tool surfaces (MCP) expose the full ``MemoryAPI`` contract; HTTP and
+        CLI use :attr:`request_parameters`, which drops the keys that must not
+        become transport parameters.
+        """
         return {
             name: parameter
             for name, parameter in self.signature.parameters.items()
             if name not in {"self", "security"}
         }
 
+    @property
+    def request_parameters(self) -> Mapping[str, inspect.Parameter]:
+        """Return the HTTP/CLI JSON parameters, excluding internal-only keys."""
+        excluded = _INTERNAL_TRANSPORT_PARAMETERS.get(self.name, frozenset())
+        return {
+            name: parameter
+            for name, parameter in self.contract_parameters.items()
+            if name not in excluded
+        }
+
+
+_INTERNAL_TRANSPORT_METHODS = frozenset({"add_sync"})
+_INTERNAL_TRANSPORT_PARAMETERS = {
+    "add": frozenset({"operation_id"}),
+    "add_async": frozenset({"operation_id"}),
+}
+
 
 def api_method_names() -> frozenset[str]:
-    """Return the exact public abstract method set exposed by HTTP and CLI."""
-    return frozenset(MemoryAPI.__abstractmethods__)
+    """Return the public abstract methods exposed by HTTP and CLI.
+
+    ``add_sync`` is a trusted in-process port for the local sync engine; it must
+    never become a transport verb, because its ``trusted_metadata`` would otherwise
+    let a remote caller spoof creation-only attribution.
+    """
+    return frozenset(MemoryAPI.__abstractmethods__) - _INTERNAL_TRANSPORT_METHODS
 
 
 def is_known_verb(verb: str) -> bool:
@@ -90,12 +117,20 @@ def method_contract(verb: str) -> MethodContract:
     )
 
 
-def parse_request(verb: str, raw: Any) -> dict[str, Any]:
-    """Validate and decode one JSON object into same-named ``MemoryAPI`` arguments."""
+def parse_request(
+    verb: str, raw: Any, *, allow_internal: bool = False
+) -> dict[str, Any]:
+    """Validate and decode one JSON object into same-named ``MemoryAPI`` arguments.
+
+    ``allow_internal`` is for agent tool surfaces such as MCP: they expose the full
+    API contract, including keys that HTTP/CLI deliberately hide.
+    """
     if not isinstance(raw, dict):
         raise ValidationError("request body must be a JSON object")
     contract = method_contract(verb)
-    parameters = contract.request_parameters
+    parameters = (
+        contract.contract_parameters if allow_internal else contract.request_parameters
+    )
 
     for name in raw:
         if name in _RESERVED_SECURITY_FIELDS or name.startswith("actor_"):
@@ -141,7 +176,9 @@ async def _await_api_result(result: Awaitable[Any]) -> Any:
     return await result
 
 
-def invoke_api(api: Any, verb: str, payload: Any, security: Any) -> Any:
+def invoke_api(
+    api: Any, verb: str, payload: Any, security: Any, *, allow_internal: bool = False
+) -> Any:
     """Call the same-named MemoryAPI method and serialize its original result.
 
     横切 trace：一次调用即一个 trace 作用域（begin/end）。请求级覆盖
@@ -158,7 +195,7 @@ def invoke_api(api: Any, verb: str, payload: Any, security: Any) -> Any:
         trace_event("Access", "request", {
             "method": verb, "fields": sorted(payload) if isinstance(payload, dict) else [],
         }, level=TraceLevel.DEBUG)
-        arguments = parse_request(verb, payload)
+        arguments = parse_request(verb, payload, allow_internal=allow_internal)
         result = getattr(api, verb)(**arguments, security=security)
         if method_contract(verb).is_async:
             if not inspect.isawaitable(result):

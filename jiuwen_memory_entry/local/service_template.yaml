@@ -1,0 +1,237 @@
+# Jiuwen Memory 本机服务配置（F17 D1）。
+#
+# 由 `jiuwen-memory init` 生成，此后归服务进程独占：模型端点、文档目录与全部持久存储
+# 都在这里声明，不从拉起服务的宿主继承。占位符只在 init 时替换一次。
+#
+# 密钥只写引用：`${VAR}` 由服务进程自己的环境解析（服务启动时只继承本文件点名的变量），
+# 因此「谁先拉起服务」不能决定模型与行为。
+
+local:
+  # 本机组织与默认项目空间。connect 新宿主时使用；迁移来的空间不因这项自动提权。
+  org: {{org}}
+  default_space: {{space}}
+  # 自动写入档位：off（只召回）/ task（只写已绑定任务）
+  capture: task
+  # 待写正文与冻结原请求的最长保留天数。
+  max_request_retention_days: 7
+
+memory_api:
+  globals:
+    vector_enabled: true
+    graph_enabled: false
+    rerank_enabled: false
+    write_document: true
+    watch_document: true
+    store_manager: default
+    embedder_dim: 1024
+    chunk_size: 120
+    # 模型连接参数：密钥从服务环境解析，见文件头。
+    llm_base_url: {{llm_base_url}}
+    llm_api_key: {{llm_api_key}}
+    llm_model: {{llm_model}}
+    llm_temperature: 0.0
+    llm_max_tokens: 4096
+    llm_timeout: 120
+    embedder_base_url: {{embedder_base_url}}
+    embedder_api_key: {{embedder_api_key}}
+    embedder_model: {{embedder_model}}
+    embedder_max_batch: 64
+
+  # ---- 安全：本机令牌认证 + 空间判定 + loopback 绑定 ---------------------- #
+  security:
+    default:
+      target: standard
+      params:
+        authenticator: default
+        authorizer: default
+        binding_policy: default
+  authenticator:
+    default:
+      target: local_token
+      params:
+        db_path: {{tokens_db}}
+  binding_policy:
+    default: {target: loopback}
+  authorizer:
+    default:
+      target: space_aware
+      params: {delegate: standard}
+    standard:
+      target: standard
+      params: {grant_store: default, delegation_store: default}
+  grant_store:
+    default:
+      target: sqlite
+      params: {db_path: {{permissions_db}}}
+  delegation_store:
+    default:
+      target: sqlite
+      params: {db_path: {{permissions_db}}}
+
+  # ---- 存储：全部 SQLite 固定路径，禁止 memory / :memory: ----------------- #
+  kv_store:
+    default:
+      target: sqlite
+      params: {db_path: {{kv_db}}, fixed_path: true}
+    registry:
+      target: sqlite
+      params: {db_path: {{registry_db}}, fixed_path: true}
+  permission:
+    default:
+      target: sqlite
+      params: {db_path: {{permissions_db}}}
+  audit:
+    default:
+      target: sqlite
+      params: {db_path: {{audit_db}}}
+  markdown_store:
+    default:
+      target: local
+      params: {root: {{document_root}}}
+  shadow_index:
+    default:
+      target: sqlite
+      params: {db_path: {{shadow_db}}, embedder: default}
+  watchdog:
+    default:
+      target: watchdog
+      params: {debounce_ms: 2000}
+  store_manager:
+    default:
+      target: composite
+      params:
+        domain_stores:
+          default:
+            kv_store: default
+            shadow_recaller: shadow
+            preferred_retrieval_pipeline: recall_and_get_rank
+
+  # ---- 接续：单写者持久 Registry，本机策略开启（D13） ---------------------- #
+  continuity:
+    default:
+      target: local
+      params:
+        mode: continuity
+        single_writer: true
+        registry_store: registry
+        self_bind: true
+        admin_manage_tasks: true
+
+  # ---- 共享插件（文档记忆 agent 栈） -------------------------------------- #
+  tokenizer:
+    default: {target: jieba}
+  embedder:
+    default: {target: openai, params: {tokenizer: default}}
+  chunker:
+    default: fixed_window
+  feature_extractor:
+    default: {target: keyword, params: {tokenizer: default}}
+  llm:
+    default: openai
+  reranker:
+    default: {target: overlap, params: {tokenizer: default}}
+  normalizer:
+    default: passthrough
+
+  # ---- 检索 --------------------------------------------------------------- #
+  recaller:
+    shadow: {target: shadow}
+  query_parser:
+    default:
+      target: simple
+      params:
+        tokenizer: default
+        embedder: default
+        llm: default
+        feature_extractor: default
+        sanitize_enabled: true
+        sanitize_strip_code: false
+  fuser:
+    default: rrf
+  discloser:
+    default: truncating
+  retriever:
+    default:
+      target: pipeline
+      params:
+        reranker: default
+        query_parser: default
+        fuser: default
+        discloser: default
+        over_fetch_factor: 4
+        over_fetch_floor: 60
+        recall_max: 100
+        rerank_max: 60
+        min_score: 0.0
+        min_score_ratio: 0.0
+        min_score_ratio_uncalibrated: 0.0
+        min_results: 0
+
+  # ---- 构建 --------------------------------------------------------------- #
+  extractor:
+    default:
+      target: agent_llm
+      params: {llm: default, extractor_language: cn}
+  abstractor:
+    default: concat
+  associator:
+    default: {target: keyword, params: {feature_extractor: default}}
+  classifier:
+    default: llm
+  constructor:
+    default: {target: document, params: {domain_store: default}}
+  dedup:
+    default:
+      target: shadow
+      params: {embedder: default, dedup_tier_filter: true}
+  evolver:
+    default:
+      target: orchestrating
+      params:
+        extractor: default
+        abstractor: default
+        associator: default
+        index_builder: default
+        message_store: default
+        dedup: default
+        llm: default
+
+  # ---- 摄取 --------------------------------------------------------------- #
+  ingestor:
+    default: {target: simple, params: {normalizer: default}}
+
+  # ---- 控制 --------------------------------------------------------------- #
+  engine:
+    default:
+      target: agent
+      params:
+        ingestor: default
+        index_builder: default
+        retriever: default
+        scheduler: default
+        evolver: default
+        lifecycle: default
+        job_factory: default
+  job_factory:
+    default:
+      target: default
+      params:
+        evolver: default
+        lifecycle: default
+        index_builder: default
+        llm: default
+        middle_max_fetch: 100
+        middle_batch_size: 10
+        middle_concurrency: 4
+  scheduler:
+    default: {target: in_process, params: {}}
+  lifecycle:
+    default: {target: kv, params: {policy: default}}
+  policy:
+    default: dict
+  governor:
+    default: {target: in_memory, params: {audit: default}}
+  space:
+    default: {target: kv, params: {}}
+  config_source:
+    default: yaml_defaults

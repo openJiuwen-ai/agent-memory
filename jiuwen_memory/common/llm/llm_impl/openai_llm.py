@@ -30,6 +30,7 @@ from jiuwen_memory.common._support import (
     require_https,
 )
 from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.egress import declare
 from jiuwen_memory.common.errors import HealthCheckError, LLMTimeoutError
 from jiuwen_memory.common.llm.base import LlmProducer
 from jiuwen_memory.common.log import get_logger
@@ -278,3 +279,7 @@ def _build(config):
         config_source=frozen,
         config_namespace=config_namespace,
     )
+
+# F17 D9: data-destination declaration (registered when this module loads).
+declare('llm', "openai", remote=True, sends={"query"},
+        endpoint_param="llm_base_url", note="chat completions receive prompts and text")

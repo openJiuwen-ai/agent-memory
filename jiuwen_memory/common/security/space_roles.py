@@ -203,6 +203,9 @@ ENTRY_RULES: dict[str, EntryRule] = {
     # -- 内容轴 ------------------------------------------------------------- #
     # 异步与批量写入不单列：三者的鉴权都以入口名 add 调用，同轴同动作。
     "add": EntryRule(SpaceAxis.CONTENT, SpaceAction.WRITE),
+    # A receipt replays an add output; it is a read of committed memory but the
+    # caller must still hold WRITE on the receipt's scope.
+    "operation_receipt": EntryRule(SpaceAxis.CONTENT, SpaceAction.WRITE),
     # 摄入任务入队前的 pre-flight 鉴权，镜像 add 的鉴权路径而不落盘，故取同轴同动作。
     # 取值必须与 add 一致：本表判宽会让无权限请求占住队列，判严会拒掉有权限的摄入。
     "check_write": EntryRule(SpaceAxis.CONTENT, SpaceAction.WRITE),
@@ -246,6 +249,9 @@ ENTRY_RULES: dict[str, EntryRule] = {
     "remove_space_member": EntryRule(SpaceAxis.GOVERNANCE, SpaceAction.REVOKE_SHARE),
     "revoke": EntryRule(SpaceAxis.GOVERNANCE, SpaceAction.REVOKE_SHARE),
     "delete_space": EntryRule(SpaceAxis.GOVERNANCE, SpaceAction.DELETE),
+    # 本机服务任务管理策略（D13 admin_manage_tasks）：空间管理员可执行 owner 才有的
+    # 任务操作；治理轴 UPDATE 只授予 MANAGER / OWNER，内容写成员不在此列。
+    "continuity_task_admin": EntryRule(SpaceAxis.GOVERNANCE, SpaceAction.UPDATE),
 }
 
 

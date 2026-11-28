@@ -15,6 +15,7 @@ from .assembly import (
     assemble_runtime,
     assemble_server_runtime,
 )
+from .continuity_ops import ReceiptStatus
 from .local_memory_api import LocalMemoryAPI
 
 __all__ = [
@@ -31,4 +32,5 @@ __all__ = [
     "ServerRuntime",
     "assemble_server_runtime",
     "AUTO_SECURITY_RUNTIME",
+    "ReceiptStatus",
 ]

@@ -55,6 +55,21 @@ ORIGIN_INFER = "inferred"
 IMPORTANCE_KEY = "importance"
 
 
+# 同步归属字段只在创建时写入；更新、去重合并和 batch_update 都不得改写。
+IMMUTABLE_SYNC_METADATA_KEYS = frozenset({"sync_created_by", "sync_initial_digest"})
+
+
+def filter_immutable_sync_metadata(
+    metadata: dict[str, MetadataValueType],
+) -> dict[str, MetadataValueType]:
+    """Drop creation-only sync attribution keys from an update payload."""
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key not in IMMUTABLE_SYNC_METADATA_KEYS
+    }
+
+
 def inherited_system_metadata(units: list[MemoryUnit]) -> dict[str, MetadataValueType]:
     """返回派生记忆可安全继承的系统元数据交集。"""
     if not units:

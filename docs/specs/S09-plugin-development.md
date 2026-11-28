@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/` |
-| 最近一次修订日期 | 2026-11-12 |
+| 最近一次修订日期 | 2026-11-27 |
 | 关联规约 | S02-memory-api.md、S03-control.md、S04-retrieval.md、S05-construction.md、S06-storage.md、S07-common.md、S08-config.md |
 
 ## 范围 / 边界
@@ -219,3 +219,35 @@ OperationWaitTimeout 仅表示等待结束，不能当作写入失败或换 even
 | S06-storage | 统一 Storage 门面、底层能力端口和安全隔离遵守本规约 |
 | S07-common | Factory、Producer 和共享插件提供通用注册构建机制 |
 | S08-config | 配置负责装配拓扑和运行时值晚绑定的边界 |
+
+### 16. 出站组件必须声明数据去向
+
+会离开本机的内容组件（LLM、Embedder、Reranker 等）必须在注册模块处用
+`jiuwen_memory.common.egress.declare(namespace, target, remote=..., sends={...},
+endpoint_param=..., note=...)` 声明：`remote=False` 表示内容不出本机且不得声明 `sends`；
+`remote=True` 必须声明发送的内容类别（`query`/`document`/`metadata`）。`EgressInventory`
+从实际配置生成报告；未声明 target 一律显示为 `unknown`，**不得**显示为 `local` 或
+「不向外发送原文」。新增出站组件未声明即视为违反本不变量。
+
+内置的构建与控制类组件（`extractor`、`retriever`、`engine` 等）在进程内运行，内容只经各自装配的
+LLM / Embedder / Reranker 组件出站，由 `egress._BUILTIN_LOCAL` 按**命名空间 + 内置 target**集中登记为
+本地；新增内置实现时须同步补入该表。放行只按 target，**不得**按整个命名空间放行：第三方插件注册在
+同一类别下、未自行声明时，仍必须显示为 `unknown`。
+
+### 17. 宿主接入必须分层并显式声明能力
+
+Agent 宿主接入不是内核插件，但同样遵守「能力声明必须真实」：MCP 是各宿主的必选基础层，
+自动召回/写入 hook 是可选层。可选层只有在该宿主版本已核实时才能默认开启，开启前必须展示
+宿主进程内插件、卸载方式和回滚影响。
+
+宿主能力矩阵（`jiuwen_memory_entry/local/hosts.CAPABILITIES`）是安装、`sync grant` 和 CLI 共同的
+判定来源；未核实不等于支持，未声明能力必须返回明确的不支持错误，不得静默降级。新增宿主只
+扩展注册表与能力矩阵，不修改安装/CLI 的宿主分支。具体宿主清单与当前能力取值属于会变化的
+实现清单，维护在各目录 `AGENTS.md`，不写入本规约。
+
+同一宿主存在多个 profile、edition、scope 或项目时，安装选择使用 `InstanceRef` 消歧；只给宿主名
+命中多个实例必须报错，不能取第一条。写入宿主配置必须保留既有条目，回滚只移除本工具写入且未被
+用户改写的条目。
+
+宿主记忆读取器不得自行打开文件或 SQLite；只接受 `SourceAccess` 提供的受限访问，授权范围外的
+文件在打开前拒绝，读取失败/截断的范围不得参与判删。

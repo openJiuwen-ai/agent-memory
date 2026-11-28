@@ -163,6 +163,7 @@ _LEGACY_SURFACE: dict[str, dict[str, object]] = {
             "tags": "tags",
             "before": "before",
             "filters": "filters",
+            "expected_digests": gap("同步判删专用；legacy 扁平面未展开摘要条件"),
             "mode": "mode",
         },
     },

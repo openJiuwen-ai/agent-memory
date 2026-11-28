@@ -206,3 +206,8 @@ def _build(config):
         max_length=config.get("embedder_bge_m3_max_length", 8192),
         normalize_embeddings=config.get("embedder_bge_m3_normalize", True),
     )
+
+# F17 D9: data-destination declaration (registered when this module loads).
+from jiuwen_memory.common.egress import declare  # noqa: E402
+
+declare('embedder', "bge_m3", remote=False, note="local embedding model")

@@ -163,6 +163,7 @@ class MemoryAPI(ABC):
         occurred_at: datetime | None = None,
         event_time: datetime | None = None,
         continuity: ContinuityWrite | None = None,
+        operation_id: str | None = None,
     ) -> list[MemoryUnit]:
         """同步写入记忆；阻塞至 hot path 完成并返回本次插入的记忆单元。
 
@@ -213,8 +214,30 @@ class MemoryAPI(ABC):
         occurred_at: datetime | None = None,
         event_time: datetime | None = None,
         continuity: ContinuityWrite | None = None,
+        operation_id: str | None = None,
     ) -> list[MemoryUnit]:
         """异步写入记忆；语义与 :meth:`add` 一致并直通引擎协程。"""
+
+    def add_sync(
+        self,
+        content: str,
+        scope: Scope,
+        *,
+        security: RequestSecurityContext,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        trusted_metadata: dict[str, MetadataValueType] | None = None,
+        occurred_at: datetime | None = None,
+        operation_id: str | None = None,
+    ) -> list[MemoryUnit]:
+        """Trusted write port used only by the host sync engine.
+
+        Unlike :meth:`add`, the caller may supply creation-only attribution in
+        ``trusted_metadata``. It is an explicit extension point, not a reserved-key
+        bypass available to ordinary API consumers; the implementation must keep
+        ``trusted_metadata`` separate from caller-facing validation. Assemblies
+        without the sync engine do not need to implement it.
+        """
+        raise UnsupportedCapabilityError("add_sync requires the local sync assembly")
 
     @abstractmethod
     def init_collective_dimension(
@@ -232,10 +255,14 @@ class MemoryAPI(ABC):
 
     @abstractmethod
     def remove_collective_members(
-        self, dimension: Dimension | None, targets: list[Scope], *, security: RequestSecurityContext,
+        self,
+        dimension: Dimension | None,
+        targets: list[Scope],
+        *,
+        security: RequestSecurityContext,
         operator_scope: Scope | None = None,
     ) -> int:
-        """Revoke memberships; an admin may pass None to retire a removed expert from teams and groups."""
+        """Revoke memberships; admin may pass None to retire a removed expert from teams/groups."""
 
     @abstractmethod
     def list_collective_members(
@@ -518,6 +545,10 @@ class MemoryAPI(ABC):
 
     def supports_video_ingest(self) -> bool:
         """Whether the explicit local-video ingest route is fully assembled."""
+        return False
+
+    def supports_conditional_delete(self) -> bool:
+        """Whether ``DeleteSelector.expected_digests`` is compared atomically."""
         return False
 
     def prepare_video_ingest(

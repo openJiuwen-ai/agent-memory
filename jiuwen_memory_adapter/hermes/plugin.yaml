@@ -1,0 +1,4 @@
+name: jiuwen_memory
+version: 0.1.0
+description: Hermes MemoryProvider backed by the local jiuwen-memory service
+entry: provider:JiuwenMemoryProvider

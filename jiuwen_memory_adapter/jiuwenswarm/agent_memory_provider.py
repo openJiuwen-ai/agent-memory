@@ -51,6 +51,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import Future
 from contextlib import ExitStack, contextmanager
@@ -886,8 +887,19 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         member: str = "",
         collective_coordinates: Mapping[str, str] | None = None,
         document_runtime_holder: Any = None,
+        connection: str | None = None,
+        install_id: str | None = None,
         **_kwargs: Any,
     ) -> None:
+        self._connection = connection or ("http" if base_url else "sdk")
+        if self._connection not in {"sdk", "http", "local"}:
+            raise ValueError("connection must be 'sdk', 'http' or 'local'")
+        if self._connection == "local":
+            if base_url:
+                raise ValueError("local connection does not take a base_url")
+            if not install_id:
+                raise ValueError("local connection requires install_id")
+        self._install_id = install_id
         self._continuity_enabled = continuity_enabled
         if continuity_mode not in {"continuity", "role"}:
             raise ValueError("continuity_mode must be 'continuity' or 'role'")
@@ -1228,6 +1240,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                     self._client = None  # The failed lease has already released its resources.
                 raise
         self._initialized = True
+        if self._connection == "local":
+            await asyncio.to_thread(self._client.lease)
         logger.info(
             "[AgentMemoryMemoryProvider] initialized (mode=%s, config=%s, scope=%s)",
             "http" if self._base_url else "in-process",
@@ -1308,6 +1322,8 @@ class AgentMemoryMemoryProvider(MemoryProvider):
     # -- MemoryProvider: 工具声明 + 调度 -------------------------------------- #
 
     def _ensure_client(self) -> _AgentMemoryClient:
+        if self._client is None and self._connection == "local":
+            self._client = _LocalClient(self._install_id or "")
         if self._client is None:
             self._client = _build_client(
                 self._base_url,
@@ -1364,7 +1380,21 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             collective=coordinates,
         )
 
+    def export_actor(self) -> dict[str, Any]:
+        """Exact bound principal for ``migrate jiuwenswarm --actor-from-host`` (D12)."""
+        scope = self.bound_scope()
+        return {
+            "org": getattr(scope, "org", ""),
+            "space": getattr(scope, "space", ""),
+            "user": getattr(scope, "user", ""),
+            "agent": getattr(scope, "agent", ""),
+            "session": getattr(scope, "session", ""),
+        }
+
     def get_tool_schemas(self) -> list[dict[str, Any]]:
+        if self._connection == "local":
+            # Video tools are out of scope for the local connection.
+            return self._scene.get_tool_schemas(self._scene_context())
         if self._continuity_enabled and not self._base_url:
             from jiuwen_memory_adapter.continuity import tool_schemas
 
@@ -1533,6 +1563,18 @@ class AgentMemoryMemoryProvider(MemoryProvider):
 
     async def prefetch(self, query: str, **kwargs: Any) -> str:
         """返 Markdown 字符串，Rail 包 ``<memory-context>`` 注入提示词。"""
+        if self._connection == "local":
+            if self._client is None:
+                raise RuntimeError("local provider not initialized")
+            scope = kwargs.get("scope") if isinstance(kwargs.get("scope"), dict) else {}
+            return await self._client.prefetch_local(
+                query,
+                project=str(scope.get("space", "")),
+                duty=kwargs.get("duty", self._default_duty),
+                top_k=int(kwargs.get("top_k", 10)),
+                event_id=str(kwargs.get("event_id", "")),
+                session_id=self._session_id or str(scope.get("user", "")),
+            )
         if self._continuity_enabled:
             if self._client is None:
                 raise RuntimeError("continuity provider not initialized")
@@ -1619,6 +1661,15 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         保证检索 query 与落盘内容形态一致（此前 prefetch 剥壳、sync_turn 存壳，
         记忆里会存进带壳信封文本）。
         """
+        if self._connection == "local":
+            if self._client is None:
+                raise RuntimeError("local provider not initialized")
+            return await self._client.sync_turn_local(
+                self._prepare(user_msg),
+                assistant_msg,
+                event_id=str(kwargs.get("event_id", "")),
+                session_id=self._session_id,
+            )
         if self._collective_coordinates.get("team"):
             sources = kwargs.get("sources")
             if not sources or not self._initialized or self._client is None:
@@ -1958,6 +2009,11 @@ class AgentMemoryMemoryProvider(MemoryProvider):
                 raise asyncio.CancelledError
 
     async def _shutdown(self) -> None:
+        if self._connection == "local" and self._client is not None:
+            try:
+                await asyncio.to_thread(self._client.release)
+            except Exception:  # noqa: BLE001 - releasing a lease must not block shutdown
+                pass
         try:
             if self._portal_handle is not None and not isinstance(self._client, _SharedSDKClient):
                 await asyncio.to_thread(self._portal_handle.close)
@@ -2676,7 +2732,7 @@ class _HttpClient(_AgentMemoryClient):
         system_metadata: dict[str, Any] | None = None,
         user_metadata: dict[str, Any] | None = None,
     ) -> _AddResult | None:
-        """批量写多条记忆（F16）。响应为 ``BatchWriteResult`` JSON：``{"outcomes": [...]}``。"""
+        """批量写多条记忆（F17）。响应为 ``BatchWriteResult`` JSON：``{"outcomes": [...]}``。"""
         payload: dict[str, Any] = {
             "items": [dict(item) for item in items],
             "scope": self._request_scope(scope),
@@ -3935,3 +3991,112 @@ def _load_yaml(path):
 
 
 __all__ = ["AgentMemoryMemoryProvider", "OperationWaitTimeout"]
+
+
+class _LocalClient(_HttpClient):
+    """Local service connection: discovery + install token + hook endpoints (F17 D6).
+
+    Scope payload is the SDK five-dimension mapping: the service authorizes the install
+    principal directly, so no identity rewriting happens here.
+    """
+
+    def __init__(self, install_id: str) -> None:
+        base_url = "http://127.0.0.1:0"  # 占位：真实端口在 initialize() 里由发现文件解析
+        super().__init__(base_url)
+        self._install_id = install_id
+        self._service = None
+        self._turn_id = ""
+        self.portal_available = False
+        # 由 base 建立；在 __init__ 里重申初值，避免 initialize/close 之外首次赋值
+        self._base_url = base_url
+        self._is_initialized = False
+
+    async def initialize(self) -> None:
+        from jiuwen_memory_entry.local.client import ServiceClient
+        from jiuwen_memory_entry.local.discovery import ensure_service
+        from jiuwen_memory_entry.local.home import resolve_home
+
+        home = resolve_home()
+        token_path = home.installs_dir / self._install_id / "token"
+        token = (await asyncio.to_thread(token_path.read_text, encoding="utf-8")).strip()
+        discovery = await asyncio.to_thread(ensure_service, home)
+        self._base_url = f"http://127.0.0.1:{discovery.port}"
+        self._service = ServiceClient(discovery, token)
+        self._is_initialized = True
+
+    def _scope_payload(self, scope) -> dict[str, Any]:
+        return {
+            "org": getattr(scope, "org", ""),
+            "space": getattr(scope, "space", ""),
+            "user": getattr(scope, "user", ""),
+            "agent": getattr(scope, "agent", ""),
+            "session": getattr(scope, "session", ""),
+        }
+
+    async def _local_post(self, path: str, payload: dict) -> tuple[int, dict]:
+        if self._service is None:
+            return 503, {}
+        return await asyncio.to_thread(self._service.post, path, payload)
+
+    async def prefetch_local(
+        self,
+        query: str,
+        *,
+        project: str,
+        duty: Any,
+        top_k: int,
+        event_id: str = "",
+        session_id: str = "",
+    ) -> str:
+        self._turn_id = event_id or uuid.uuid4().hex
+        status, body = await self._local_post(
+            "/local/hook/recall",
+            {
+                "host_session_id": session_id or self._install_id,
+                "turn_id": self._turn_id,
+                "prompt": query,
+                "project": project,
+                "duty": duty,
+                "top_k": top_k,
+            },
+        )
+        if status != 200:
+            return json.dumps(
+                {"items": [], "gaps": [{"code": "local_unavailable", "blocking": False}],
+                 "paths": [], "errors": []},
+                ensure_ascii=False,
+            )
+        return json.dumps(body.get("view") or {}, ensure_ascii=False)
+
+    async def sync_turn_local(
+        self, user_msg: str, assistant_msg: str, *, event_id: str = "", session_id: str = ""
+    ) -> dict | None:
+        turn_id = event_id or self._turn_id
+        if not turn_id:
+            logger.info("[continuity.local.no_turn] no stable turn id; turn not written")
+            return None
+        status, body = await self._local_post(
+            "/local/hook/capture",
+            {
+                "host_session_id": session_id or self._install_id,
+                "turn_id": turn_id,
+                "prompt": user_msg,
+                "answer": assistant_msg,
+            },
+        )
+        self._turn_id = ""
+        if status != 200:
+            return {"status": "unconfirmed", "reason": f"HTTP {status}"}
+        return body
+
+    def lease(self) -> None:
+        if self._service is not None:
+            self._service.lease(self._install_id)
+
+    def release(self) -> None:
+        if self._service is not None:
+            self._service.release(self._install_id)
+
+    async def close(self) -> None:
+        self._service = None
+        self._is_initialized = False

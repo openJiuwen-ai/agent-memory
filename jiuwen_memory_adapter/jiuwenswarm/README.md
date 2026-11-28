@@ -1,6 +1,6 @@
 # JiuwenSwarm 记忆适配
 
-`AgentMemoryMemoryProvider` 提供 SDK/HTTP 两种连接方式。工作模式使用默认 `scene="agent"`；Coding 使用 `scene="code", project="宿主生成的项目键"`，搭配 core 的 `JiuwenMemoryCodingRail`。
+`AgentMemoryMemoryProvider` 提供 SDK/HTTP/本机服务（`connection="local"`）三种连接方式。工作模式使用默认 `scene="agent"`；Coding 使用 `scene="code", project="宿主生成的项目键"`，搭配 core 的 `JiuwenMemoryCodingRail`。
 
 - 实施决策：[Coding 文档记忆](../../docs/features/F06-coding-document-memory.md)。
 - 调用时机、开关、项目键及旧 AutoMemory 的独立运行由 Swarm 宿主负责。
@@ -179,3 +179,17 @@ default/video 及显式具名覆盖。规则相同的应用可以复用算子；
 HTTP 需先在**服务端**加载 `deploy/local/document-memory-http.yaml`，或装配前调用同一个配置
 函数；仅在客户端指定流程名不能安装服务端组件。该配置启用 `strict_routes=true`，未知流程
 和混合路由写入批次报错；无路由请求仍走 fallback。后台 evolve/EXTRACT 不在本次分流范围内。
+
+
+## 本机服务连接模式（F17）
+
+```python
+AgentMemoryMemoryProvider(connection="local", install_id="jiuwenswarm-<id>")
+```
+
+先用 `jiuwen-memory connect jiuwenswarm` 建立安装与令牌。本机模式经 `ensure_service` 自动拉起
+服务、读 `installs/<install_id>/token`，`prefetch` 走 `/local/hook/recall`、`sync_turn` 走
+`/local/hook/capture`，Scope 保持 SDK 五维直映射（不重写身份）。轮次标识优先使用 Rail 传来的
+`event_id`，否则 prefetch 生成并在 sync 复用；两者皆无时不写入。Provider 退出只释放租约，
+不关闭服务。迁移旧 SDK 数据用 `jiuwen-memory migrate jiuwenswarm --config <旧配置>`，需要精确
+主体时加 `--actor-from-host <export_actor() 导出的 JSON>`。

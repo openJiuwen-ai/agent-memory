@@ -19,7 +19,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from jiuwen_memory.api import MemoryAPI, Scope, build_dev_authenticator
+from jiuwen_memory.api import Scope, build_dev_authenticator
 from jiuwen_memory.common.security.request_context import get_request_id
 from jiuwen_memory.common.security.types import get_current
 from jiuwen_memory_entry.cli import __main__ as cli
@@ -38,7 +38,7 @@ pytestmark = pytest.mark.unit
 SCOPE = {"org": "local", "user": "developer"}
 
 
-@pytest.mark.parametrize("method", sorted(MemoryAPI.__abstractmethods__))
+@pytest.mark.parametrize("method", sorted(api_contract.api_method_names()))
 def test_cli_exposes_every_api_parameter(method: str, capsys, monkeypatch) -> None:
     registered = []
     recorder = SimpleNamespace(
@@ -50,11 +50,7 @@ def test_cli_exposes_every_api_parameter(method: str, capsys, monkeypatch) -> No
         for flags, options in registered
         if options.get("dest", "").startswith("api_")
     }
-    parameters = {
-        name: p
-        for name, p in inspect.signature(getattr(MemoryAPI, method)).parameters.items()
-        if name not in {"self", "security"}
-    }
+    parameters = api_contract.method_contract(method).request_parameters
 
     assert set(actual) == set(parameters)
     for name, parameter in parameters.items():

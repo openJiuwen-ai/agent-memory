@@ -76,6 +76,7 @@
 | `F14` | [F14-experience-memory-and-skill](construction/F14-experience-memory-and-skill.md) | 经验记忆构建、周期整理与技能沉淀 |
 | `F15` | [F15-staged-evolver](construction/F15-staged-evolver.md) | Evolver 阶段编排与扩展 |
 | `F16` | [F16-dialogue-message-roles](construction/F16-dialogue-message-roles.md) | 对话消息角色的写入、按角色检索原话与抽取归因 |
+| `F17` | [F17-local-memory-service](construction/F17-local-memory-service.md) | 本机记忆服务与多宿主自动接入 |
 
 ## control 控制层（`docs/features/control/`）
 
@@ -90,6 +91,7 @@
 | `F07` | [F07-collective-memory-design](control/F07-collective-memory-design.md) | 群体记忆端到端设计 |
 | `F08` | [F08-engine-job-builder-alignment](control/F08-engine-job-builder-alignment.md) | Engine 与后台 Job 的 IndexBuilder/Evolver 对齐（E-06 收口） |
 | `F09` | [F09-agent-engine-doc-mode-read](control/F09-agent-engine-doc-mode-read.md) | AgentEngine 文档模式读路径经 DomainStore + lifecycle 绕过 |
+| `F10` | [F10-async-write-orchestration](control/F10-async-write-orchestration.md) | 写入真异步与批量编排 |
 
 ## ingest 接入层（`docs/features/ingest/`）
 
@@ -133,4 +135,4 @@
 
 ---
 
-共 76 篇。`docs/features/common/F04` 是安全能力唯一维护页（见 [docs/AGENTS.md](../AGENTS.md#安全文档例外单一维护)）。
+共 83 篇。`docs/features/common/F04` 是安全能力唯一维护页（见 [docs/AGENTS.md](../AGENTS.md#安全文档例外单一维护)）。

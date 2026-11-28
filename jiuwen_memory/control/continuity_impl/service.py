@@ -38,6 +38,7 @@ from jiuwen_memory.control.continuity import (
     ContinuityProducer,
     ReadMemory,
     TaskConnectorPolicy,
+    TaskPolicy,
     WriteMemory,
 )
 from jiuwen_memory.storage.graph import GraphStore
@@ -159,6 +160,7 @@ class ContinuityService(Continuity):
         connectors: dict | None = None,
         task_embedder=None,
         task_tokenizer=None,
+        task_policy: TaskPolicy | None = None,
     ):
         # 关系投影走独立端口（接收 RelationRecord）；没有专门投影器时用适配器包住
         # 既有的 IndexBuilder，伪造 MemoryUnit 的知识只留在 projection.py 一处。
@@ -203,6 +205,7 @@ class ContinuityService(Continuity):
         self.repository = repository
         self.graph = graph
         self.task_search = TaskSearchIndex(task_embedder, task_tokenizer)
+        self.task_policy = task_policy or TaskPolicy()
 
     def health(self) -> dict:
         self.repository.kv.health()
@@ -241,6 +244,7 @@ class ContinuityService(Continuity):
         read: ReadMemory,
         *,
         connector_policy: TaskConnectorPolicy,
+        managing: bool = False,
     ) -> dict:
         repo = self.repository
         if request.operation == "find":
@@ -305,7 +309,7 @@ class ContinuityService(Continuity):
                     )
                 )
             elif request.operation == "unbind":
-                binding = self.binding(task, request.binding_id)
+                binding = self._binding_of(task, request.binding_id)
                 binding["active"] = False
                 binding["revoked_by"] = owner
                 binding["revocation_reason"] = request.reason
@@ -322,7 +326,7 @@ class ContinuityService(Continuity):
             if request.operation in {"bind", "unbind", "close"}:
                 record = repo.get(scope, "tasks", task_id)
                 confirmed_connector = self._authorize_task_change(
-                    record, request, owner, payload, connector_policy,
+                    record, request, owner, payload, connector_policy, managing,
                 )
             receipt = repo.mutate(
                 scope,
@@ -348,9 +352,15 @@ class ContinuityService(Continuity):
         owner: str,
         payload: dict,
         connector_policy: TaskConnectorPolicy,
+        managing: bool = False,
     ) -> str:
-        """Judge one mutation on this record snapshot; return the confirmed connector."""
-        if record["owner"] == owner:
+        """Judge one mutation on this record snapshot; return the confirmed connector.
+
+        ``managing`` means the caller already proved governance over this space (D13
+        ``admin_manage_tasks``); it replaces the owner equality but keeps the connector
+        checks, so a manager cannot bind an unconfigured connector.
+        """
+        if record["owner"] == owner or managing:
             if request.operation == "bind" and not record.get("receipts", {}).get(
                 request.request_id
             ):
@@ -364,7 +374,9 @@ class ContinuityService(Continuity):
             if not request.binding_id:
                 raise PermissionDeniedError("continuity_task_write")
             try:
-                binding = self.binding(record, request.binding_id, active_only=False)
+                binding = self._binding_of(
+                    record, request.binding_id, active_only=False
+                )
             except ValidationError as exc:
                 raise PermissionDeniedError("continuity_task_write") from exc
             claimed = binding["connector_id"]
@@ -401,11 +413,43 @@ class ContinuityService(Continuity):
         return visible
 
     @staticmethod
-    def binding(task: dict, binding_id: str, *, active_only: bool = True) -> dict:
+    def _binding_of(
+        task: dict, binding_id: str, *, active_only: bool = True
+    ) -> dict:
         for b in task["bindings"]:
             if b["binding_id"] == binding_id and (b["active"] or not active_only):
                 return b
         raise ValidationError("binding is unavailable")
+
+    def binding(self, scope: Scope, task_id: str, binding_id: str) -> dict:
+        """Raw binding record, including inactive ones, for authorization decisions."""
+        task = self.repository.get(scope, "tasks", task_id)
+        for b in task["bindings"]:
+            if b["binding_id"] == binding_id:
+                return b
+        raise ValidationError("binding is unavailable")
+
+    def event_receipt(
+        self, scope: Scope, connector: str, binding_id: str, event_id: str
+    ) -> dict | None:
+        """Read-only receipt probe: no content, no state change (D8)."""
+        key = self.event_key(connector, binding_id, event_id)
+        with self.repository.lock:
+            try:
+                receipt = self.repository.get(scope, "events", key)
+            except NotFoundError:
+                return None
+            status = str(receipt.get("status", "unknown"))
+            result = {
+                "status": status,
+                "operation_id": key,
+                "refs": [dict(ref) for ref in receipt.get("refs") or []],
+            }
+            if status == "partial":
+                result["retry_action"] = "retry_original_write"
+            elif status == "unknown":
+                result["retry_action"] = "recover_then_retry"
+            return result
 
     def record(
         self,
@@ -431,7 +475,7 @@ class ContinuityService(Continuity):
         digest = fingerprint(envelope)
         with repo.lock:
             task = repo.get(scope, "tasks", event.task_id)
-            binding = self.binding(task, event.binding_id)
+            binding = self._binding_of(task, event.binding_id)
             if task["state"] != "open" or binding["connector_id"] != connector:
                 raise ConflictError("binding", message="inactive task or mismatched connection")
             for ref in event.evidence_refs:
@@ -512,7 +556,7 @@ class ContinuityService(Continuity):
             envelope["request_fingerprint"] = request_fingerprint
         digest = fingerprint(envelope)
         task = repo.get(scope, "tasks", event.task_id)
-        binding = self.binding(task, event.binding_id)
+        binding = self._binding_of(task, event.binding_id)
         if task["state"] != "open" or binding["connector_id"] != connector:
             raise ConflictError("binding", message="inactive task or mismatched connection")
         for ref in event.evidence_refs:
@@ -563,6 +607,7 @@ class ContinuityService(Continuity):
             for index, event in enumerate(events):
                 connector = connectors[index]
                 key = self.event_key(connector, event.binding_id, event.event_id)
+
                 try:
                     envelope, digest, task, receipt = self._classify_event(
                         scope, event, connector, key, fingerprints[index], read, repo
@@ -1394,7 +1439,7 @@ class ContinuityService(Continuity):
         return True
 
     def binding_connector(self, scope, task_id, binding_id):
-        return self.binding(self.repository.get(scope, "tasks", task_id), binding_id)[
+        return self._binding_of(self.repository.get(scope, "tasks", task_id), binding_id)[
             "connector_id"
         ]
 
@@ -1702,6 +1747,14 @@ class ContinuityService(Continuity):
         }
 
 
+def _policy_flag(config, name: str, *, default: bool = False) -> bool:
+    """Strictly typed policy switch: a truthy string is a misconfiguration, not ``True``."""
+    value = config.get(name, default)
+    if not isinstance(value, bool):
+        raise ValidationError(f"continuity.default.params.{name} must be a boolean")
+    return value
+
+
 @ContinuityProducer.register("local")
 def build(config):
     storage = StoreManagerProducer.resolve(config)
@@ -1805,6 +1858,12 @@ def build(config):
         from jiuwen_memory.construction.extractor import ExtractorProducer
 
         connectors = (getattr(config.ctx, "globals", {}) or {}).get("continuity_connectors", {})
+        task_policy = TaskPolicy(
+            # Participant self-binding is the existing behaviour outside the strict mode,
+            # so a missing key keeps it on; only an explicit ``false`` restores owner-only.
+            self_bind=_policy_flag(config, "self_bind", default=True),
+            admin_manage_tasks=_policy_flag(config, "admin_manage_tasks"),
+        )
 
         service = ContinuityService(
             repository,
@@ -1840,6 +1899,7 @@ def build(config):
             task_tokenizer=TokenizerProducer.build_named(
                 config.get("tokenizer", "default"), config.ctx,
             ),
+            task_policy=task_policy,
         )
         service.health()
         return service

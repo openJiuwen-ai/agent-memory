@@ -1007,6 +1007,11 @@ def test_correction_waits_for_watcher_and_preserves_history(
             return rows
 
         monkeypatch.setattr(SqliteDocumentShadowIndex, "list_units_by_md", pause_after_snapshot)
+        # Startup reconcile has its own unit test (test_startup_reconcile); this case
+        # targets the event-driven path only, so skip the extra reconcile query.
+        from jiuwen_memory.storage.watchdog_impl.local_watchdog import LocalWatchdog
+
+        monkeypatch.setattr(LocalWatchdog, "reconcile_all", lambda self: 0)
         runtime.start()
         watchdog.schedule_sync(str(path))
         assert snapshot_read.wait(5), "watchdog did not start reconciliation"

@@ -12,8 +12,7 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from threading import Lock, Thread
@@ -27,6 +26,8 @@ from jiuwen_memory.api import (
     ValidationError,
 )
 from jiuwen_memory_entry.core.api_contract import CONFIG_VERBS
+from jiuwen_memory_entry.local.locks import acquire_file_lock as _acquire_file_lock
+from jiuwen_memory_entry.local.locks import file_lock as _lock_file
 from jiuwen_memory_entry.portal.hosting import _PortalServer, request_error, runtime_request
 
 if os.name == "nt":
@@ -133,32 +134,6 @@ def _identity(auth, *, bind_credential=True):
     ))).hexdigest()
 
 
-def _acquire_file_lock(path: Path, *, timeout: float, conflict_message: str) -> int:
-    descriptor = _ipc.open_lock(path)
-    try:
-        deadline = time.monotonic() + timeout
-        while True:
-            try:
-                _ipc.lock(descriptor)
-                return descriptor
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise ConflictError(message=conflict_message) from None
-                time.sleep(0.025)
-    except BaseException:
-        os.close(descriptor)
-        raise
-
-
-@contextmanager
-def _lock_file(path: Path, *, timeout: float = 0) -> Iterator[int]:
-    descriptor = _acquire_file_lock(
-        path, timeout=timeout, conflict_message="shared Portal lock is already held",
-    )
-    try:
-        yield descriptor
-    finally:
-        _ipc.close_lock(descriptor)
 
 
 class SharedPortalLocation:
@@ -183,7 +158,11 @@ class SharedPortalLocation:
         resources.callback(_ipc.close_lock, descriptor)
 
     def register(self, registration, info):
-        with _lock_file(self.start_lock, timeout=_START_TIMEOUT) as start_lock:
+        with _lock_file(
+            self.start_lock,
+            timeout=_START_TIMEOUT,
+            conflict_message="shared Portal lock is already held",
+        ) as start_lock:
             self._ensure_started(info, start_lock)
             status, result = _call(self.endpoint, {
                 "action": "register_source", "registration": registration, **info,

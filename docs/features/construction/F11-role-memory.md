@@ -1574,6 +1574,17 @@ Windows 持久 Registry 使用非阻塞 msvcrt 字节锁，POSIX 沿用 flock，
 
 ## 7. 外部 Agent 接入
 
+### 6.6 与本机记忆服务的关系（F17）
+
+- 6.5 的 SDK 接续要求记忆内核随宿主进程存活；F17 把内核拆成按数据目录唯一的本机服务，宿主
+  改用安装令牌与 `/local/hook/{recall,capture}`，因此关掉任一宿主不再关闭记忆。
+- 7.1 的连接模型不变：远程仍走显式 URL + Bearer；本机模式是同一套 PEP 上的新认证器
+  （`local_token`）与发现方式，不新增绕过授权的入口。
+- 7.3 的工具清单在远程模式不变；本机模式额外提供 `add`/`search` 并透传 409 回执。MCP 桥只允许
+  参与类操作：自己的连接可 `bind`/`unbind`，`close`/`attach` 与为其他连接绑定/解绑仍走 CLI/Portal。
+- 两项接续策略（`self_bind`、`admin_manage_tasks`）默认关闭，本机模板显式开启；详见
+  `docs/specs/S11-cross-agent-continuity.md`。
+
 ### 7.1 通用接入模型
 
 **统一决策：以带接续参数的 add / search、任务绑定工具（角色模式再加关系登记）接入，不要求主动交接，不扩展 Rail 协议。** 用户可明确要求 Agent 调用，也可通过同一受鉴权入口的脚本操作；未调用或未采集的信息不得假定已保存。任务和绑定由 agent-memory 维护，不要求外部产品增加全局 task_id。事件、历史交换文件和回写结果的契约见 [S11 Adapter 接入契约](../../specs/S11-cross-agent-continuity.md#adapter-接入契约)。
@@ -1650,7 +1661,7 @@ Windows 持久 Registry 使用非阻塞 msvcrt 字节锁，POSIX 沿用 flock，
 
 工具 schema 由公开 DTO 反射生成（`jiuwen_memory_adapter/continuity/__init__.py` 的 `tool_schemas`），嵌套字段完整保留；duty 不做枚举限制，以便使用配置新增的策略。宿主无法表达所需 schema 时由适配器显式转换并测试，不静默丢弃职责或路径。Agent 不需要掌握全部边类型，关系策略由服务端维护。
 
-**当前实现**：适配器工具按档位生成：两档都有 `agent_memory_continuity_task`、`agent_memory_continuity_recover`，角色档另有 `agent_memory_continuity_relation`，治理工具默认不暴露；写入与检索沿用 `agent_memory_add` / `agent_memory_search`。内核 MCP 不注册来源治理工具，仍静态注册 `memory_continuity_relation`（12.2）。
+**当前实现**：适配器工具按档位生成：两档都有 `agent_memory_continuity_task`、`agent_memory_continuity_recover`，角色档另有 `agent_memory_continuity_relation`，治理工具默认不暴露。通用 MCP 桥（`continuity/mcp.py`）在**本机模式**下用 `tool_schemas(include_io=True)` 额外提供 `agent_memory_add` / `agent_memory_search`，并把 `/v1/add` 的顶层数组与 409 `WriteIncompleteError` 的 `operation_id` / `status` / `refs` / `retry_action` 原样透传；显式远程模式仍只注册 `tool_schemas()` 生成的接续工具，工具与行为不变。JiuwenSwarm SDK 接续仍只用 `tool_schemas()`；其普通场景工具里的 `agent_memory_search` 不带接续参数。设计见[本机记忆服务](F17-local-memory-service.md) D10。内核 MCP 不注册来源治理工具，但仍静态注册 `memory_continuity_relation`（12.2）。
 
 ### 7.4 G0 接入验收清单
 
