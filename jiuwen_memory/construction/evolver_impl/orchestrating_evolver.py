@@ -26,10 +26,12 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from collections.abc import Callable
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import partial
 from typing import NamedTuple
 
 from jiuwen_memory.common.errors import (
@@ -39,6 +41,7 @@ from jiuwen_memory.common.errors import (
     ValidationError,
 )
 from jiuwen_memory.common.experience import UtilityStore
+from jiuwen_memory.common.ingest_cancellation import IngestCancelled, check_ingest_cancelled
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import (
     get_logger,
@@ -1673,13 +1676,21 @@ class OrchestratingEvolver(Evolver):
         调用方可将本批退回逐条重跑；一旦有任何派生记忆开始落盘，原异常原样抛出——
         此时重放可能产生重复。
         """
+        return self._with_grouped_receipt(units, partial(self._evolve_extract, units))
+
+    @staticmethod
+    def _with_grouped_receipt(
+        units: list[MemoryUnit], operation: Callable[[], EvolveResult],
+    ) -> GroupedExtractResult:
         sources: dict[str, list[str]] = {}
         started = [False]
         started_token = _PERSIST_STARTED.set(started)
         sources_token = _GROUPED_SOURCES.set(sources)
         try:
             try:
-                result = self._evolve_extract(units)
+                result = operation()
+            except IngestCancelled:
+                raise
             except Exception as exc:
                 if not started[0]:
                     raise ExtractNotCommittedError(
@@ -1709,25 +1720,73 @@ class OrchestratingEvolver(Evolver):
         state.appraisal = self._appraise(state.sources)
         if state.appraisal is not None and not state.appraisal.proceed:
             return EvolveResult()
-        result = EvolveResult()
         try:
             self._prepare_extract_context(state)
             state.candidates = self._extract_step(state.sources, state.context)
-            if state.candidates:
-                self._prepare_extract_candidates(state)
-                state.candidates = self._route(state.sources, state.candidates)
-            if state.candidates:
-                self._annotate_layers(state.candidates)
-                if state.procedural or not self._dedup_extract:
-                    created = self._persist(state.candidates)
-                    result = EvolveResult(created_ids=created, created_units=list(state.candidates))
-                else:
-                    result = self._dedup_batch(state.candidates)
+            result = self._commit_candidates(state)
         except Exception:
             self._finalize(state.sources, state.appraisal, None)
             raise
         self._finalize(state.sources, state.appraisal, result)
         return result
+
+    def supports_concurrent_document_extract(self) -> bool:
+        """只开放已核对的普通事实管线；自定义抽取、评价与 Evolver 保留原有锁边界。"""
+        from jiuwen_memory.construction.extractor_impl.document_fact_extractor import (
+            DocumentFactExtractor,
+        )
+
+        # 子类可以改写抽取或提交行为，需保留原有锁边界。
+        return (
+            self.__class__ is OrchestratingEvolver
+            and self._extractor.__class__ is DocumentFactExtractor
+            and self._appraiser is None
+            and self._dedup_extract
+        )
+
+    @privacy_operation
+    @traced("evolve", level=TraceLevel.SIMPLE)
+    async def evolve_document_facts(
+        self, units: list[MemoryUnit], *, grouped: bool, run, guard,
+    ) -> GroupedExtractResult | EvolveResult:
+        """在异步任务取锁，在线程池执行同步阶段。只有纯候选抽取可以并发。"""
+        state = ExtractState(units)
+
+        async def before_commit(fn, *args):
+            try:
+                return await run(fn, *args)
+            except IngestCancelled:
+                raise
+            except Exception as exc:
+                if grouped:
+                    raise ExtractNotCommittedError("document candidate extraction failed") from exc
+                raise
+
+        async with guard():
+            await before_commit(self._prepare_extract_context, state)
+        state.candidates = await before_commit(self._extract_step, units, state.context)
+        check_ingest_cancelled()
+        if not state.candidates:
+            result = EvolveResult()
+            return GroupedExtractResult(result) if grouped else result
+        async with guard():
+            check_ingest_cancelled()
+            commit = partial(self._commit_candidates, state)
+            if grouped:
+                return await run(self._with_grouped_receipt, units, commit, committing=True)
+            return await run(commit, committing=True)
+
+    def _commit_candidates(self, state: ExtractState) -> EvolveResult:
+        if state.candidates:
+            self._prepare_extract_candidates(state)
+            state.candidates = self._route(state.sources, state.candidates)
+        if not state.candidates:
+            return EvolveResult()
+        self._annotate_layers(state.candidates)
+        if state.procedural or not self._dedup_extract:
+            created = self._persist(state.candidates)
+            return EvolveResult(created_ids=created, created_units=list(state.candidates))
+        return self._dedup_batch(state.candidates)
 
     def _appraise(self, units: list[MemoryUnit]) -> Appraisal | None:
         """抽取前准入评价；未配置评价算子返回 ``None``（appraise 自身的异常照常冒泡）。"""

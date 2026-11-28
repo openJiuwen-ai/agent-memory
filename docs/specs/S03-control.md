@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/control/ |
-| 最近一次修订日期 | 2026-11-26 |
+| 最近一次修订日期 | 2026-11-27 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md，docs/features/api/F10-batch-update-api.md |
 | 规划中的变更 | 群体记忆与空间治理（含契约与决策）见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md)；本文描述当前形态 |
 | 关联特性文档 | docs/features/F01-system-spec-design.md，docs/features/api/F01-memory-api-impl-design.md，docs/features/api/F02-write-infer-extract.md，docs/features/api/F03-batch-write-api.md，docs/features/construction/F02-dynamic-extraction-consolidation.md，docs/features/construction/F04-cc-memory-compat.md，docs/features/construction/F07-memory-write-entry.md，docs/features/control/F02-control-isolation-and-audit.md，docs/features/control/F03-control-pipeline-routing.md，docs/features/control/F04-permission-context-routing.md，docs/features/control/F05-cloud-engine-design.md，docs/features/control/F06-middle-term-memory.md，docs/features/control/F08-engine-job-builder-alignment.md，docs/features/construction/F13-dreaming.md，docs/features/common/F08-memory-tree.md，docs/features/common/F03-scope-space-isolation.md，docs/features/retrieval/F03-metadata-filtering.md，docs/features/config/F01-config-source.md，docs/features/ingest/F02-assets-ingestor-boundary.md，docs/features/storage/F07-storage-manager-domain-store-split.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md)，docs/features/common/F11-new-trace.md，docs/features/control/F10-async-write-orchestration.md |
@@ -857,8 +857,14 @@ MemoryAPI 返回用户终端；不把原文附加到 MemoryUnit、普通 get/rec
 - 段 = 输入中相邻、锁 key 相同的 infer 条目；任何时刻只持有一把锁，混合用户的批次
   不会死锁。`sequential` 与 `continue_on_error=false` 的段覆盖整段连续 infer 条目，
   `grouped` 的段是一批（受 `max_items` / `max_tokens` 约束）。
+- 普通 `document_fact` infer 段允许并发生成候选。摄入、原文维护和上下文读取受用户锁保护；
+  候选返回后须重新取得同一把锁，按当前状态去重并提交。不同请求可按抽取完成顺序提交。
+  逐条回退沿用相同锁边界。提交前取锁超时按受影响的条目返回，不重放模型调用。
+  空候选直接成功返回。等待提交锁时可取消；已经开始提交时须等落盘与 ID 记账完成再释放锁。
 - `LockTimeoutError` 按条归集为该批条目的失败（`error_type="LockTimeoutError"`），
   不跳过锁；锁后端不可用按后端错误失败，不降级为无锁。
+- 合批段仅含一条输入，且 `ExtractNotCommittedError` 的直接原因为 `LLMTimeoutError` 时，
+  该条目以原始超时异常结束，跳过逐条回退。
 - 锁释放时机：获取失败、fail-fast、取消均在 `finally` 释放；取消时先等已提交的写入
   线程跑完再抛 `CancelledError`，避免「锁已释放但写入仍在进行」。
 - **顺序路径（第 3、4 行）一律逐项提交**：`continue_on_error=false` 时每提交一项前检查

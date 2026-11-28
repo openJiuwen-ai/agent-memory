@@ -8,14 +8,15 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager, nullcontext
+from functools import partial
 
 from jiuwen_memory.common.errors import AgentMemoryError, BackendError, ValidationError
 from jiuwen_memory.common.ingest_cancellation import IngestCancelled
 from jiuwen_memory.common.lock import LockProvider, LockTimeoutError
 from jiuwen_memory.common.log import get_logger
 from jiuwen_memory.common.type_def import Scope
-from jiuwen_memory.control.executor import ExecutorLane
+from jiuwen_memory.control.executor import ExecutorLane, finish_on_cancel
 from jiuwen_memory.control.types import BatchWriteItem, BatchWriteOutcome, BatchWriteResult
 from jiuwen_memory.control.write_orchestrator_impl.segments import (
     Entry,
@@ -232,24 +233,21 @@ class GroupedWriteOrchestrator(WriteOrchestrator):
                 continue
             try:
                 self._ensure_lockable()
-                async with self._locked(key):
+                phased = self._can_split_extract(engine, [entry.item for entry in run])
+                async with nullcontext() if phased else self._locked(key, len(run)):
                     for position, entry in enumerate(run):
                         if stopped:
                             break
-                        await self._run_items(engine, [entry], results, stop_on_error)
+                        outcomes = await self._execute(
+                            engine, [entry], merge=False, lock_key=key if phased else None,
+                        )
+                        self._assign([entry], outcomes, results)
                         stopped = self._stopped([entry], results, stop_on_error)
                     if stopped:
                         self._mark_skipped(run[position:], results)
             except IngestCancelled:
                 raise
             except Exception as exc:  # noqa: BLE001 —— 取锁失败按条归集，不冒出批量 API
-                if isinstance(exc, LockTimeoutError):
-                    self._signals.record(
-                        DegradeEvent.LOCK_TIMEOUT,
-                        scope=Scope(org=key[0], space=key[1], user=key[2]),
-                        batch_size=len(run),
-                        reason=type(exc).__name__,
-                    )
                 self._fail_entries(run, results, exc)
                 stopped = stop_on_error
 
@@ -304,13 +302,18 @@ class GroupedWriteOrchestrator(WriteOrchestrator):
             self._last_lock_error = exc
 
     @asynccontextmanager
-    async def _locked(self, key: tuple[str, str, str]):
+    async def _locked(self, key: tuple[str, str, str], batch_size: int):
         """取锁失败/释放失败记账；取到锁即清除历史故障，health 能随后端恢复。"""
         guard = self._lock_guard(key)
         try:
             handle = await guard.__aenter__()
         except Exception as exc:
             self._note_lock_error(exc)
+            if isinstance(exc, LockTimeoutError):
+                self._signals.record(
+                    DegradeEvent.LOCK_TIMEOUT, scope=Scope(org=key[0], space=key[1], user=key[2]),
+                    batch_size=batch_size, reason=type(exc).__name__,
+                )
             raise
         self._last_lock_error = None
         try:
@@ -345,15 +348,6 @@ class GroupedWriteOrchestrator(WriteOrchestrator):
         items = [entry.item for entry in chunk]
         try:
             outcomes = await self._guarded(engine, items, merge=merge, lock_key=lock_key)
-        except LockTimeoutError as exc:
-            # 超时由锁路径记账；这里只补降级信号。
-            self._signals.record(
-                DegradeEvent.LOCK_TIMEOUT,
-                scope=_scope_of(chunk),
-                batch_size=len(chunk),
-                reason=type(exc).__name__,
-            )
-            return [self._failed(item, exc) for item in items]
         except IngestCancelled:
             raise
         except Exception as exc:  # noqa: BLE001 —— 失败的段整段归集，不中断其他段
@@ -374,26 +368,24 @@ class GroupedWriteOrchestrator(WriteOrchestrator):
         lock_key: tuple[str, str, str] | None,
     ) -> list[BatchWriteOutcome]:
         if lock_key is None:
-            return await self._shielded(engine, items, merge)
+            return await finish_on_cancel(engine.write_group(items, merge_extract=merge))
         self._ensure_lockable()
-        async with self._locked(lock_key):
-            return await self._shielded(engine, items, merge)
+        guard = partial(self._locked, lock_key, len(items))
+        if self._can_split_extract(engine, items):
+            return await engine.write_group(items, merge_extract=merge, guard=guard)
+        async with guard():
+            return await finish_on_cancel(engine.write_group(items, merge_extract=merge))
+
+    @staticmethod
+    def _can_split_extract(engine, items) -> bool:
+        supports = getattr(engine, "supports_concurrent_document_write", None)
+        return callable(supports) and supports(items) is True
 
     def _lock_guard(self, key: tuple[str, str, str]):
         scope = Scope(org=key[0], space=key[1], user=key[2])
         return self._lock.guard(
             scope, self._lock_name, wait_timeout_ms=self._lock_wait_ms
         )
-
-    async def _shielded(self, engine, items: list[BatchWriteItem], merge: bool):
-        """取消时先等线程跑完再抛出：锁释放时不能还有写入在悄悄进行（F10 决策 8）。"""
-        task = asyncio.create_task(engine.write_group(items, merge_extract=merge))
-        try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            with suppress(BaseException):
-                await task
-            raise
 
     def _assign(
         self,

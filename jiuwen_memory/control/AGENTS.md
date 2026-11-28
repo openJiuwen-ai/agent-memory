@@ -55,6 +55,9 @@ Agent、文档项目、生命周期、认知层级、记忆分类及正文／标
 | `evolution/` | 显式建树请求验证、树开关分流与任务提交，以及 background 周期注册，不鉴权、不做分组算法 |
 | `jobs_impl/` | 后台 Job 实现目录：`evolve_job.py`（EvolveJob + EvolveJobSpec）、`middle_to_long_job.py`（MiddleToLongJob + MiddleToLongJobSpec + default JobFactory 装配）。Spec 装配期固化业务参数与 storage/lifecycle/llm 依赖；index/evolver 不在装配期解析（行为铁律 17） |
 
+普通 `document_fact` 写入由编排器提供同一用户的锁。引擎在摄入后复核实际绑定及单元类型，
+只让支持分阶段的普通文档批次在候选抽取期间释放锁。详见 F10 决策 7。
+
 ## 文件关系
 
 - `engine_impl/human_view.py` 的 HumanViewEngineMixin 供三个 Engine 复用，实现安全域
