@@ -17,5 +17,6 @@ import_required(".memory_key_store", __name__)
 import_required(".api_key_authenticator", __name__)
 import_required(".dev_authenticator", __name__)
 import_required(".trusted_authenticator", __name__)
+import_required(".local_token_authenticator", __name__)
 
 __all__ = ["AuthProducer", "KeyStoreProducer"]

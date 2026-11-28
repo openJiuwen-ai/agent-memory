@@ -11,6 +11,7 @@ from jiuwen_memory.common._support import (
     require_ca_file,
     require_https,
 )
+from jiuwen_memory.common.egress import declare
 from jiuwen_memory.common.errors import ValidationError
 from jiuwen_memory.common.llm.base import LlmProducer
 
@@ -121,3 +122,7 @@ def _build(config):
         config_source=frozen,
         config_namespace=config_namespace,
     )
+
+# F17 D9: data-destination declaration (registered when this module loads).
+declare('llm', "dashscope", remote=True, sends={"query"},
+        endpoint_param="llm_base_url", note="chat completions receive prompts and text")

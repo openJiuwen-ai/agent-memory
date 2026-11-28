@@ -16,6 +16,9 @@ dependencies = [
     "pywin32>=306; sys_platform == 'win32'",
 ]
 
+[project.scripts]
+jiuwen-memory = "jiuwen_memory_entry.local.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0,<9.0",
@@ -70,6 +73,14 @@ deploy = [
 eval = [
     "pyarrow>=15",
 ]
+# 本机记忆服务（F17）：常驻服务、文档看门狗与影子向量、MCP 桥。
+local = [
+    "watchdog>=4.0",
+    "sqlite-vec>=0.1",
+    "mcp>=1.27.2,<2",
+    "pyyaml>=6",
+    "zstandard>=0.22",
+]
 # MCP surface（jiuwen_memory_entry/mcp_server）：把记忆动词暴露为 Model Context Protocol 工具。
 mcp = [
     # v1.27.2 修复 Streamable HTTP session 未绑定认证主体的高危漏洞；当前适配器使用
@@ -121,6 +132,7 @@ include = [
     "jiuwen_memory_entry*",
 ]
 exclude = [
+    # 旧的 HTTP/CLI 与 MCP 入口不随根 wheel 分发（本地服务使用 jiuwen_memory_entry.local）。
     "jiuwen_memory_entry.cli*",
     "jiuwen_memory_entry.mcp_server*",
     # MindVault SDK 通过其目录内的 pyproject 独立分发，避免两个 wheel 拥有相同文件。
@@ -132,6 +144,7 @@ exclude = [
     "index.html", "assets/agent-*.png", "assets/agent-logos-NOTICE.txt",
     "assets/overview-emblem.png", "assets/memory-empty.svg",
 ]
+"jiuwen_memory_entry.local" = ["service_template.yaml"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

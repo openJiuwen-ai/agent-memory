@@ -29,6 +29,7 @@ from jiuwen_memory.common._support import (
     require_https,
 )
 from jiuwen_memory.common.base import PluginType
+from jiuwen_memory.common.egress import declare
 from jiuwen_memory.common.embedder.base import EmbedderProducer
 from jiuwen_memory.common.errors import HealthCheckError
 from jiuwen_memory.common.log import get_logger
@@ -261,3 +262,7 @@ def _build(config):
         ssl_ca_cert=ssl.ca_cert,
         config_source=ConfigSourceProducer.get_cached("default"),
     )
+
+# F17 D9: data-destination declaration (registered when this module loads).
+declare('embedder', "openai", remote=True, sends={"query", "document"},
+        endpoint_param="embedder_base_url", note="embeddings receive text chunks")

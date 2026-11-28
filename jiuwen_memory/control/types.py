@@ -424,6 +424,18 @@ class WriteTargets:
     fallback: Scope | None = None
 
 
+@dataclass(frozen=True)
+class AddReceipt:
+    """Durable receipt for one ordinary ``add`` call (D15 capability 4)."""
+
+    operation_id: str
+    scope: Scope
+    outputs: tuple[dict[str, object], ...]
+    committed_at: datetime
+    content_digest: str = ""
+    units: tuple[MemoryUnit, ...] = ()
+
+
 @dataclass
 class DeleteSelector:
     """``delete`` 的目标选择：各条件取「与」，至少给出一项。"""
@@ -435,4 +447,6 @@ class DeleteSelector:
     # 结构化谓词。删除连带按判定标签或作者主体标记逐条清除，这两项都在 metadata 上，
     # tags 表达不了（tags 是标签数组，判定标签是键值对）。
     filters: FilterExpr | None = None
+    # 单元 ID → 预期内容摘要；非空时只有摘要仍一致的单元才会被删除。
+    expected_digests: dict[str, str] = field(default_factory=dict)
     mode: DeleteMode = DeleteMode.FORGET  # 删除语义

@@ -458,7 +458,8 @@ def test_tool_signature_matches_api_contract(tool_name: str) -> None:
     verb, _payload = TOOL_CASES[tool_name]
     tool_params = set(inspect.signature(getattr(mcp_main, tool_name)).parameters) - {"ctx"}
     contract = method_contract(verb)
-    api_params = set(contract.request_parameters)
+    # MCP 暴露完整契约；operation_id 只对 HTTP/CLI 隐藏。
+    api_params = set(contract.contract_parameters)
     # 全量相等锁：as_of 漂移的教训——此前的子集锁会放行可选参数静默缺失，
     # MCP 客户端经工具 schema 感知不到该参数。工具面与契约的任何参数差异
     # 都必须显式决策（改工具或改契约），不允许静默漂移。
@@ -905,7 +906,7 @@ def test_list_tools_schema_excludes_ctx() -> None:
         case = TOOL_CASES.get(tool.name, missing)
         assert case is not missing, f"{tool.name} has no contract case"
         verb, _payload = case
-        parameters = method_contract(verb).request_parameters
+        parameters = method_contract(verb).contract_parameters
         assert set(props) == set(parameters), f"{tool.name} schema fields drifted"
         required = set()
         for name, parameter in parameters.items():

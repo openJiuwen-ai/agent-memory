@@ -630,6 +630,9 @@ HTTP 与本地 CLI 保留 OpenAI SDK `RateLimitError` 类型，错误体的 `err
 | `search` | 签名不变。归属坐标经 `Context.extensions["coords"]` 传入，供收窄维谓词取值；`Context.extensions["spaces"]` 在参数袋里即转为跨空间检索 | 向后兼容，不带这两个键的调用方行为不变 | 已落地 |
 | `RecallChannel` | 新增取值 `space`，标记跨空间检索里某个空间整体召回失败 | 向后兼容；穷举该枚举的调用方须容纳新取值 | 已落地 |
 | `delete` | 入参 `DeleteSelector` 新增 `filters`，空选择器判据随之纳入该字段；实体删除后的跨空间清理由接入方经本入口逐个执行 | 向后兼容 | 已落地 |
+| `add` | 新增可选 `operation_id`；给出时同一次调用的输出（含去重复用）以 `AddReceipt` 保存，可由进程内 `operation_receipt` 查询，重放同一 ID 不重复写入；回执按认证主体与 operation_id 隔离，只对同一主体、同一 scope 可见，返回前必须重新做可信上下文与写权限校验；同一 ID 带不同内容重放返回 `ConflictError`；重放输出重新剥离瞬态元数据；`outputs[].created` 区分本次新建与去重复用；`operation_id` 进 Agent 工具（MCP `memory_add` / `memory_add_async`），不进 HTTP/CLI 契约 | 向后兼容（默认 None） | 已落地（当前为进程内回执，持久化待补） |
+| `add_sync` | 可信同步写端口；与 `add` 同形，额外接受 `trusted_metadata` 写入内核保留的创建期归属键（`sync_created_by` / `sync_initial_digest`），只允许本机同步引擎调用。普通 `add` 仍拒绝这些键，服务入口不暴露该端口 | 默认实现抛 `UnsupportedCapabilityError`，同步装配覆盖；服务入口不暴露 | 已落地 |
+| `delete` | `DeleteSelector.expected_digests` 按单元 ID 携带预期内容摘要；非空时只有摘要仍一致的候选被删除，返回值只含实际删除的 ID。能力查询 `supports_conditional_delete()`，后端不支持时必须拒绝并返回 `UnsupportedCapabilityError`，不得降级为普通删除 | 向后兼容（默认空字典） | 已落地（当前后端无原子比较删除，统一拒绝） |
 | `list` | 不读归属坐标，但注入第一族系统谓词 | 行为变更：个体空间内不再返回不可见条目 | 已落地 |
 | `list_spaces` | `cursor` 标记废弃；`limit` 由每页条数改为返回条数上限 | 签名不变，翻页语义变更 | 已落地 |
 | `create_space` | 签名不变；入参 `SpaceSpec` 新增 `owner` 字段，供开通服务声明归属主体或显式不登记 | 向后兼容 | 已落地 |
@@ -1616,7 +1619,7 @@ def admin_all(*, security: RequestSecurityContext) -> dict[str, str]: ...
 
 ### DeleteSelector / DeleteMode（delete，`control/types.py`）
 
-`DeleteSelector` 各条件取「与」，至少给一项：`unit_ids` / `scope`（鉴权依据）/ `tags`（命中任一）/ `before`（`t_event` 早于此）/ `mode`。候选生命周期规则：非 `PURGE` 模式排除 `SUPERSEDED` 历史版本（FORGET/ARCHIVE 流转非法，`SUPERSEDED→ARCHIVED` 禁止）；`PURGE` 物理删除覆盖 `SUPERSEDED` 历史版本——合规硬删不残留明文，新旧版本一并删除。
+`DeleteSelector` 各条件取「与」，至少给一项：`unit_ids` / `scope`（鉴权依据）/ `tags`（命中任一）/ `before`（`t_event` 早于此）/ `expected_digests`（单元 ID → 预期内容摘要，非空时摘要不一致的单元不匹配）/ `mode`。`expected_digests` 的目的不是替代鉴权，而是给同步判删提供“检查与删除同一条件”的入口；`supports_conditional_delete()` 为 False 的后端不得承诺该原子性。候选生命周期规则：非 `PURGE` 模式排除 `SUPERSEDED` 历史版本（FORGET/ARCHIVE 流转非法，`SUPERSEDED→ARCHIVED` 禁止）；`PURGE` 物理删除覆盖 `SUPERSEDED` 历史版本——合规硬删不残留明文，新旧版本一并删除。
 
 `DeleteMode`：`FORGET`（标记遗忘，可恢复，默认）/ `ARCHIVE`（归档转冷）/ `DOWNWEIGHT`（保持 active 仅降权）/ `PURGE`（物理删真源与索引，合规硬删，不可恢复，含 `SUPERSEDED` 历史版本）。
 

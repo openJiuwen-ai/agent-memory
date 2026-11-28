@@ -14,6 +14,7 @@ from .scheduler import Scheduler
 from .space import SpaceManager
 from .types import (
     Action,
+    AddReceipt,
     BackgroundJobStartResult,
     BatchUpdateOutcome,
     BatchUpdateResult,
@@ -50,6 +51,7 @@ from .write_orchestrator import (
 )
 
 __all__ = [
+    "AddReceipt",
     "EvolveTaskOptions",
     "ControlOperator",
     "ControlOperatorType",

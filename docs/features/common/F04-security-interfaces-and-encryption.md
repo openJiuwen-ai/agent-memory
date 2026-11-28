@@ -153,6 +153,20 @@ MemoryRuntime 的私有成员；ServerRuntime 在上游 MemoryRuntime 生命周�
 Root Key / trusted gateway 等 capability=false 的身份可以有审计指纹，不能仅据非空
 credential_id 猜测撤销能力。AuthContext 不携带 Callable、Store 或 `acting_user` 授权结果。
 
+### 2.2.1 本机安装令牌（`local_token`，本机记忆服务 F17 决策）
+
+- 单机部署用每安装一份的随机令牌替代共享 API Key：内核只存 SHA-256 摘要，SQLite
+  `install_tokens` 表登记 `install_id`、主体、角色与撤销状态；`install_for_digest` 供本机服务
+  把请求归属到安装。
+- 主体规则放宽为「user 或 agent 至少一个非空，space/session 必须为空」：JiuwenSwarm 等安装的
+  主身份是 agent，要求必须带 user 会把 agent 身份挤进 user 轴，破坏五维直映射；反过来强制
+  user 也会让纯 agent 安装无身份可用。项目空间仍是每次调用的 target 维度，由 PEP 判定。
+- 边界：令牌文件与安装记录同属一个系统账号，**不防同账号冒充**；它解决归属与撤销，不是
+  多用户隔离。首次拉起服务时还没有任何令牌，故发现探活端点为无认证的 `/local/health`
+  （只回显 nonce 与数据目录），能力查询 `/local/status` 仍需令牌。
+- 与既有认证器并存：只有模板显式选择 `authenticator.default: local_token` 的部署才加载，
+  API Key / dev / trusted 路径不变。
+
 ### 2.3 接入迁移与业务连续性
 
 HTTP / CLI / MCP 通过认证中间件和共享 API 契约显式传递 security；MCP 保留上游完整

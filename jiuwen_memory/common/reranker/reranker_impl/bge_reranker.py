@@ -157,3 +157,8 @@ def _build(config):
         max_batch_size=config.get("reranker_bge_batch_size", 16),
         normalize=config.get("reranker_bge_normalize", True),
     )
+
+# F17 D9: data-destination declaration (registered when this module loads).
+from jiuwen_memory.common.egress import declare  # noqa: E402
+
+declare('reranker', "bge_reranker", remote=False, note="local reranker model")

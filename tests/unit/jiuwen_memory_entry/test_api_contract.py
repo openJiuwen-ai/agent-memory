@@ -38,7 +38,7 @@ pytestmark = pytest.mark.unit
 
 
 def test_http_method_registry_exactly_matches_memory_api() -> None:
-    assert api_contract.api_method_names() == MemoryAPI.__abstractmethods__
+    assert api_contract.api_method_names() == MemoryAPI.__abstractmethods__ - {"add_sync"}
     assert {
         "continuity_task",
         "continuity_relation",
@@ -56,10 +56,13 @@ def test_http_method_registry_exactly_matches_memory_api() -> None:
     assert api_contract.is_known_verb("does_not_exist") is False
 
 
-@pytest.mark.parametrize("verb", sorted(MemoryAPI.__abstractmethods__))
+@pytest.mark.parametrize("verb", sorted(api_contract.api_method_names()))
 def test_http_request_fields_are_derived_from_api_signature(verb: str) -> None:
     signature = inspect.signature(getattr(MemoryAPI, verb))
     expected = set(signature.parameters) - {"self", "security"}
+    if verb in {"add", "add_async"}:
+        # operation_id is an internal receipt key, not a transport parameter.
+        expected.discard("operation_id")
 
     assert set(api_contract.method_contract(verb).request_parameters) == expected
 
@@ -410,6 +413,12 @@ def test_search_transport_decodes_flat_hierarchy_parameters():
     assert parsed["expand_depth"] == 0 and parsed["rollup"] is False
     with pytest.raises(ValidationError, match="unknown field"):
         api_contract.parse_request("search", {**raw, "options": {}})
+
+
+def test_trusted_sync_port_is_not_a_transport_verb() -> None:
+    assert "add_sync" not in api_contract.api_method_names()
+    with pytest.raises(ValidationError, match="unknown MemoryAPI method"):
+        api_contract.parse_request("add_sync", {})
 
 
 @pytest.mark.parametrize("verb", ["search_v2", "evolve_v2"])

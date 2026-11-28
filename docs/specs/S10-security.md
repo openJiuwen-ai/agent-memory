@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | `jiuwen_memory/common/security/`、`jiuwen_memory_entry/`、`jiuwen_memory/api/`、`jiuwen_memory/storage/`、`jiuwen_memory_adapter/agent_security/` |
-| 最近一次修订日期 | 2026-11-24 |
+| 最近一次修订日期 | 2026-11-28 |
 | 关联特性文档 | [F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
 
 ## 显式明文记忆维护
@@ -237,6 +237,24 @@ Portal 更换模型服务时要求显式提交服务网址、API Key 和模型�
 11. 限流在 `authenticate` **之前**执行：认证本身就是要保护的资源。
 12. 密码哈希、密钥派生与全量完整性验证等昂贵操作使用独立的全局并发预算。预算耗尽时快速
     拒绝（429），不得无界排队——排队只是把资源耗尽从 CPU/内存转移到线程和请求队列。
+
+### 本机安装令牌（`local_token`，本机记忆服务 F17）
+
+- `@AuthProducer.register("local_token")` 的 `LocalTokenAuthenticator` 面向单机安装：每个宿主安装
+  一个主体、一份随机令牌（`token_urlsafe(32)`），只存 SHA-256 摘要（`install_tokens` SQLite 表），
+  支持 `register`/`revoke`/`resolve`/`install_for_digest`。
+- 主体规则：`org` 必填；`space` 与 `session` 必须为空（项目是每次调用的 target 维度，不是凭据
+  的一部分）；`user` 或 `agent` 至少一个非空；`ROOT` 拒绝。规则由
+  `validate_install_principal` 在登记时校验。
+- 唯一例外是 `migrate jiuwenswarm`：它用 `allow_scope=True` 登记**迁移前已核实**的完整主体
+  （含 space/session），否则旧任务 owner 指纹与原绑定无法匹配；该开关不经普通 `connect` 使用。
+- 未登记、已撤销、摘要不匹配一律 `AuthenticationError`，不区分原因；认证失败不计入
+  「服务不可用」熔断。
+- 边界：同一系统账号可读 `installs/*/token`，因此令牌不防同账号冒充；它解决的是
+  「记忆不属于某个 Agent 进程」与按安装归属写入，而不是多用户隔离。`/local/health` 无认证
+  （只回显 nonce 与数据目录，供发现/探活），`/local/status` 需要令牌。
+- 兼容：不在模板中配置 `authenticator.default: local_token` 的部署不加载该认证器，既有
+  API Key / dev / trusted 认证不受影响。
 
 ### MCP 凭据载体
 

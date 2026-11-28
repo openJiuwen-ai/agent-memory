@@ -7,13 +7,14 @@ import inspect
 import json
 from collections.abc import Callable
 from contextvars import ContextVar
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from functools import cache
 
 from jiuwen_memory.common.errors import (
     AgentMemoryError,
     ConflictError,
+    NotFoundError,
     PermissionDeniedError,
     UnsupportedCapabilityError,
     ValidationError,
@@ -32,6 +33,7 @@ from jiuwen_memory.common.type_def.continuity import (
     TaskRequest,
     fingerprint,
 )
+from jiuwen_memory.control.continuity import TaskPolicy
 from jiuwen_memory.control.types import BatchWriteItem
 
 from .local_support import (
@@ -112,6 +114,19 @@ def _same_scope(left: Scope, right: Scope) -> bool:
 
 class _Skipped:
     """Batch item skipped because an earlier item in the same run failed."""
+
+
+@dataclass(frozen=True)
+class ReceiptStatus:
+    """Read-only event receipt projection for the local service (D8).
+
+    ``refs`` are serialized :class:`MemoryRef` records; the query never returns content.
+    """
+
+    status: str
+    operation_id: str
+    refs: list[dict]
+    retry_action: str = ""
 
 
 _MANAGE_RELATION = ContextVar("continuity_manage_relation", default=False)
@@ -369,6 +384,40 @@ class ContinuityOpsMixin:
 
         return write
 
+    def _may_manage_tasks(self, security: RequestSecurityContext, scope: Scope) -> bool:
+        """Whether the caller governs this project space (D13 ``admin_manage_tasks``).
+
+        The probe is a real authorization on the governance axis, so a caller that is not
+        a space manager leaves one auditable denial and falls through to the owner path.
+        Only the local service template enables the policy.
+        """
+        try:
+            self._authorize(security, scope, Action.UPDATE, "continuity_task_admin")
+        except PermissionDeniedError:
+            return False
+        return True
+
+    def _self_bind_allowed(
+        self,
+        service,
+        scope: Scope,
+        request: TaskRequest,
+        security: RequestSecurityContext,
+    ) -> bool:
+        """D13 connection self-binding: bind/unbind only the caller's own connection."""
+        caller = self._connector_for_actor(scope, security)
+        if not caller:
+            return False
+        if request.operation == "bind":
+            return request.connector_id == caller
+        if request.operation == "unbind":
+            try:
+                binding = service.binding(scope, request.task_id, request.binding_id)
+            except (ValidationError, NotFoundError):
+                return False
+            return binding.get("connector_id") == caller
+        return False
+
     def continuity_task(
         self,
         scope: Scope,
@@ -377,20 +426,27 @@ class ContinuityOpsMixin:
         security: RequestSecurityContext,
     ) -> dict:
         reading = request.operation in {"get", "find"}
+        policy = getattr(self._continuity, "task_policy", None) or TaskPolicy()
+        managing = False
         if reading:
             self._authorize(security, scope, Action.READ, "continuity_task_read")
-        else:
+        elif request.operation != "create" and policy.admin_manage_tasks:
+            managing = self._may_manage_tasks(security, scope)
+        if not reading and not managing:
             self._authorize(security, scope, Action.WRITE, "continuity_task_write")
         service = self._role_service(scope)
         owner = fingerprint(asdict(security.auth.actor))
         if request.operation == "create" and request.parent_task_id:
             self._authorize(security, scope, Action.READ, "continuity_task_parent")
-        if request.operation not in {"create", "get", "find"}:
-            is_owner = service.task_owner(scope, request.task_id) == owner
-            if not is_owner:
+        if request.operation not in {"create", "get", "find"} and not managing:
+            if service.task_owner(scope, request.task_id) != owner:
+                if not policy.self_bind:
+                    # Strict mode: the owner is the only one allowed to change the task.
+                    raise PermissionDeniedError("continuity_task_write")
                 if request.operation == "attach":
                     raise PermissionDeniedError("continuity_task_write")
                 if request.operation in {"bind", "unbind", "close"}:
+                    # Participants keep the rest of the rules: no owner-managed fields.
                     self._reject_non_owner_task_metadata_change(request)
         result = service.task(
             scope,
@@ -398,6 +454,7 @@ class ContinuityOpsMixin:
             owner,
             self._role_reader(security, scope),
             connector_policy=self._task_connector_policy(scope, security),
+            managing=managing,
         )
         self._log(security.auth.actor, "continuity_task", request.task_id, target_scope=scope)
         return result
@@ -868,6 +925,30 @@ class ContinuityOpsMixin:
                 ),
             )
         return [read(MemoryRef.parse(item)) for item in receipt.get("refs", [])]
+
+    def continuity_receipt_status(
+        self, scope: Scope, task_id: str, binding_id: str, event_id: str
+    ) -> ReceiptStatus | None:
+        """Trusted in-process receipt probe used by the local service (D8).
+
+        Deliberately not a ``MemoryAPI`` method: it is not routed by ``/v1`` and never
+        enters the Agent tool list. The local service needs it exactly when the caller's
+        current permissions no longer allow a read, so it performs no PEP and returns no
+        content; the caller has already established the trusted path.
+        """
+        service = self._role_service(scope)
+        connector = service.binding(scope, task_id, binding_id).get("connector_id", "")
+        if not connector:
+            raise ValidationError("binding has no connector")
+        receipt = service.event_receipt(scope, connector, binding_id, event_id)
+        if receipt is None:
+            return None
+        return ReceiptStatus(
+            status=receipt["status"],
+            operation_id=receipt["operation_id"],
+            refs=list(receipt.get("refs") or []),
+            retry_action=receipt.get("retry_action", ""),
+        )
 
     def continuity_relation(
         self,

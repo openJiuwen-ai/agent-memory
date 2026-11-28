@@ -158,7 +158,8 @@ def _invoke_blocking(verb: str, payload: dict, *, context: Any = None):
             surface=Surface.MCP,
             request_id=request_id,
         ) as security:
-            return invoke_api(_SRV.api, verb, payload, security)
+            # Agent tool surface: 暴露完整契约，含 HTTP/CLI 隐藏的 operation_id。
+            return invoke_api(_SRV.api, verb, payload, security, allow_internal=True)
     except AgentMemoryError as api_error:
         raise RuntimeError(f"{type(api_error).__name__}: {api_error}") from api_error
 
@@ -250,6 +251,7 @@ async def memory_add(  # pylint: disable=too-many-arguments,huawei-too-many-argu
     system_metadata: dict | None = None,
     user_metadata: dict | None = None,
     continuity: dict | None = None,
+    operation_id: str | None = None,
     ctx: Context = None,
 ) -> list[dict]:
     """
@@ -268,6 +270,7 @@ async def memory_add(  # pylint: disable=too-many-arguments,huawei-too-many-argu
         开关经它下推。
     user_metadata: 可选用户元数据对象（值限标量）；供过滤，检索时用
         user_metadata.<key> 字段名。
+    operation_id: 可选幂等键；相同键重放返回同一批写入结果。
     返回写入的记忆单元列表（含 id，供后续 get/update/delete 引用）。
     """
     return await _invoke(
@@ -283,6 +286,7 @@ async def memory_add(  # pylint: disable=too-many-arguments,huawei-too-many-argu
             "system_metadata": system_metadata,
             "user_metadata": user_metadata,
             "continuity": continuity,
+            "operation_id": operation_id,
         },
         context=ctx,
     )
@@ -615,6 +619,7 @@ async def memory_add_async(  # pylint: disable=too-many-arguments,huawei-too-man
     system_metadata: dict | None = None,
     user_metadata: dict | None = None,
     continuity: dict | None = None,
+    operation_id: str | None = None,
     ctx: Context = None,
 ) -> list[dict]:
     """
@@ -637,6 +642,7 @@ async def memory_add_async(  # pylint: disable=too-many-arguments,huawei-too-man
             "system_metadata": system_metadata,
             "user_metadata": user_metadata,
             "continuity": continuity,
+            "operation_id": operation_id,
         },
         context=ctx,
     )

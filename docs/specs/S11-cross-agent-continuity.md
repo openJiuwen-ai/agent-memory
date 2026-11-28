@@ -6,7 +6,7 @@
 | --- | --- |
 | 状态 | 2026-11-05 设计修订已实现：两档模式、接续参数并入 `add`/`batch_add`/`search`、关系真源改存 Registry KV、`list` 过滤下推、接口改名与删减；2026-11-24 增加参与 Agent 自绑定与凭自身有效绑定关闭任务的权限。剩余实现差距见 [F11 12.2](../features/construction/F11-role-memory.md#122-实现差距)。真实产品 G0 联调、外部 Agent 记忆统一导入与真实存量验收待完成 |
 | 关联模块 | jiuwen_memory_adapter/、jiuwen_memory_entry/、jiuwen_memory/api/、jiuwen_memory/control/、jiuwen_memory/common/、jiuwen_memory/storage/ |
-| 最近一次修订日期 | 2026-11-26 |
+| 最近一次修订日期 | 2026-11-28 |
 | 关联特性文档 | [F11-role-memory](../features/construction/F11-role-memory.md) |
 | 关联规约 | [S02](S02-memory-api.md)、[S03](S03-control.md)、[S04](S04-retrieval.md)、[S06](S06-storage.md)、[S07](S07-common.md)、[S09](S09-plugin-development.md) |
 
@@ -372,6 +372,25 @@ supported_in_conditions 由已确认 `supports` 关系提升其语义 target 的
 | `record_count` | 事件数 |
 | `missing_fields` | 缺失的可选字段（如 occurred_at、claimed_author） |
 | `coverage` | 当前固定 selected_events_only |
+
+## 本机服务的接续策略与只读回执（本机记忆服务 F17）
+
+本机服务（本机记忆服务 F17）新增 `admin_manage_tasks`（默认关闭）与 `self_bind`（默认开启，与现行接续端口一致）两个开关；既有 SDK / HTTP 部署不配置时行为不变。
+
+- `TaskPolicy.self_bind`（模板 `memory_api.continuity.self_bind`）：连接可为**自己的连接名**
+  `bind`，或移除自己连接上的绑定 `unbind`；为其他连接 bind/unbind 仍按 owner 规则拒绝。
+  连接名由 `continuity_connectors` 中 actor 的 `continuity_task` 自述解析得到。
+- `TaskPolicy.admin_manage_tasks`（模板 `memory_api.continuity.admin_manage_tasks`）：项目空间
+  治理轴 `UPDATE` 的持有者可对他人任务执行 `close`/`attach`/`unbind` 等；非治理者回落 owner
+  判定，且治理探测被拒只留审计记录，不改变最终错误类型。`create` 仍要求空间写权限；
+  `get`/`find` 仍只要求读权限。
+- `LocalMemoryAPI.continuity_receipt_status(scope, task_id, binding_id, event_id)`：本机服务使用的
+  **可信进程内**回执探针，不是 `MemoryAPI` 方法、不经 `/v1`、不进入 Agent 工具列表。它不做 PEP、
+  不返回正文，返回 `ReceiptStatus(status, operation_id, refs, retry_action)`；`refs` 是
+  `MemoryRef` 序列化后的字典列表。服务在推进非终态操作前用它只读核对内核进度：已提交则不再
+  重写，partial/unknown 保留回执不重试，探针失败时 fail closed（不写入）。回显前仍逐个 `get`
+  校验调用方读权限。
+- 本机 hook 的冻结、写入判定与恢复语义见本机记忆服务 F17 D8/D9。宿主适配器只转发，不自行判定写没写。
 
 ## Adapter 接入契约
 

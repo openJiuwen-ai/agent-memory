@@ -25,6 +25,7 @@ from jiuwen_memory.common.errors import (
     ConflictError,
     NotFoundError,
     PermissionDeniedError,
+    UnsupportedCapabilityError,
     ValidationError,
 )
 from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_log
@@ -1374,6 +1375,13 @@ class QueryOpsMixin:
         return BatchUpdateResult(outcomes=outcomes)
 
     def delete(self, selector: DeleteSelector, *, security: RequestSecurityContext) -> list[str]:
+        if selector.expected_digests and not self.supports_conditional_delete():
+            raise UnsupportedCapabilityError(
+                "conditional_delete",
+                "expected_digests",
+                "backend",
+                "this backend cannot delete with expected content digests",
+            )
         identity = security.auth.actor
         selector_is_empty = (
             not selector.unit_ids

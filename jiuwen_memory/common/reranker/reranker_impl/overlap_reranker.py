@@ -48,3 +48,8 @@ class OverlapReranker(Reranker):
 def _build(config):
     tokenizer = TokenizerProducer.dep(config, default="whitespace")
     return OverlapReranker(tokenizer)
+
+# F17 D9: data-destination declaration (registered when this module loads).
+from jiuwen_memory.common.egress import declare  # noqa: E402
+
+declare('reranker', "overlap", remote=False, note="local lexical overlap")

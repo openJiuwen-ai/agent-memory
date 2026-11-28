@@ -449,3 +449,10 @@ def _build(config):
         llm_max_candidates=int(config.get("llm_max_candidates", 30)),
         llm_max_chars=int(config.get("llm_max_chars", _MAX_RESOLVE_TOTAL_CHARS)),
     )
+
+# F17 D9: data-destination declaration (registered when this module loads).
+from jiuwen_memory.common.egress import declare  # noqa: E402
+
+declare('reranker', "llm", remote=True, sends={"query", "document"},
+        endpoint_param="llm_base_url",
+        note="LLM reranker receives query and candidate text")

@@ -4,14 +4,16 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from jiuwen_memory.api.memory_api_impl.continuity_ops import _Skipped
 from jiuwen_memory.common.errors import (
     AgentMemoryError,
+    ConflictError,
     PermissionDeniedError,
     PolicyError,
     ValidationError,
@@ -45,6 +47,7 @@ from jiuwen_memory.control import collective
 from jiuwen_memory.control.executor import ExecutorLane
 from jiuwen_memory.control.pipeline import NO_FALLBACK_MEMORY_TYPES
 from jiuwen_memory.control.types import (
+    AddReceipt,
     BatchWriteItem,
     BatchWriteOutcome,
     BatchWriteResult,
@@ -69,6 +72,35 @@ from .local_support import (
     _with_author_marks,
     _write_permission_context,
 )
+
+_MAX_ADD_RECEIPTS = 512
+
+
+def _receipt_key(identity: Scope, operation_id: str) -> tuple[str, str, str, str, str]:
+    """Receipts are scoped to the authenticated subject, never just the op id."""
+    return (
+        identity.org,
+        identity.user,
+        identity.agent,
+        identity.session,
+        operation_id,
+    )
+
+
+def _created_in_operation(unit: MemoryUnit, started: datetime) -> bool:
+    """Whether ``unit`` was created by this call, using its ingest stamp.
+
+    ``t_ingest`` is written by the engine when the unit is created, before the write
+    returns. A dedup hit returns a unit whose ingest stamp predates ``started``. No
+    tolerance window is used: both timestamps come from the same clock in one call.
+    """
+    created_at = unit.temporal.t_ingest
+    if created_at is None:
+        return False
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    return created_at >= started
+
 
 logger = get_logger("jiuwen_memory.api.memory_api_impl.local_memory_api")
 
@@ -127,6 +159,7 @@ class WriteOpsMixin:
         occurred_at: datetime | None = None,
         event_time: datetime | None = None,
         continuity: ContinuityWrite | None = None,
+        operation_id: str | None = None,
     ) -> list[MemoryUnit]:
         return asyncio.run(
             self.add_async(
@@ -141,6 +174,7 @@ class WriteOpsMixin:
                 occurred_at=occurred_at,
                 event_time=event_time,
                 continuity=continuity,
+                operation_id=operation_id,
             )
         )
 
@@ -152,6 +186,35 @@ class WriteOpsMixin:
         self._authorize_experience_space(security, coords, metadata)
         self._ensure_space_writable(target)
         return auth
+
+    def add_sync(
+        self,
+        content: str,
+        scope: Scope,
+        *,
+        security: RequestSecurityContext,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        trusted_metadata: dict[str, MetadataValueType] | None = None,
+        occurred_at: datetime | None = None,
+        operation_id: str | None = None,
+    ) -> list[MemoryUnit]:
+        """Trusted sync write port: creation-only attribution keys are kernel-owned.
+
+        The local sync engine is the only intended caller. ``trusted_metadata`` is
+        merged after caller-facing validation, so public ``add`` callers still cannot
+        spoof ``sync_created_by`` or ``sync_initial_digest``.
+        """
+        return asyncio.run(
+            self._add_impl(
+                content,
+                scope,
+                security=security,
+                system_metadata=system_metadata,
+                occurred_at=occurred_at,
+                continuity_metadata=trusted_metadata,
+                operation_id=operation_id,
+            )
+        )
 
     @privacy_operation
     @traced("add_async", component="MemoryAPI", level=TraceLevel.DEBUG)
@@ -169,6 +232,7 @@ class WriteOpsMixin:
         occurred_at: datetime | None = None,
         event_time: datetime | None = None,
         continuity: ContinuityWrite | None = None,
+        operation_id: str | None = None,
     ) -> list[MemoryUnit]:
         if system_metadata is not None and "sources" in system_metadata:
             metadata = dict(system_metadata)
@@ -207,6 +271,7 @@ class WriteOpsMixin:
             content, scope, source, security=security, assets=assets, tags=tags,
             system_metadata=system_metadata, user_metadata=user_metadata,
             occurred_at=occurred_at, event_time=event_time,
+            operation_id=operation_id,
         )
 
     async def _add_impl(
@@ -224,10 +289,91 @@ class WriteOpsMixin:
         event_time: datetime | None = None,
         continuity_metadata: dict[str, MetadataValueType] | None = None,
         source_ref: str = "",
+        operation_id: str | None = None,
+    ) -> list[MemoryUnit]:
+        identity = security.auth.actor
+        claim = _receipt_key(identity, operation_id) if operation_id else None
+        if claim is not None:
+            with self._receipt_guard:
+                if claim in self._add_inflight:
+                    raise ConflictError("operation_id is already in progress")
+                self._add_inflight.add(claim)
+        try:
+            return await self._add_impl_body(
+                content,
+                scope,
+                source,
+                security=security,
+                assets=assets,
+                tags=tags,
+                system_metadata=system_metadata,
+                user_metadata=user_metadata,
+                occurred_at=occurred_at,
+                event_time=event_time,
+                continuity_metadata=continuity_metadata,
+                source_ref=source_ref,
+                operation_id=operation_id,
+            )
+        finally:
+            if claim is not None:
+                with self._receipt_guard:
+                    self._add_inflight.discard(claim)
+
+    async def _add_impl_body(
+        self,
+        content: str,
+        scope: Scope,
+        source: Modality = Modality.TEXT,
+        *,
+        security: RequestSecurityContext,
+        assets: list[str] | None = None,
+        tags: list[str] | None = None,
+        system_metadata: dict[str, MetadataValueType] | None = None,
+        user_metadata: dict[str, MetadataValueType] | None = None,
+        occurred_at: datetime | None = None,
+        event_time: datetime | None = None,
+        continuity_metadata: dict[str, MetadataValueType] | None = None,
+        source_ref: str = "",
+        operation_id: str | None = None,
     ) -> list[MemoryUnit]:
         _reject_invalid_event_time(event_time)
         identity = security.auth.actor
         _reject_invalid_content(content)
+        content_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if operation_id:
+            existing = getattr(self, "_add_receipts", {}).get(
+                _receipt_key(identity, operation_id)
+            )
+            if existing is not None:
+                # A receipt is a read of the committed memory: trusted-context and
+                # target authorization must run before returning any content, and a
+                # caller may not replay an ID against a different space.
+                self._require_trusted_context(
+                    security,
+                    _TrustedRequestTarget(Action.WRITE, "add", Scope(org=identity.org)),
+                )
+                if existing.scope.org != identity.org:
+                    raise PermissionDeniedError("receipt belongs to another organization")
+                for field in ("space", "user", "agent", "session"):
+                    requested = getattr(scope, field)
+                    if requested and requested != getattr(existing.scope, field):
+                        raise PermissionDeniedError(
+                            f"receipt belongs to another {field}"
+                        )
+                await self._run_blocking(
+                    _io_lane(),
+                    self._authorize,
+                    security,
+                    existing.scope,
+                    Action.WRITE,
+                    "add",
+                    context=_write_permission_context(existing.scope, None, None),
+                )
+                if existing.content_digest and existing.content_digest != content_digest:
+                    raise ConflictError(
+                        "operation_id was already used for different content"
+                    )
+                return [_strip_transient_metadata(unit) for unit in existing.units]
         # 三项校验都在落点解析之前：解析会往 system_metadata 塞判定产物与瞬态的
         # route_ctx（非标量），先校验才是校调用方给的那份。
         # 坐标先取出：它是嵌套字典，留在参数袋里会被下面的标量校验拒绝。
@@ -268,6 +414,7 @@ class WriteOpsMixin:
             coords,
             system_metadata,
         )
+        write_started = datetime.now(UTC)
         units = await self._commands.write(
             content,
             target,
@@ -284,10 +431,61 @@ class WriteOpsMixin:
             **({"event_time": event_time} if event_time is not None else {}),
             **({"source_ref": source_ref} if source_ref else {}),
         )
+        outputs = tuple(
+            {
+                "unit_id": unit.id,
+                # A dedup hit returns the pre-existing unit, so an unconditional
+                # ``True`` would misreport reused memory as newly created.
+                "created": _created_in_operation(unit, write_started),
+            }
+            for unit in units
+        )
+        if operation_id:
+            receipt_key = _receipt_key(identity, operation_id)
+            self._add_receipts[receipt_key] = AddReceipt(
+                operation_id=operation_id,
+                scope=target,
+                outputs=outputs,
+                committed_at=datetime.now(UTC),
+                content_digest=content_digest,
+                units=tuple(units),
+            )
+            self._evicted_receipts.discard(receipt_key)
+            receipts = self._add_receipts
+            if len(receipts) > _MAX_ADD_RECEIPTS:
+                for stale in list(receipts)[: len(receipts) - _MAX_ADD_RECEIPTS]:
+                    receipts.pop(stale, None)
+                    self._evicted_receipts.add(stale)
         await self._run_blocking(
             _io_lane(), self._log, identity, "add", target_scope=target, detail=auth
         )
         return [_strip_transient_metadata(unit) for unit in units]
+
+    def receipt_evicted(self, operation_id: str, *, security) -> bool:
+        """Whether this subject's receipt was evicted, not merely never written."""
+        identity = security.auth.actor
+        return _receipt_key(identity, operation_id) in self._evicted_receipts
+
+    def operation_receipt(self, operation_id: str, scope: Scope, *, security):
+        """Trusted in-process receipt probe; not exposed through HTTP or tools."""
+        identity = security.auth.actor
+        receipt = getattr(self, "_add_receipts", {}).get(
+            _receipt_key(identity, operation_id)
+        )
+        if receipt is None or receipt.scope != scope:
+            return None
+        self._require_trusted_context(
+            security,
+            _TrustedRequestTarget(Action.WRITE, "operation_receipt", receipt.scope),
+        )
+        self._authorize(
+            security,
+            receipt.scope,
+            Action.WRITE,
+            "operation_receipt",
+            context=_write_permission_context(receipt.scope, None, None),
+        )
+        return receipt
 
     def _routes_by_decision(
         self,

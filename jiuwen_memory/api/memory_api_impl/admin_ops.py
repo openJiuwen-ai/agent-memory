@@ -50,6 +50,12 @@ logger = get_logger("jiuwen_memory.api.memory_api_impl.local_memory_api")
 class AdminOpsMixin:
     """Jobs, admin policy, governance, audit verify, grant/revoke."""
 
+    @staticmethod
+    def supports_conditional_delete() -> bool:
+        # The engine compares digests while scanning candidates and deletes in a
+        # subsequent command; no backend offers an atomic compare-and-delete.
+        return False
+
     def supports_video_ingest(self) -> bool:
         return self._engine.video_ingest_preflight() is not None
 

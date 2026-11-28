@@ -13,6 +13,8 @@ VERBS = frozenset(
         "continuity_relation",
         "continuity_recover",
         "batch_add",
+        "add",
+        "search",
         "get",
     }
 )
@@ -37,23 +39,42 @@ class ContinuityClient:
             follow_redirects=False,
         )
 
-    def call(self, verb: str, payload: dict) -> dict:
+    def call(self, verb: str, payload: dict):
         if verb not in VERBS:
             raise ValueError("unsupported continuity operation")
         try:
             response = self._http.post(f"/v1/{verb}", json=payload)
             if response.status_code >= 400:
-                return {
-                    "status": "rejected" if response.status_code < 500 else "unknown",
-                    "error": f"http_{response.status_code}",
-                }
+                return _error_result(response)
             response.raise_for_status()
-            data = response.json()
-            if not isinstance(data, dict):
-                raise ValueError("expected structured response")
-            return data
+            return response.json()
         except (httpx.HTTPError, ValueError):
             return {"status": "unknown", "error": "transport_unavailable"}
 
     def close(self):
         self._http.close()
+
+
+def _error_result(response) -> dict:
+    """Preserve a 409 write receipt instead of flattening it to "rejected" (F17 D8)."""
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    result = {"error": f"http_{response.status_code}"}
+    if body.get("message"):
+        result["message"] = body["message"]
+    if response.status_code >= 500:
+        result["status"] = "unknown"
+        return result
+    receipt_status = body.get("status")
+    if response.status_code == 409 and receipt_status in {"partial", "unknown"}:
+        result["status"] = receipt_status
+        for key in ("operation_id", "refs", "retry_action"):
+            if key in body:
+                result[key] = body[key]
+        return result
+    result["status"] = "rejected"
+    return result

@@ -113,6 +113,17 @@ class DocumentShadowIndex(BaseStore):
         对账）；None 不过滤（保持跨 scope 诊断原行为）。
         """
 
+    def list_md_filenames(self, scope: Scope) -> list[str]:
+        """Distinct ``md_filename`` values registered in the shadow index.
+
+        Startup reconcile needs the files the index believes in, including ones the
+        user deleted while the watchdog was down. Same diagnostic exception as
+        :meth:`list_units_by_md`: one md file can hold units from several scopes, so
+        ``scope`` is accepted for symmetry but does not narrow the result.
+        Default: empty list (safe close for implementations without reconcile).
+        """
+        return []
+
     @abstractmethod
     def latest_scope_by_md(self, scope: Scope, md_filename: str) -> Scope | None:
         """按 ``md_filename`` 查该文件最新一条 unit 的 scope，无历史返 None。

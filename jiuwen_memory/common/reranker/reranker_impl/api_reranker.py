@@ -215,3 +215,10 @@ def _build(config):
         ssl_ca_cert=ssl.ca_cert,
         config_source=ConfigSourceProducer.get_cached("default"),
     )
+
+# F17 D9: data-destination declaration (registered when this module loads).
+from jiuwen_memory.common.egress import declare  # noqa: E402
+
+declare('reranker', "api", remote=True, sends={"query", "document"},
+        endpoint_param="reranker_base_url",
+        note="external reranker receives query and candidate text")

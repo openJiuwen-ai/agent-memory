@@ -52,3 +52,9 @@ def _build(config):
     if config.name and callable(getattr(source, "build_model", None)):
         return source.build_model(config.name)
     return EchoLLM()
+
+# F17 D9: data-destination declaration (registered when this module loads).
+from jiuwen_memory.common.egress import declare  # noqa: E402
+
+declare('llm', "echo", remote=False,
+        note="echoes the last user message inside this process")

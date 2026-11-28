@@ -501,12 +501,14 @@ def test_participant_close_revalidates_binding_at_commit(tmp_path, monkeypatch):
         real_task = service.task
         real_get = repo.get
 
-        def armed_task(scope, request, owner_actor, read, *, connector_policy):
+        def armed_task(scope, request, owner_actor, read, *, connector_policy,
+                       managing: bool = False):
             if request.request_id == "commit-close":
                 state["armed"] = True
             try:
                 return real_task(
-                    scope, request, owner_actor, read, connector_policy=connector_policy
+                    scope, request, owner_actor, read,
+                    connector_policy=connector_policy, managing=managing,
                 )
             finally:
                 state["armed"] = False
@@ -2123,11 +2125,10 @@ def test_public_batch_item_cannot_forge_source_ref(tmp_path):
         outcome = result.outcomes[0]
         assert outcome.error_type == "ValidationError"
         assert "source_ref" in outcome.error
-        assert [unit.content for unit in api.list(project, security=_security(owner)).items][
-            :1
-        ] == [] or "forged" not in [
+        contents = [
             unit.content for unit in api.list(project, security=_security(owner)).items
         ]
+        assert contents[:1] == [] or "forged" not in contents
     finally:
         runtime.close()
 

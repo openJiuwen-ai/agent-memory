@@ -6,6 +6,7 @@
 """
 
 from jiuwen_memory.api.human_view import HumanView, HumanViewRuntime
+from jiuwen_memory.common.egress import EgressInventory, EgressRow
 from jiuwen_memory.common.errors import (
     AgentMemoryError,
     AuthenticationError,
@@ -29,6 +30,9 @@ from jiuwen_memory.common.log import (
     scope_for_log,
 )
 from jiuwen_memory.common.security import internal_context
+from jiuwen_memory.common.security.authentication.authentication_impl import (
+    local_token_authenticator,
+)
 from jiuwen_memory.common.security.capabilities import (
     CloseableSecurityCapability,
     share_security_lifecycle,
@@ -50,6 +54,7 @@ from jiuwen_memory.common.security.types import (
     Credentials,
     Grant,
     RequestSecurityContext,
+    Role,
     Surface,
     reset_current,
     set_current,
@@ -117,6 +122,7 @@ from jiuwen_memory.config.document_flag import (
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.hierarchy_composer import HierarchyComposeOptions
 from jiuwen_memory.control import (
+    AddReceipt,
     BackgroundJobStartResult,
     BatchUpdateOutcome,
     BatchUpdateResult,
@@ -175,6 +181,7 @@ from .memory_api_impl import (
     ManagedMemoryRuntime,
     ManagedServerRuntime,
     MemoryRuntime,
+    ReceiptStatus,
     ServerRuntime,
     assemble,
     assemble_maintenance_ports,
@@ -187,6 +194,12 @@ from .personal_memory import read_personal_record
 from .runtime_configuration import sdk_continuity_runtime_identity
 from .search_options import SearchOptions
 
+# Install-management surface for the local service (F17): re-exported so entry code
+# only depends on ``jiuwen_memory.api``.
+LocalTokenStore = local_token_authenticator.LocalTokenStore
+issue_token = local_token_authenticator.issue_token
+token_digest = local_token_authenticator.token_digest
+
 __all__ = [
     "COLLECTIVE_CONTEXT_HEADER",
     "COLLECTIVE_MANAGEMENT_OPERATIONS",
@@ -196,6 +209,13 @@ __all__ = [
     "bind_collective_context",
     "dimensions_of",
     "sdk_continuity_runtime_identity",
+    "LocalTokenStore",
+    "issue_token",
+    "token_digest",
+    "Role",
+    "EgressInventory",
+    "EgressRow",
+    "ReceiptStatus",
     "read_personal_record",
     "open_config_overlay",
     "open_document_overlay",
@@ -244,6 +264,7 @@ __all__ = [
     "BackgroundJobStartResult",
     "BatchWriteItem",
     "BatchWriteOutcome",
+    "AddReceipt",
     "BatchWriteResult",
     "BatchUpdateOutcome",
     "BatchUpdateResult",

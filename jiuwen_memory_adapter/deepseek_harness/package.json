@@ -1,0 +1,21 @@
+{
+  "name": "@jiuwen/dsh-memory",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness plugin: recall and capture memory through the local jiuwen-memory service",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "0.2.2-rc.1"
+  },
+  "license": "Apache-2.0"
+}
