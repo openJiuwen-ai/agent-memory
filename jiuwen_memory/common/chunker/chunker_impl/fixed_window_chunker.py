@@ -32,9 +32,16 @@ class FixedWindowChunker(Chunker):
     def chunk(
         self, text: str, unit_id: str = "", metadata: dict[str, str] | None = None
     ) -> list[Chunk]:
+        # Match the chunker contract used by RecursiveChunker: blank input has
+        # no chunk. Without this guard ``max(len(text), 1)`` produced one empty
+        # (or whitespace-only) chunk, which KeywordExtractor promoted into an
+        # empty SEMANTIC memory and VectorIndexBuilder tried to embed.
+        if not text or not text.strip():
+            return []
+
         meta = dict(metadata or {})
         chunks: list[Chunk] = []
-        for seq, start in enumerate(range(0, max(len(text), 1), self._size)):
+        for seq, start in enumerate(range(0, len(text), self._size)):
             end = start + self._size
             piece = text[start:end]
             chunks.append(
