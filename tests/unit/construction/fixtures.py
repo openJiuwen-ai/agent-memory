@@ -633,10 +633,15 @@ def make_snapshot_test_harness(
     responses = ["merged old and new"]
     if candidate is not None:
         candidate.system_metadata[f"{CONSOLIDATION_PROMPT_PREFIX}fact"] = "snapshot-test"
+        orchestrating = evolver_kind == "orchestrating"
         response = {
-            "candidate_id": candidate.id,
+            "candidate_id": "c1" if orchestrating else candidate.id,
             "decision": decision.value,
-            "existing_id": existing.id if existing is not None else "",
+            "existing_id": (
+                "e1" if orchestrating and existing is not None
+                else existing.id if existing is not None
+                else ""
+            ),
         }
         payload = [response] if evolver_kind == "orchestrating" else response
         responses.insert(0, json.dumps(payload))

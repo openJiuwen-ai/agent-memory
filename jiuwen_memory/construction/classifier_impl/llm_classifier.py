@@ -23,7 +23,6 @@ LLM 不可用/解析失败降级为空 tags + EPISODIC tier，不阻断。
 from __future__ import annotations
 
 import json
-import re
 
 from jiuwen_memory.common.llm.base import LLM, LlmProducer
 from jiuwen_memory.common.log import get_logger, metadata_for_log, redact_for_log
@@ -31,12 +30,15 @@ from jiuwen_memory.common.type_def import ChatMessage, LifecycleState, MemoryTie
 from jiuwen_memory.construction.base import OperatorType
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
 from jiuwen_memory.construction.common import (
+    batch_source_table,
     fill_missing_importance,
     importance_category_map_from_config,
     importance_category_prompt,
     importance_category_prompt_enabled_from_config,
+    is_ordinal_reference,
     parse_tags,
     reject_deprecated_llm_attempt_keys,
+    strip_batch_reference_shell,
     validate_llm_attempt_policy,
 )
 from jiuwen_memory.construction.llm_retry import call_llm_with_retry
@@ -66,8 +68,7 @@ Classify each memory below into its cognitive role (tier) and topic tags.
 Output ONLY a JSON array. No explanation, no markdown fences. One entry per input memory,
 in the SAME order as input. Each entry:
 
-- "source_id": the bare id of the input memory (the UUID shown in the [ID: ...] marker,
-  WITHOUT the wrapper).
+- "source_id": the integer shown in the input memory's [ID: ...] marker.
 - "tier": one of:
   - "episodic": an event/experience that happened at a point in time.
   - "semantic": a stated fact / concept / preference (what is known or liked).
@@ -80,7 +81,7 @@ in the SAME order as input. Each entry:
 
 Output schema:
 [{
-  "source_id": "<bare uuid>",
+  "source_id": 1,
   "tier": "episodic" | "semantic" | "procedural",
   "tags": ["tag1", "tag2"]
 }]
@@ -105,12 +106,6 @@ def _parse_tier(raw) -> MemoryTier:
     if s:
         logger.debug("LLMClassifier._parse_tier: unknown tier %r, fallback EPISODIC", s)
     return MemoryTier.EPISODIC
-
-
-def _strip_source_id_shell(raw: str) -> str:
-    """剥掉 LLM 误带的 [ID: ...] 外壳（同 extractor 兜底）。"""
-    m = re.match(r"^\s*\[ID:\s*(?P<id>[^\]]+)\]\s*$", raw, re.IGNORECASE)
-    return m.group("id").strip() if m else raw.strip()
 
 
 class LLMClassifier(Classifier):
@@ -192,9 +187,13 @@ class LLMClassifier(Classifier):
         """单批 LLM 分类：拼 prompt → 调 LLM → 解析 → 回写 tier/tags。"""
         # 判定 tier/tags 不需要全文：护栏截断判定输入，防止超大 unit 把同步
         # 写路径拖进分钟级 LLM 超时（存储/索引仍用全文，检索质量不受影响）。
+        references = batch_source_table(units)
         parts = [
-            _SOURCE_PREFIX.format(unit_id=u.id, unit_content=truncate_unit_content(u.content))
-            for u in units
+            _SOURCE_PREFIX.format(
+                unit_id=int(reference),
+                unit_content=truncate_unit_content(unit.content),
+            )
+            for reference, unit in references.items()
         ]
         user_text = "\n".join(parts)
         messages = [
@@ -203,18 +202,29 @@ class LLMClassifier(Classifier):
         ]
         response = self._call_llm_with_retry(messages)
         items = self._parse_response(response)
-        unit_map = {u.id: u for u in units}
 
         matched = 0
+        seen: set[str] = set()
         for item in items:
-            sid = _strip_source_id_shell(str(item.get("source_id", "")))
-            unit = unit_map.get(sid)
+            if not isinstance(item, dict):
+                continue
+            sid = strip_batch_reference_shell(str(item.get("source_id", "")))
+            if sid in seen:
+                continue
+            if not is_ordinal_reference(sid):
+                logger.warning(
+                    "LLMClassifier: invalid batch reference %s, skip",
+                    redact_for_log(sid),
+                )
+                continue
+            unit = references.get(sid)
             if unit is None:
                 logger.debug(
                     "LLMClassifier: source_id %s not in batch, skip",
                     redact_for_log(sid),
                 )
                 continue
+            seen.add(sid)
             unit.tier = _parse_tier(item.get("tier"))
             category = (
                 item.get("importance_category")

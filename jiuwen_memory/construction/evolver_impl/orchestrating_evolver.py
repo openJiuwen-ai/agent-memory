@@ -81,6 +81,7 @@ from jiuwen_memory.construction.base import ExtractContext, OperatorType
 from jiuwen_memory.construction.common import (
     IMPORTANCE_KEY,
     ORIGIN_KEY,
+    is_ordinal_reference,
     merge_importance_max,
     resolve_message_store,
 )
@@ -197,7 +198,8 @@ of an existing memory.
 
 Output ONLY a JSON object with:
 - "decision": "add" | "update" | "supersede" | "noop"
-- "existing_id": the exact [Memory ID] that this update or supersede targets;
+- "existing_id": the short reference shown as [Memory ID: eN] that this update or supersede
+  targets;
   use null for "add" and "noop"
 - "reason": brief explanation (one sentence)
 
@@ -211,7 +213,7 @@ more complete/accurate/recent).
 
 For "update" and "supersede", existing_id MUST be non-null and identify the fact
 actually being changed or invalidated, not merely the highest similarity score. Copy it
-exactly from one of the supplied [Memory ID] values.
+exactly, including the eN form, from one of the supplied [Memory ID] values.
 
 If unsure, prefer "add" (to avoid losing information)."""
 
@@ -222,15 +224,15 @@ duplicate.
 
 Input format (compact):
   [cid]: <candidate content>
-    e|<existing_id>|<cosine_score>: <existing content>
+    e|<eN>|<cosine_score>: <existing content>
   ---
 
 Output ONLY a JSON array (one entry per candidate, in input order). No explanation, no markdown \
 fences.
 Each entry:
-- "candidate_id": the candidate's id (the value after [ and before ])
+- "candidate_id": the cN reference (the value after [ and before ])
 - "decision": "add" | "update" | "supersede" | "noop"
-- "existing_id": the exact existing id that this update or supersede targets; use null
+- "existing_id": the exact eN reference that this update or supersede targets; use null
   for "add" and "noop"
 - "reason": brief explanation (one sentence)
 
@@ -243,8 +245,9 @@ more complete/accurate/recent).
 - "noop": The candidate is fully covered by an existing memory (no new information).
 
 For "update" and "supersede", existing_id MUST be non-null and copied exactly from the
-candidate's OWN e|<existing_id> entries. Choose the fact actually being changed or invalidated,
-not merely the highest similarity score. Never target another candidate's entries.
+candidate's OWN e|<eN> entries. Choose the fact actually being changed or invalidated,
+not merely the highest similarity score. Never target another candidate's entries or use
+a candidate id as an existing id.
 
 Judge each candidate independently against its OWN listed existing memories. If unsure, prefer \
 "add"."""
@@ -317,6 +320,20 @@ def _unit_key(unit: MemoryUnit) -> _UnitKey:
     return _UnitKey(
         scope.org, scope.space, scope.user, scope.agent, scope.session, unit.id
     )
+
+
+def _resolve_dedup_reference(
+    raw: object,
+    references: dict[str, MemoryUnit],
+    prefix: str,
+) -> MemoryUnit | None:
+    """只从本次模型可见的短引用中解析去重目标。"""
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        return None
+    value = str(raw).strip()
+    if not value.startswith(prefix) or not is_ordinal_reference(value[len(prefix):]):
+        return None
+    return references.get(value)
 
 
 @dataclass
@@ -1127,18 +1144,18 @@ class OrchestratingEvolver(Evolver):
     @staticmethod
     def _validated_target(
         payload: dict,
-        hits: list[tuple[MemoryUnit, float]],
+        references: dict[str, MemoryUnit],
         decision: DedupDecision,
     ) -> MemoryUnit | None:
         if decision not in (DedupDecision.UPDATE, DedupDecision.SUPERSEDE):
             return None
-        visible = {unit.id: unit for unit, _ in hits[:3]}
-        target_id = payload.get("existing_id")
-        if target_id is None and len(visible) == 1:
-            return next(iter(visible.values()))
-        if not isinstance(target_id, str) or target_id not in visible:
+        raw_reference = payload.get("existing_id")
+        if raw_reference is None and len(references) == 1:
+            return next(iter(references.values()))
+        target = _resolve_dedup_reference(raw_reference, references, "e")
+        if target is None:
             raise ValueError("modification requires a listed existing_id")
-        return visible[target_id]
+        return target
 
     def _llm_dedup_decide(
         self,
@@ -1149,9 +1166,12 @@ class OrchestratingEvolver(Evolver):
     ) -> DedupDecision:
         """构建去重判定 prompt，LLM.chat() → 解析 JSON → 返回 DedupDecision。"""
         existing_texts = []
-        for unit, score in hits[:3]:  # 只取 top-3 减少上下文消耗
+        references: dict[str, MemoryUnit] = {}
+        for index, (unit, score) in enumerate(hits[:3], start=1):
+            reference = f"e{index}"
+            references[reference] = unit
             existing_texts.append(
-                f"[Memory ID: {unit.id}]\n"
+                f"[Memory ID: {reference}]\n"
                 f"Content: {format_role_line(unit)}\n"
                 f"Tier: {unit.tier.value}\n"
                 f"{time_context(unit)}\n"
@@ -1160,7 +1180,6 @@ class OrchestratingEvolver(Evolver):
 
         user_prompt = (
             f"Candidate memory to check:\n"
-            f"[Memory ID: {candidate.id}]\n"
             f"Content: {format_role_line(candidate)}\n"
             f"Tier: {candidate.tier.value}\n\n"
             f"{time_context(candidate)}\n\n"
@@ -1233,7 +1252,7 @@ class OrchestratingEvolver(Evolver):
             return DedupDecision.ADD
 
         try:
-            target = self._validated_target(result, hits, decision)
+            target = self._validated_target(result, references, decision)
         except ValueError:
             logger.warning(
                 "Evolver._llm_dedup_decide: modification target is missing or invalid "
@@ -1255,19 +1274,26 @@ class OrchestratingEvolver(Evolver):
 
         ``items`` 为 (candidate, hit_units) 列表。prompt 格式（紧凑）：
         [cid]: <candidate content>
-          e|<existing_id>|<score>: <existing content>
+          e|<eN>|<score>: <existing content>
         候选之间用 ``---`` 分隔。解析失败或缺项的候选回退为单条判定。
         """
         if not items:
             return {}
 
-        # 构建紧凑批量 prompt
+        # 候选用 cN，整次批量 prompt 的已有记忆共用一张 eN 表；否则不同候选的
+        # 第一条命中会重复显示为 e1，模型无法稳定区分目标。
         blocks: list[str] = []
-        for cand, hits in items:
-            cand_block = f"[{cand.id}]: {format_role_line(cand)}\n{time_context(cand)}"
+        candidate_refs = {f"c{index}": cand for index, (cand, _) in enumerate(items, start=1)}
+        hit_refs: dict[str, dict[str, MemoryUnit]] = {cand.id: {} for cand, _ in items}
+        hit_index = 0
+        for cand_index, (cand, hits) in enumerate(items, start=1):
+            cand_block = f"[c{cand_index}]: {format_role_line(cand)}\n{time_context(cand)}"
             for unit, score in hits[:3]:
+                hit_index += 1
+                reference = f"e{hit_index}"
+                hit_refs[cand.id][reference] = unit
                 cand_block += (
-                    f"\n  e|{unit.id}|{score:.3f}: {format_role_line(unit)}\n{time_context(unit)}"
+                    f"\n  e|{reference}|{score:.3f}: {format_role_line(unit)}\n{time_context(unit)}"
                 )
             blocks.append(cand_block)
         user_prompt = "\n---\n".join(blocks)
@@ -1350,17 +1376,17 @@ class OrchestratingEvolver(Evolver):
             return self._fallback_single_decide(items, targets=targets)
 
         # 按候选 id 取 decision
-        known_candidate_ids = {candidate.id for candidate, _ in items}
-        hit_map = {candidate.id: hits for candidate, hits in items}
         for entry in parsed:
             if not isinstance(entry, dict):
                 continue
-            cid = entry.get("candidate_id")
+            raw_candidate_id = entry.get("candidate_id")
             # 单对象响应（无 candidate_id 字段）且只有一条候选 → 用该候选 id
-            if cid is None and len(items) == 1:
-                cid = items[0][0].id
-            if not isinstance(cid, str) or cid not in known_candidate_ids:
+            if raw_candidate_id is None and len(items) == 1:
+                raw_candidate_id = "c1"
+            candidate = _resolve_dedup_reference(raw_candidate_id, candidate_refs, "c")
+            if candidate is None:
                 continue
+            cid = candidate.id
             decision_str = str(entry.get("decision", "add")).lower()
             candidate_id_for_log = cid
             try:
@@ -1376,7 +1402,7 @@ class OrchestratingEvolver(Evolver):
                 continue
 
             try:
-                target = self._validated_target(entry, hit_map[cid], decision)
+                target = self._validated_target(entry, hit_refs[cid], decision)
             except ValueError:
                 logger.warning(
                     "Evolver._llm_dedup_decide_batch: modification target is missing or "

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 
 import pytest
@@ -19,11 +20,11 @@ from jiuwen_memory.common.errors import HealthCheckError, ValidationError
 from jiuwen_memory.common.llm.base import LLM
 from jiuwen_memory.common.type_def import ChatMessage, MemoryUnit, Scope, Segment
 from jiuwen_memory.construction.base import OperatorType
+from jiuwen_memory.construction.common import strip_batch_reference_shell
 from jiuwen_memory.construction.router import RouteContext, RouteTable, parse_route_table
 from jiuwen_memory.construction.router_impl.llm_router import (
     LLMRouter,
     _parse_response,
-    _strip_source_id_shell,
 )
 
 pytestmark = pytest.mark.unit
@@ -98,7 +99,7 @@ def _ctx(table: RouteTable, **coords) -> RouteContext:
 
 
 def _unit(content: str) -> MemoryUnit:
-    """id 显式给出：``MemoryUnit.id`` 缺省是空串，而本实现按 id 比对判定结论。"""
+    """构造带内部 id 的单元；prompt 绑定只使用批内数字引用。"""
     return MemoryUnit(id=str(uuid.uuid4()), segments=[Segment(content=content)])
 
 
@@ -107,8 +108,8 @@ def _router(*responses: object, retries: int = 3) -> tuple[LLMRouter, _ScriptedL
     return LLMRouter(llm, _table(), max_attempts=retries, retry_backoff_ms=0), llm
 
 
-def _reply(unit: MemoryUnit, memory_class: str = "user_profile", **extra: object) -> str:
-    return json.dumps([{"source_id": unit.id, "memory_class": memory_class, **extra}])
+def _reply(memory_class: str = "user_profile", **extra: object) -> str:
+    return json.dumps([{"source_id": 1, "memory_class": memory_class, **extra}])
 
 
 # -- 响应解析 -------------------------------------------------------------- #
@@ -153,14 +154,58 @@ def test_a_non_array_non_object_output_raises(bad: str) -> None:
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
-    [("[ID: abc]", "abc"), ("ID: abc", "abc"), ("abc", "abc"), ("  [ID: abc]  ", "abc")],
+    [
+        ("[ID: abc]", "abc"),
+        ("  [ID: abc]  ", "abc"),
+        ("abc", "abc"),
+        ("ID: abc", "ID: abc"),
+    ],
 )
 def test_the_id_shell_is_stripped_before_matching(raw: str, expected: str) -> None:
-    """输入里 id 带 ``[ID: ...]`` 壳，模型回传时壳去与不去都出现过。
+    """模型把 ``[ID: ...]`` 壳连内容回传时统一去壳。
 
-    不去壳即全批比对不上，每条都走缺判回落——判定整体失效且不报错。
+    与分类/抽取共用 ``construction.common`` 的同一去壳实现；不带方括号的裸
+    回显不算壳，留在引用里按协议违规处理，不猜测。
     """
-    assert _strip_source_id_shell(raw) == expected
+    assert strip_batch_reference_shell(raw) == expected
+
+
+def test_router_rejects_invalid_batch_references(caplog) -> None:
+    """布尔、零、前导零、真实 UUID 是序号协议违规；越界只走缺判回落。
+
+    批内序号协议是 ``[1-9]\\d*``：把校验放宽成 ``\\d+`` 时，``0``/``01`` 会落进
+    「越界」分支（无告警），本用例的违规告警计数随之失败。
+    """
+    true_uuid = str(uuid.uuid4())
+    router, _llm = _router(json.dumps([
+        {"source_id": 1, "memory_class": "long_term_memory"},
+        {"source_id": 0, "memory_class": "user_profile"},
+        {"source_id": "01", "memory_class": "user_profile"},
+        {"source_id": true_uuid, "memory_class": "user_profile"},
+        {"source_id": True, "memory_class": "user_profile"},
+        {"source_id": 3, "memory_class": "user_profile"},
+    ]))
+    ctx = _ctx(_table(), project="p1")
+    first, second = _unit("项目 p1 部署在集群 A"), _unit("我偏好深色主题")
+
+    component_logger = logging.getLogger("agent_memory")
+    old_propagate = component_logger.propagate
+    component_logger.propagate = True
+    try:
+        with caplog.at_level(logging.WARNING):
+            decisions = router.route([first, second], ctx)
+    finally:
+        component_logger.propagate = old_propagate
+
+    assert decisions[0].memory_class == "long_term_memory"
+    assert decisions[0].scope.space == "p_p1"
+    assert decisions[1].reason == "no decision for unit"
+    invalid_warnings = [
+        record
+        for record in caplog.records
+        if "invalid batch reference" in record.getMessage()
+    ]
+    assert len(invalid_warnings) == 4, "0/01/UUID/布尔违规告警；越界 3 只缺判回落"
 
 
 # -- 判定结论的折算 -------------------------------------------------------- #
@@ -171,7 +216,7 @@ def test_a_routed_unit_takes_its_class_and_narrow_hits() -> None:
     ctx = _ctx(table, project="p1")
     unit = _unit("项目 p1 部署在集群 A")
     router, _llm = _router(
-        _reply(unit, "long_term_memory", narrow={"agent_id": True, "session_id": False})
+        _reply("long_term_memory", narrow={"agent_id": True, "session_id": False})
     )
     (decision,) = router.route([unit], ctx)
     assert decision.memory_class == "long_term_memory"
@@ -181,13 +226,31 @@ def test_a_routed_unit_takes_its_class_and_narrow_hits() -> None:
     assert decision.tags == {"agent_id": "a1"}
 
 
+def test_prompt_uses_batch_number_instead_of_internal_id() -> None:
+    table = _table()
+    internal_id = "11111111-1111-1111-1111-111111111111"
+    unit = MemoryUnit(
+        id=internal_id,
+        segments=[Segment(content="项目 p1 部署在集群 A")],
+    )
+    router, llm = _router(_reply("long_term_memory"))
+
+    router.route([unit], _ctx(table, project="p1"))
+
+    system_text = llm.calls[0][0].content
+    user_text = llm.calls[0][1].content
+    assert "[ID: 1]" in user_text
+    assert internal_id not in system_text + user_text
+    assert '"source_id": 1' in system_text
+
+
 def test_an_id_returned_inside_its_shell_still_matches() -> None:
-    """模型把 id 连壳回传时仍要匹配上，否则整批走缺判回落且不报错。"""
+    """模型把批内数字引用连壳回传时仍要匹配上。"""
     table = _table()
     ctx = _ctx(table, project="p1")
     unit = _unit("项目 p1 部署在集群 A")
     router, _llm = _router(
-        '[{"source_id": "[ID: ' + unit.id + ']", "memory_class": "long_term_memory"}]'
+        '[{"source_id": "[ID: 1]", "memory_class": "long_term_memory"}]'
     )
     (decision,) = router.route([unit], ctx)
     assert decision.scope.space == "p_p1"
@@ -201,18 +264,14 @@ def test_a_unit_missing_from_the_response_falls_back_alone() -> None:
     table = _table()
     ctx = _ctx(table, project="p1")
     routed, missing = _unit("项目 p1 部署在集群 A"), _unit("我偏好深色主题")
-    router, _llm = _router(_reply(routed, "long_term_memory", narrow={}))
+    router, _llm = _router(_reply("long_term_memory", narrow={}))
     decisions = router.route([routed, missing], ctx)
     assert [d.scope.space for d in decisions] == ["p_p1", "u_alice"]
     assert decisions[1].reason == "no decision for unit"
 
 
-def test_a_batch_of_blank_ids_is_matched_by_position() -> None:
-    """一批内 id 全为空时按输入顺序比对，不按 id。
-
-    按 id 比对时空串键互相覆盖，比对表只剩最后一项，整批取到同一条结论——两条内容都会
-    落到最后一条判出的空间。本实现在 id 不足以比对时退回按序取，退化有 WARNING。
-    """
+def test_blank_internal_ids_do_not_affect_reference_matching() -> None:
+    """内部 id 缺失不进入 prompt；数字引用仍逐条绑定到输入顺序。"""
     table = _table()
     ctx = _ctx(table, project="p1")
     blank_a = MemoryUnit(segments=[Segment(content="我偏好深色主题")])
@@ -220,8 +279,8 @@ def test_a_batch_of_blank_ids_is_matched_by_position() -> None:
     router, _llm = _router(
         json.dumps(
             [
-                {"source_id": "", "memory_class": "user_profile", "narrow": {}},
-                {"source_id": "", "memory_class": "long_term_memory", "narrow": {}},
+                {"source_id": 1, "memory_class": "user_profile", "narrow": {}},
+                {"source_id": 2, "memory_class": "long_term_memory", "narrow": {}},
             ]
         )
     )
@@ -229,8 +288,8 @@ def test_a_batch_of_blank_ids_is_matched_by_position() -> None:
     assert [d.scope.space for d in decisions] == ["u_alice", "p_p1"]
 
 
-def test_duplicate_ids_are_matched_by_position() -> None:
-    """id 重复与 id 为空同一处置：重复的键同样互相覆盖。"""
+def test_duplicate_internal_ids_do_not_affect_reference_matching() -> None:
+    """内部 id 重复不进入 prompt；数字引用仍能区分两个输入位置。"""
     table = _table()
     ctx = _ctx(table, project="p1")
     same = str(uuid.uuid4())
@@ -239,8 +298,8 @@ def test_duplicate_ids_are_matched_by_position() -> None:
     router, _llm = _router(
         json.dumps(
             [
-                {"source_id": same, "memory_class": "user_profile", "narrow": {}},
-                {"source_id": same, "memory_class": "long_term_memory", "narrow": {}},
+                {"source_id": 1, "memory_class": "user_profile", "narrow": {}},
+                {"source_id": 2, "memory_class": "long_term_memory", "narrow": {}},
             ]
         )
     )
@@ -248,14 +307,14 @@ def test_duplicate_ids_are_matched_by_position() -> None:
     assert [d.scope.space for d in decisions] == ["u_alice", "p_p1"]
 
 
-def test_position_matching_falls_back_when_the_response_is_short() -> None:
-    """按序比对下响应条数不足时，缺的那条落 fallback，不越界取。"""
+def test_a_missing_reference_falls_back_when_the_response_is_short() -> None:
+    """响应缺少第二个数字引用时，只让对应条目落 fallback。"""
     table = _table()
     ctx = _ctx(table, project="p1")
     blank_a = MemoryUnit(segments=[Segment(content="项目 p1 部署在集群 A")])
     blank_b = MemoryUnit(segments=[Segment(content="我偏好深色主题")])
     router, _llm = _router(
-        json.dumps([{"source_id": "", "memory_class": "long_term_memory", "narrow": {}}])
+        json.dumps([{"source_id": 1, "memory_class": "long_term_memory", "narrow": {}}])
     )
     decisions = router.route([blank_a, blank_b], ctx)
     assert [d.scope.space for d in decisions] == ["p_p1", "u_alice"]
@@ -271,7 +330,7 @@ def test_a_non_dict_narrow_value_yields_no_hits() -> None:
     table = _table()
     ctx = _ctx(table)
     unit = _unit("我偏好深色主题")
-    router, _llm = _router(_reply(unit, narrow="yes"))
+    router, _llm = _router(_reply(narrow="yes"))
     (decision,) = router.route([unit], ctx)
     assert decision.tags == {}
     assert decision.memory_class == "user_profile"
@@ -283,7 +342,7 @@ def test_a_non_dict_entry_in_the_response_is_skipped() -> None:
     ctx = _ctx(table)
     unit = _unit("我偏好深色主题")
     router, _llm = _router(
-        '["garbage", {"source_id": "' + unit.id + '", "memory_class": "user_profile"}]'
+        '["garbage", {"source_id": 1, "memory_class": "user_profile"}]'
     )
     (decision,) = router.route([unit], ctx)
     assert decision.memory_class == "user_profile"
@@ -293,7 +352,7 @@ def test_the_discard_flag_is_carried_through() -> None:
     table = _table()
     ctx = _ctx(table)
     unit = _unit("嗯")
-    router, _llm = _router(_reply(unit, discard=True))
+    router, _llm = _router(_reply(discard=True))
     (decision,) = router.route([unit], ctx)
     assert decision.discarded is True
 
@@ -318,8 +377,8 @@ def test_a_batch_over_the_size_limit_is_split_and_order_is_preserved() -> None:
     replies = [
         json.dumps(
             [
-                {"source_id": unit.id, "memory_class": "user_profile"}
-                for unit in units[start:start + 10]
+                {"source_id": index, "memory_class": "user_profile"}
+                for index in range(1, len(units[start:start + 10]) + 1)
             ]
         )
         for start in (0, 10)
@@ -334,7 +393,7 @@ def test_a_transient_llm_failure_is_retried() -> None:
     table = _table()
     ctx = _ctx(table)
     unit = _unit("我偏好深色主题")
-    router, llm = _router(RuntimeError("timeout"), _reply(unit))
+    router, llm = _router(RuntimeError("timeout"), _reply())
     (decision,) = router.route([unit], ctx)
     assert decision.memory_class == "user_profile"
     assert len(llm.calls) == 2
@@ -390,7 +449,7 @@ def test_the_system_prompt_carries_the_classes_and_dimensions() -> None:
     """判定表的类别与收窄维必须进 prompt：漏掉即模型按空清单作答，全批落 fallback。"""
     table = _table()
     unit = _unit("我偏好深色主题")
-    router, llm = _router(_reply(unit))
+    router, llm = _router(_reply())
     router.route([unit], _ctx(table))
     prompt = llm.calls[0][0].content
     assert "user_profile (FALLBACK)" in prompt
@@ -407,7 +466,7 @@ def test_the_system_prompt_carries_ownership_coordinates() -> None:
     table = _table()
     ctx = _ctx(table, project="p1")
     unit = _unit("项目 p1 部署在集群 A")
-    router, llm = _router(_reply(unit))
+    router, llm = _router(_reply())
     router.route([unit], ctx)
     prompt = llm.calls[0][0].content
     assert "OWNERSHIP COORDINATES" in prompt
@@ -420,7 +479,7 @@ def test_the_system_prompt_coordinates_default_to_none() -> None:
     table = _table()
     ctx = _ctx(table, user="", agent="", session="")
     unit = _unit("我偏好深色主题")
-    router, llm = _router(_reply(unit))
+    router, llm = _router(_reply())
     router.route([unit], ctx)
     prompt = llm.calls[0][0].content
     assert "OWNERSHIP COORDINATES" in prompt

@@ -205,12 +205,15 @@ def test_batch_rechecks_superseded_target():
 def test_target_must_be_visible_and_unambiguous():
     # pylint: disable=protected-access  # 白盒验证内部阶段与异常恢复，不扩大生产接口
     hits = [(_fact("a", 1), 0.9), (_fact("b", 2), 0.8)]
+    references = {f"e{index}": unit for index, (unit, _) in enumerate(hits, start=1)}
     assert OrchestratingEvolver._validated_target(
-        {"existing_id": "b"}, hits, DedupDecision.SUPERSEDE
+        {"existing_id": "e2"}, references, DedupDecision.SUPERSEDE
     ).id == "b"
-    for payload in ({}, {"existing_id": "unlisted"}):
+    for payload in ({}, {"existing_id": "e999"}, {"existing_id": "b"}):
         with pytest.raises(ValueError, match="listed existing_id"):
-            OrchestratingEvolver._validated_target(payload, hits, DedupDecision.UPDATE)
+            OrchestratingEvolver._validated_target(
+                payload, references, DedupDecision.UPDATE
+            )
 
 
 def test_old_statement_remains_current_until_known_future_successor_starts():
@@ -250,7 +253,11 @@ def test_model_selected_target_keeps_its_own_similarity(path, decision):
     from tests.unit.construction.test_dynamic_extraction_consolidation import _ScriptedLLM
 
     first, selected, candidate = _fact("first", 1), _fact("selected", 2), _fact("c", 3)
-    payload = {"candidate_id": "c", "existing_id": "selected", "decision": decision.value}
+    payload = {
+        "candidate_id": "c" if path == "dynamic" else "c1",
+        "existing_id": "selected" if path == "dynamic" else "e2",
+        "decision": decision.value,
+    }
     responses = [json.dumps([payload] if path == "batch" else payload), "merged content"]
     if path == "batch_fallback":
         responses.insert(0, "invalid batch response")

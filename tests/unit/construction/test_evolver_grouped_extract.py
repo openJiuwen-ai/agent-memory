@@ -185,7 +185,7 @@ def test_sources_cover_add_and_update() -> None:
         hits={"cand-1": [(existing, 0.8)]},
         llm=_JsonLLM(
             json.dumps(
-                [{"candidate_id": "cand-1", "decision": "update", "existing_id": "existing-1"}]
+                [{"candidate_id": "c1", "decision": "update", "existing_id": "e1"}]
             )
         ),
     )

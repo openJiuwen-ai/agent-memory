@@ -10,6 +10,7 @@ LLMClassifier 重写为纯 LLM tier+tags 抽取后，测试覆盖：
 
 import hashlib
 import json
+import logging
 
 import pytest
 
@@ -28,7 +29,7 @@ from jiuwen_memory.construction.classifier_impl.keyword_classifier import Keywor
 from jiuwen_memory.construction.classifier_impl.llm_classifier import LLMClassifier
 from tests.unit.construction.fixtures import MockLLM
 
-_CLASSIFY_PROMPT_48BE7B3_SHA256 = "277d2205784c7a140c18ea63a322e2bc50ea5c82de20af08eaa292a4048f0b02"
+_CLASSIFY_PROMPT_48BE7B3_SHA256 = "366045fdafc5acd1b7323e289f7b21020d5df9027ca269c1d82b0bd5f09ff222"
 
 
 def _make_unit(
@@ -91,7 +92,7 @@ def test_empty_units():
 def test_single_unit_tier_and_tags():
     """单条 → LLM 返 tier=semantic tags=[python,preference] → 写回 unit。"""
     resp = _classify_response([
-        {"source_id": "u1", "tier": "semantic", "tags": ["python", "preference"]},
+        {"source_id": 1, "tier": "semantic", "tags": ["python", "preference"]},
     ])
     clf = _make_classifier([resp])
     unit = _make_unit("u1", "用户偏好用 Python 写代码")
@@ -104,9 +105,9 @@ def test_single_unit_tier_and_tags():
 def test_batch_classify_preserves_order():
     """3 条批量 → 一次 LLM 调用返 3 条，各 tier/tags 回写正确源 unit。"""
     resp = _classify_response([
-        {"source_id": "u1", "tier": "semantic", "tags": ["coffee"]},
-        {"source_id": "u2", "tier": "episodic", "tags": ["meeting"]},
-        {"source_id": "u3", "tier": "procedural", "tags": ["deploy"]},
+        {"source_id": 1, "tier": "semantic", "tags": ["coffee"]},
+        {"source_id": 2, "tier": "episodic", "tags": ["meeting"]},
+        {"source_id": 3, "tier": "procedural", "tags": ["deploy"]},
     ])
     clf = _make_classifier([resp])
     units = [
@@ -128,7 +129,7 @@ def test_batch_classify_preserves_order():
 
 def test_unknown_tier_fallback_episodic():
     """LLM 返非法 tier（core）→ 兜底 EPISODIC。"""
-    resp = _classify_response([{"source_id": "u1", "tier": "core", "tags": []}])
+    resp = _classify_response([{"source_id": 1, "tier": "core", "tags": []}])
     clf = _make_classifier([resp])
     unit = _make_unit("u1")
     clf.classify([unit])
@@ -137,7 +138,7 @@ def test_unknown_tier_fallback_episodic():
 
 def test_missing_tier_fallback_episodic():
     """LLM 缺失 tier → 兜底 EPISODIC。"""
-    resp = _classify_response([{"source_id": "u1", "tags": ["x"]}])
+    resp = _classify_response([{"source_id": 1, "tags": ["x"]}])
     clf = _make_classifier([resp])
     unit = _make_unit("u1")
     clf.classify([unit])
@@ -152,7 +153,7 @@ def test_missing_tier_fallback_episodic():
 def test_tags_dedup_and_truncate():
     """tags 去重 + 截断到 ≤3。"""
     resp = _classify_response([
-        {"source_id": "u1", "tier": "semantic", "tags": ["python", "Python", "code", "extra"]},
+        {"source_id": 1, "tier": "semantic", "tags": ["python", "Python", "code", "extra"]},
     ])
     clf = _make_classifier([resp])
     unit = _make_unit("u1")
@@ -165,7 +166,7 @@ def test_tags_dedup_and_truncate():
 def test_tags_skip_empty_and_digit():
     """tags 跳过空串/纯数字。"""
     resp = _classify_response([
-        {"source_id": "u1", "tier": "semantic", "tags": ["", "123", "python"]},
+        {"source_id": 1, "tier": "semantic", "tags": ["", "123", "python"]},
     ])
     clf = _make_classifier([resp])
     unit = _make_unit("u1")
@@ -178,7 +179,7 @@ def test_tags_skip_empty_and_digit():
 def test_tags_merge_with_existing():
     """tags 追加到已有 tags（去重）。"""
     resp = _classify_response([
-        {"source_id": "u1", "tier": "semantic", "tags": ["python", "preference"]},
+        {"source_id": 1, "tier": "semantic", "tags": ["python", "preference"]},
     ])
     clf = _make_classifier([resp])
     unit = _make_unit("u1", tags_override=["existing"])
@@ -274,7 +275,7 @@ class _FlakyThenSuccessLLM(MockLLM):
 def test_large_content_prompt_is_truncated_not_full():
     """~180KB unit → 进 LLM 的 user prompt 有界且带截断标记，首尾信息保留。"""
     big = "标题段落。\n\n" + ("中" * 100 + "\n\n") * 1800  # ≈180K chars
-    resp = _classify_response([{"source_id": "u1", "tier": "semantic", "tags": ["big"]}])
+    resp = _classify_response([{"source_id": 1, "tier": "semantic", "tags": ["big"]}])
     llm = _RecordingLLM([resp])
     clf = LLMClassifier(llm=llm, max_attempts=3, retry_backoff_ms=0)
     unit = _make_unit("u1", big)
@@ -287,6 +288,64 @@ def test_large_content_prompt_is_truncated_not_full():
     assert big[:50] in user_text  # 头部保留
     assert big[-50:] in user_text  # 尾部保留
     assert unit.tier == MemoryTier.SEMANTIC  # 分类照常完成
+
+
+def test_prompt_uses_batch_number_instead_of_internal_id():
+    internal_id = "11111111-1111-1111-1111-111111111111"
+    llm = _RecordingLLM([
+        _classify_response([{"source_id": 1, "tier": "semantic", "tags": ["short-ref"]}]),
+    ])
+    classifier = LLMClassifier(llm=llm, max_attempts=1, retry_backoff_ms=0)
+    unit = _make_unit(internal_id, "用户偏好短引用")
+
+    classifier.classify([unit])
+
+    system_text = llm.captured_messages[0][0].content
+    user_text = llm.captured_messages[0][1].content
+    assert "[ID: 1]" in user_text
+    assert internal_id not in system_text + user_text
+    assert '"source_id": 1' in system_text
+
+
+def test_classifier_rejects_invalid_batch_references(caplog):
+    """布尔、零、前导零、真实 UUID 是序号协议违规；越界只走缺判跳过。
+
+    批内序号协议是 ``[1-9]\\d*``：把校验放宽成 ``\\d+`` 时，``0``/``01`` 会落进
+    「越界」分支（只有 debug 日志），本用例的违规告警计数随之失败。
+    """
+    true_uuid = "22222222-2222-2222-2222-222222222222"
+    llm = _RecordingLLM([
+        _classify_response([
+            {"source_id": 1, "tier": "semantic", "tags": ["valid"]},
+            {"source_id": 0, "tier": "procedural", "tags": ["zero"]},
+            {"source_id": "01", "tier": "procedural", "tags": ["leading-zero"]},
+            {"source_id": true_uuid, "tier": "procedural", "tags": ["uuid"]},
+            {"source_id": True, "tier": "procedural", "tags": ["bool"]},
+            {"source_id": 3, "tier": "procedural", "tags": ["out-of-range"]},
+        ]),
+    ])
+    classifier = LLMClassifier(llm=llm, max_attempts=1, retry_backoff_ms=0)
+    first, second = _make_unit("u1", "第一条"), _make_unit("u2", "第二条")
+
+    component_logger = logging.getLogger("agent_memory")
+    old_propagate = component_logger.propagate
+    component_logger.propagate = True
+    try:
+        with caplog.at_level(logging.WARNING):
+            classifier.classify([first, second])
+    finally:
+        component_logger.propagate = old_propagate
+
+    assert first.tier == MemoryTier.SEMANTIC
+    assert first.tags == ["valid"]
+    assert second.tier == MemoryTier.EPISODIC
+    assert second.tags == [], "非法引用不得把 tier/tags 写到任何来源上"
+    invalid_warnings = [
+        record
+        for record in caplog.records
+        if "invalid batch reference" in record.getMessage()
+    ]
+    assert len(invalid_warnings) == 4, "0/01/UUID/布尔违规告警；越界 3 只 debug"
 
 
 def test_timeout_exception_is_not_retried():
@@ -309,7 +368,7 @@ def test_non_timeout_exception_is_retried():
 
 def test_transient_failure_recovers_within_retries():
     """前 2 次瞬时失败、第 3 次成功 → 分类照常写回 tier/tags。"""
-    resp = _classify_response([{"source_id": "u1", "tier": "semantic", "tags": ["ok"]}])
+    resp = _classify_response([{"source_id": 1, "tier": "semantic", "tags": ["ok"]}])
     llm = _FlakyThenSuccessLLM([resp], failures=2)
     clf = LLMClassifier(llm=llm, max_attempts=3, retry_backoff_ms=0)
     unit = _make_unit("u1", "content")
@@ -363,7 +422,7 @@ def _importance_classifier(
 def test_llm_classifier_writes_importance_by_category_from_config():
     unit = _make_unit("u1", "我叫张三")
     clf = _importance_classifier(
-        [{"source_id": "u1", "tier": "semantic", "importance_category": "billing"}],
+        [{"source_id": 1, "tier": "semantic", "importance_category": "billing"}],
         _CUSTOM_MAP,
     )
     clf.classify([unit])
@@ -373,7 +432,7 @@ def test_llm_classifier_writes_importance_by_category_from_config():
 def test_llm_classifier_category_parsing_is_case_insensitive():
     unit = _make_unit("u1", "我叫张三")
     clf = _importance_classifier(
-        [{"source_id": "u1", "tier": "semantic", "importance_category": " Identity "}]
+        [{"source_id": 1, "tier": "semantic", "importance_category": " Identity "}]
     )
     clf.classify([unit])
     assert unit.system_metadata["importance"] == "0.95"
@@ -383,7 +442,7 @@ def test_llm_classifier_preserves_caller_supplied_importance():
     unit = _make_unit("u1", "我叫张三")
     unit.system_metadata["importance"] = "0.33"
     clf = _importance_classifier(
-        [{"source_id": "u1", "tier": "semantic", "importance_category": "identity"}]
+        [{"source_id": 1, "tier": "semantic", "importance_category": "identity"}]
     )
     clf.classify([unit])
     assert unit.system_metadata["importance"] == "0.33", "调用方显式值不得被 LLM 类别覆盖"
@@ -392,7 +451,7 @@ def test_llm_classifier_preserves_caller_supplied_importance():
 def test_llm_classifier_unknown_category_falls_back_to_default():
     unit = _make_unit("u1", "x")
     clf = _importance_classifier(
-        [{"source_id": "u1", "tier": "episodic", "importance_category": "galaxy"}],
+        [{"source_id": 1, "tier": "episodic", "importance_category": "galaxy"}],
         _CUSTOM_MAP,
     )
     clf.classify([unit])
@@ -402,7 +461,7 @@ def test_llm_classifier_unknown_category_falls_back_to_default():
 def test_llm_classifier_missing_category_map_falls_back_to_default_importance():
     unit = _make_unit("u1", "x")
     clf = _importance_classifier(
-        [{"source_id": "u1", "tier": "episodic", "importance_category": "identity"}], {}
+        [{"source_id": 1, "tier": "episodic", "importance_category": "identity"}], {}
     )
     clf.classify([unit])
     assert unit.system_metadata["importance"] == "0.50", "配置未提供类别时兜底 DEFAULT_IMPORTANCE"
@@ -443,7 +502,7 @@ def test_llm_classifier_category_prompt_off_matches_baseline_and_ignores_categor
         llm=MockLLM(
             responses=[
                 _classify_response(
-                    [{"source_id": "u1", "tier": "semantic", "importance_category": "identity"}]
+                    [{"source_id": 1, "tier": "semantic", "importance_category": "identity"}]
                 )
             ]
         ),

@@ -27,7 +27,7 @@ IndexBuilder、Router、Dedup、LayerAnnotator 与 Evolver（默认 `Orchestrati
 | `curator.py` | Curator 接口：周期整理（CONSOLIDATE 与 EXPERIENCE_CONSOLIDATE 归纳之前 `curate`，返回参与归纳的条目）+ CuratorProducer 工厂；可选装配，不配置即不接线（同 Appraiser 形态） |
 | `abstractor.py` | Abstractor 接口：抽象与精炼/升华（高抽象粒度）；类属性 `dedup_products`（缺省 True）声明产物是否过语义去重，技能实现置 False |
 | `associator.py` | Associator 接口：关联分析（实体共指/因果链/引用关系） |
-| `common.py` | 构建层共享工具：LLM 尝试策略、派生 metadata 继承，以及 F12 重要度（`parse_importance` / 类别查表 `importance_category_map_from_config` / `inferred_attribution` / `fill_missing_importance` / `merge_importance_max` / prompt 类别段） |
+| `common.py` | 构建层共享工具：LLM 尝试策略、派生 metadata 继承、F12 重要度（`parse_importance` / 类别查表 `importance_category_map_from_config` / `inferred_attribution` / `fill_missing_importance` / `merge_importance_max` / prompt 类别段），以及 F01 模型可见短引用协议的唯一实现（`batch_source_table` 批内序号表 / `is_ordinal_reference` 序号校验 `[1-9]\d*` / `strip_batch_reference_shell` `[ID: ...]` 去壳；分类、路由、普通抽取与去重 cN/eN 校验共用，不得在各算子内复刻） |
 | `message_role.py` | 对话消息角色公共辅助（F16）：`message_role_of`（优先 `MESSAGE_ROLE_KEY`，只读兼容旧 `"role"`）、`filter_effective_units`（普通跳 `system`/`developer`，过程记忆仅跳 `system`）、`format_role_line` 与 `(as_utc(t_ingest), unit.id)` 保序键 |
 | `classifier.py` | Classifier 接口：多维分类（认知角色/主题/重要度） |
 | `prompt_strategy.py` | 动态抽取/巩固/反思 prompt metadata 的解析与传递（key 透传） |
@@ -39,7 +39,7 @@ IndexBuilder、Router、Dedup、LayerAnnotator 与 Evolver（默认 `Orchestrati
 | `evolver.py` | Evolver 接口：抽取/关联/归纳/经验整理/属性冲突巩固/遗忘/显式建树；`EvolveMode` / `EvolveRequest` / `EvolveResult`；批量抽取能力由 `supports_grouped_extract()` / `evolve_grouped()` 声明，`GroupedExtractResult` 携带结果及来源，`ExtractNotCommittedError` 表示落盘前失败、可安全重放 |
 | `source_update.py` | 可选 Schema source 更新能力、完整抽取结果、请求内变更计划与严格实体写入上下文；不依赖 control |
 | `layer_annotator.py` | LayerAnnotator 接口：分层披露标注（L0/L1 写入 unit.layers）+ LayerAnnotatorProducer 工厂 |
-| `extractor_impl/` | Extractor 实现目录（keyword / llm / agent_llm / dynamic_llm / video_memory，以及显式启用的 entity_schema 与 experience）；entity_schema 为 Property 产出稳定实体分组 key、Source 时间上下文与事件精度/区间；video_memory 将视频规约结果转换为 CLM/ELM；`agent_llm` 是 `llm` 的 agent 方向版——继承管线与输出契约，prompt 指令面 user↔agent 场景重定向 + `extractor_language` cn/en 切换（输出契约恒英文），并抽取时同步判定 `memory_class` 三类（`user_profile`/`long_term_memory`/`daily_memory`，基类 `build_candidates` 纯透传、子类 `extract` 收口值域，非法/缺失兜底 `long_term_memory`；该键是文档模式 md 落盘分流键） |
+| `extractor_impl/` | Extractor 实现目录（keyword / llm / agent_llm / dynamic_llm / video_memory，以及显式启用的 entity_schema 与 experience）；entity_schema 为 Property 产出稳定实体分组 key、Source 时间上下文与事件精度/区间；video_memory 将视频规约结果转换为 CLM/ELM；`agent_llm` 是 `llm` 的 agent 方向版——继承管线与响应解析，`source_id` 协议独立：`BATCH_SOURCE_REFERENCES = False` 保持 `[ID: uuid]` 原协议（F01 批内序号短引用只覆盖 `llm` 基线路径），prompt 指令面 user↔agent 场景重定向 + `extractor_language` cn/en 切换（输出契约恒英文），并抽取时同步判定 `memory_class` 三类（`user_profile`/`long_term_memory`/`daily_memory`，基类 `build_candidates` 纯透传、子类 `extract` 收口值域，非法/缺失兜底 `long_term_memory`；该键是文档模式 md 落盘分流键） |
 | `appraiser_impl/` | Appraiser 实现目录（experience：轨迹沉淀八步中的 1-5 与 8 步；轨迹请求的 `context` 背景块校验（预定义字段 turn/started_at/ended_at/end_state/project/model/framework/extra 与 extra 的键数/键名/值约束，v3 §2.1）；第 5 步归因含技能识别——轨迹 `skill_tool` 调用在经验落点空间找同名已发布技能（v3 §2.5 技能与经验同空间），与取用过的经验同一次模型调用归因，见 F10；补报与反馈回填更新判定后补做——补报须与轨迹同一生产者（三主体维比对）、反馈回填按会话核对（session 相同且 turn 递增，只 gate 回填不 gate Pair P），按 `derived_ids` 补写复现事件、结论翻转时复用第 5 步重新归因，事件键带新修订号、聚合取最新一轮，见 F10） |
 | `curator_impl/` | Curator 实现目录（experience：经验空间周期整理——第 0 步按作者清除、聚合（`trajectory_spaces` 内的空间按轨迹数复现、不按作者限计，v3 §3.2）、退闲置/有害、合并删除（模型可选+簇级容错）、竞争淘汰、控规模、第 7 步技能维护（同空间的聚合回写/有害退休/试用转正/旧版取代，v3 §2.5）、类别重数；运行摘要条目 `memory_type=experience`；失败隔离见 F10） |
 | `abstractor_impl/` | Abstractor 实现目录（concat / llm / skill：技能归纳——类别+相似度+capability 分组、可靠成功与效用等草稿条件；独立复现数量用于自动试用（repro_unit 按落点解析为 user/trajectory）、逐组一次模型、技能名/脱敏/命令覆盖三项校验，草稿与来源经验同空间且 `dedup_products=False`（v3 §2.5），见 F10） |
@@ -133,6 +133,11 @@ prompt_guard 对受保护 unit 的内容分批保留原子引用，过小的正�
 
 3. **provenance 回指来源**
    派生记忆单元（Extractor/Abstractor 产出）的 `provenance` 字段记录由哪些 unit 演进而来，保证可重建、可审计回溯。
+   普通分类、路由和 LLM 抽取只在本次批内用 `1..N` 标记来源，响应解析先恢复真实
+   `MemoryUnit.id`；普通去重 prompt 用 `cN`/`eN`，批量 prompt 的全部已有命中共用唯一
+   `eN` 表，每个候选只可解析本块编号。正文中的 UUID 原样保留，短号不进入存储、Scope、
+   `source_ref`、`provenance` 或公开 API。抽取子类若使用自有 prompt/响应协议，必须将
+   `BATCH_SOURCE_REFERENCES` 设为 `False`；不得靠具体类名判断运行路径。
 
 4. **构建与存储解耦**
    算子负责构建逻辑（生成索引投影：Chunk → VectorRecord/Document/Node，MemoryUnit → KV 记录），持久化由注入的 Store 承担。算子不依赖具体后端。正排与派生索引同此模式——`ForwardIndexBuilder` 写 `manager.kv()`，与 `FulltextIndexBuilder` 写 `manager.fulltext()` 同构；端口名可经 `params.<ns>_store` 具名选择。

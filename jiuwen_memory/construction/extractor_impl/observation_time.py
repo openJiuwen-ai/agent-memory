@@ -30,12 +30,14 @@ def _format_unit_body(unit: MemoryUnit) -> str:
 def observation_sources(
     units: list[MemoryUnit], source_prefix: str,
     *, date_prefix: str = "observation_date: {date}\n",
+    labels: list[str] | None = None,
 ) -> str:
+    unit_labels = labels if labels is not None else [unit.id for unit in units]
     return "\n".join(
         date_prefix.format(date=observation_date(unit))
         + source_prefix.format(
-            unit_id=unit.id,
+            unit_id=label,
             unit_content=_format_unit_body(unit),
         )
-        for unit in units
+        for unit, label in zip(units, unit_labels, strict=True)
     )

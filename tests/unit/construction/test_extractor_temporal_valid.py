@@ -61,7 +61,7 @@ def test_infer_true_derived_semantic_unit_must_set_t_valid():
             json.dumps(
                 [
                     {
-                        "source_id": "u1",
+                        "source_id": 1,
                         "target": "fact",
                         "tier": "semantic",
                         "content": "Alice 喜欢喝咖啡",

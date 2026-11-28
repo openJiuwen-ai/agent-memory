@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 关联模块 | jiuwen_memory/construction/ |
-| 最近一次修订日期 | 2026-11-27 |
+| 最近一次修订日期 | 2026-11-28 |
 | 关联特性补充 | docs/features/api/F04-memory-metadata-separation.md |
 | 归属判定算子 | `Router` 的契约与决策见 [F07-collective-memory-design.md](../features/control/F07-collective-memory-design.md) |
 | 关联特性文档 | docs/features/F01-system-spec-design.md, docs/features/construction/F01-construction-spec-design.md, docs/features/construction/F02-dynamic-extraction-consolidation.md, docs/features/construction/F03-extraction-layer-integrity.md, docs/features/construction/F04-cc-memory-compat.md, docs/features/construction/F05-construction-spec-multimodal-design.md, docs/features/construction/F06-unified-index-builder.md, docs/features/construction/F07-memory-write-entry.md, docs/features/construction/F08-entity-schema-extension.md, docs/features/construction/F12-importance-and-source-attribution.md, docs/features/construction/F16-dialogue-message-roles.md, docs/features/common/F01-memory-layer.md, docs/features/common/F03-scope-space-isolation.md, docs/features/common/F08-memory-tree.md, docs/features/retrieval/F03-metadata-filtering.md、[F04 安全能力与设计决策](../features/common/F04-security-interfaces-and-encryption.md) |
@@ -199,6 +199,18 @@ class ConstructionOperator(ABC):
 ```
 
 > `OperatorType` 枚举无独立 DEDUP 值——`Dedup` 实现复用 `OperatorType.EVOLVER`（去重召回服务于 evolver）。`DynamicEvolver` 返回 `OperatorType.EVOLVER`，通过覆盖 `_evolve_extract` 切换 EXTRACT 路径。Appraiser 与 Curator 分别返回独立的 `APPRAISER` / `CURATOR`。
+
+### 普通分类、路由、抽取与去重的模型可见引用
+
+普通 `LLMClassifier`、`LLMRouter` 和 `ExtractorImpl` 对当前批使用 `1..N` 来源编号。
+system prompt、来源标记和响应示例统一要求整数 `source_id`；解析器只从本批临时表恢复
+真实 `MemoryUnit.id`，非法、越界或直接写真实 UUID 的引用不得绑定来源。子批和超长来源
+分片分别从 `1` 重新编号。
+
+`OrchestratingEvolver` 的普通去重 prompt 使用 `cN` 区分候选、`eN` 区分已有记忆。
+UPDATE/SUPERSEDE 只能引用当前候选自己块内出现的 `eN`。一次批量 prompt 的 `eN` 表在
+全部候选间唯一；候选不得复用其他块的句柄。短句柄只在模型协议中存在，落盘身份、
+`provenance`、Scope 与公开 API 继续使用真实 ID。
 
 ### Appraiser（`appraiser.py`，mem2.0）
 
