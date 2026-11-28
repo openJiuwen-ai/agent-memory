@@ -2220,3 +2220,11 @@ def test_embedded_http_portal_binds_authenticated_rail_target(http_endpoint):
     with _NO_PROXY_OPENER.open(f"{base_url}/portal/", timeout=3) as page:
         assert page.headers.get("Content-Security-Policy") is None
         assert page.headers.get("X-Frame-Options") is None
+    for name, mime, prefix in (
+        ("agent-default.png", "image/png", b"\x89PNG\r\n\x1a\n"),
+        ("overview-emblem.png", "image/png", b"\x89PNG\r\n\x1a\n"),
+        ("memory-empty.svg", "image/svg+xml", b"<svg"),
+    ):
+        with _NO_PROXY_OPENER.open(f"{base_url}/portal/assets/{name}", timeout=3) as image:
+            assert image.headers.get_content_type() == mime
+            assert image.read(len(prefix)) == prefix

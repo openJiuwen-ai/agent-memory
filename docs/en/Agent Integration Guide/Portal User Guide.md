@@ -48,7 +48,7 @@ page server during initialization. In HTTP mode, the Portal uses the memory serv
 SDK document memory instances under the same OS account share a Portal when they use the same
 fixed local Markdown directory and read from the same local SQLite index. Use absolute paths for
 both. On Windows, both must be on local NTFS storage. In a shared Portal, select the instance you
-want to configure in **Model Settings**.
+want to configure in **Configuration**.
 
 ### Direct SDK Runtime integration
 
@@ -124,9 +124,9 @@ and search results stay in place.
 
 ## Change model settings
 
-1. Open **Model Settings**. If you see a **Configuration Instance** dropdown, select the
+1. Open **Configuration**. If you see a **Configuration Instance** dropdown, select the
    instance you want to configure.
-2. Edit the available model fields. When switching model services, enter the full URL, model
+2. When several models are available, edit the card for the model you want. Expand **Advanced Parameters** to edit temperature, timeout, and related fields. When switching model services, enter the full URL, model
    name, and API key for the new service. When staying on the same service, leave the API key
    blank to keep the existing credential.
 3. Select **Preview Changes**, review the changes, and select **Save and Apply**. Once the page

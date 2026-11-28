@@ -178,6 +178,16 @@ def test_default_launch_binds_source_before_registration_changes(monkeypatch):
         with httpx.Client(base_url=origin, headers=headers, trust_env=False, timeout=5) as browser:
             page = browser.get("/portal/", headers={"Host": f"example.test:{launch.port}"})
             assert page.status_code == 404
+            for name, mime, prefix in (
+                ("agent-claude.png", "image/png", b"\x89PNG\r\n\x1a\n"),
+                ("overview-emblem.png", "image/png", b"\x89PNG\r\n\x1a\n"),
+                ("memory-empty.svg", "image/svg+xml", b"<svg"),
+            ):
+                image = browser.get(f"/portal/assets/{name}")
+                assert image.status_code == 200
+                assert image.headers["content-type"] == mime
+                assert image.content.startswith(prefix)
+            assert browser.get("/portal/assets/agent-missing.png").status_code == 404
             response = browser.post(
                 "/portal/api/bootstrap", json={"token": parse_qs(launch.fragment)["access"][0]},
             )
