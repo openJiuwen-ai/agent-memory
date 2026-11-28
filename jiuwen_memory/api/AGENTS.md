@@ -219,7 +219,8 @@ MemoryAPI.method(scope=target, security=RequestSecurityContext)
    target `scope`，由 API 对任务真实 Scope 执行 READ 鉴权并记录审计。
 8. Access（`jiuwen_memory_entry/`、`jiuwen_memory_adapter/`）只 `import jiuwen_memory.api`，
    且不得 import `jiuwen_memory.api.memory_api_impl`。本包重导出协议转换所需的 DTO /
-   枚举 / 异常 / `Credentials`，以及 Access 日志脱敏所需的
+   枚举 / 异常 / `Credentials`；`LockTimeoutError` 重导出内核原异常类型，
+   不暴露锁端口。另重导出 Access 日志脱敏所需的
    `install_privacy_filter` / `metadata_for_log` / `redact_for_log` / `scope_for_log`；横切 trace 入口
    （`begin_api_trace` / `begin_trace` / `end_trace` / `trace_event` / `TRACE_OVERRIDE_KEY` / `TraceLevel` / `parse_trace_spec`；`trace_span` / `traced` / `trace_annotate` 从 `common.trace` 导入）。
    公开装配是

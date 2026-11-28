@@ -1292,6 +1292,136 @@ def test_document_cancel_during_commit_keeps_lock_and_records_ids(
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.parametrize("scene, kind, expected", [
+    ("agent", "lock", "Timed out waiting for the memory write lock."),
+    ("agent", "other", "Memory write failed; check the service logs for details."),
+    ("team", "lock", "Timed out waiting for the memory write lock."),
+])
+def test_sdk_write_error_reaches_tool_without_breaking_sync(
+    monkeypatch, caplog, scene, kind, expected,
+):
+    from jiuwen_memory.common.lock import LockTimeoutError
+
+    async def run():
+        provider = AgentMemoryMemoryProvider(
+            scene=scene,
+            collective_coordinates={"team": "reviewers"} if scene == "team" else None,
+            security_provider=_security_provider(ApiScope(org="local", user="developer")),
+        )
+        await provider.initialize(user_id="developer", scope_id="local")
+        try:
+            error = LockTimeoutError if kind == "lock" else RuntimeError
+            monkeypatch.setattr(provider._client._api, "add_async", AsyncMock(
+                side_effect=error("private backend details"),
+            ))
+            tool = "team_memory_write" if scene == "team" else "agent_memory_conclude"
+            field = "content" if scene == "team" else "conclusion"
+            result = json.loads(await provider.handle_tool_call(tool, {field: "A durable fact"}))
+            assert result == {"error": expected}
+            caplog.clear()
+            assert await provider.sync_turn("A durable fact", "Understood", sources=[{
+                "id": "user", "role": "user", "text": "A durable fact",
+            }]) is None
+            assert "sync_turn add failed" in caplog.text
+        finally:
+            await provider.shutdown()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("case, expected, failures", [
+    ("lock", "Timed out waiting for the memory write lock.", 0),
+    ("timeout", "Memory service request timed out; write outcome is unknown.", 1),
+    ("connect", "Unable to connect to the memory service.", 1),
+    ("http_error", "Memory write failed: HTTP 503.", 1),
+    ("html_error", "Memory write failed: HTTP 502.", 1),
+    ("invalid_json", "Memory write failed; write outcome is unknown.", 1),
+    ("empty", "", 0),
+])
+@pytest.mark.parametrize("scene", ["agent", "team"])
+def test_http_write_error_reaches_tool_and_preserves_breaker(
+    caplog, scene, case, expected, failures,
+):
+    httpx = pytest.importorskip("httpx")
+    from jiuwen_memory.common.lock import LockTimeoutError
+    from jiuwen_memory_entry.core.error_response import error_response
+
+    timeouts = []
+
+    def respond(request):
+        timeouts.append((request.url.path, request.extensions["timeout"]["read"]))
+        if case in {"timeout", "connect"}:
+            error = httpx.ReadTimeout if case == "timeout" else httpx.ConnectError
+            raise error("private transport details", request=request)
+        if case == "lock":
+            status, body, _ = error_response(LockTimeoutError, "private lock key")
+            return httpx.Response(status, json=body)
+        if case == "http_error":
+            return httpx.Response(503, json={"error": "BackendError"})
+        if case == "html_error":
+            return httpx.Response(502, text="private proxy details")
+        if case == "invalid_json":
+            return httpx.Response(200, text="invalid JSON")
+        return httpx.Response(200, json=[])
+
+    async def run():
+        provider = AgentMemoryMemoryProvider(
+            base_url="http://memory.test", scene=scene,
+            collective_coordinates={"team": "reviewers"} if scene == "team" else None,
+        )
+        client = _HttpClient("http://memory.test")
+        async with httpx.AsyncClient(
+            base_url="http://memory.test", transport=httpx.MockTransport(respond),
+        ) as http:
+            client._http = http
+            client._is_initialized = True
+            provider._client = client
+            provider._initialized = True
+            tool = "team_memory_write" if scene == "team" else "agent_memory_conclude"
+            field = "content" if scene == "team" else "conclusion"
+            result = json.loads(await provider.handle_tool_call(tool, {field: "A durable fact"}))
+            if expected:
+                assert result == {"error": expected}
+            elif scene == "team":
+                assert result == {"stored": False, "item_id": None}
+            else:
+                assert result == {"result": "Fact stored (deduped, no new unit)."}
+            assert client._consecutive_failures == failures
+            assert timeouts == [("/v1/add", 300.0)]
+            if case in {"timeout", "connect", "http_error", "html_error", "invalid_json"}:
+                assert await client._post_verb("search", {}) is None
+                assert timeouts[-1] == ("/v1/search", 30.0)
+            if expected:
+                caplog.clear()
+                assert await provider.sync_turn("A durable fact", "Understood", sources=[{
+                    "id": "user", "role": "user", "text": "A durable fact",
+                }]) is None
+                assert "sync_turn add failed" in caplog.text
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("override, expected_ms", [(None, 130_000), (0, 0), (45_000, 45_000)])
+def test_sdk_write_lock_budget_is_assembled_and_overridable(override, expected_ms):
+    import agent_memory_provider as adapter
+
+    supplied = {} if override is None else {
+        "write": {"default": {"params": {"lock_wait_ms": override}}},
+    }
+    client = _InProcessClient(
+        None,
+        config_dict=adapter._merge_config_over_default(supplied),
+        security_provider=_security_provider(ApiScope(org="local", user="developer")),
+    )
+    try:
+        commands = private(private(client, "_api"), "_commands")
+        writer = private(commands, "_orchestrator")
+        assert private(writer, "_lock_wait_ms") == expected_ms
+        assert private(private(writer, "_lock"), "_wait_timeout_ms") == 10_000
+    finally:
+        asyncio.run(client.close())
+
+
 class TestMergeConfigOverDefault:
     @pytest.mark.parametrize("source", ["globals", "env"])
     def test_video_model_urls_and_names_are_trimmed(self, tmp_path, monkeypatch, source):

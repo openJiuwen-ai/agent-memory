@@ -22,6 +22,7 @@ from jiuwen_memory.common.errors import (
     WriteIncompleteError,
     safe_error_message,
 )
+from jiuwen_memory.common.lock import LockTimeoutError
 from jiuwen_memory.common.log import (
     install_privacy_filter,
     metadata_for_log,
@@ -307,6 +308,7 @@ __all__ = [
     "AuthenticationError",
     "BackendError",
     "ConflictError",
+    "LockTimeoutError",
     "NotFoundError",
     "PartialFailureError",
     "WriteIncompleteError",

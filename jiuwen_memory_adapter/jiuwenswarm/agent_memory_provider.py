@@ -36,7 +36,7 @@
   ``system_metadata.project IN ['', project]``，与 ``agent_memory_search`` 同口径。
   prefetch 另用 ``read_md_file`` 读取 ``USER.md`` 的条目直接注入，不经相关度筛选，
   与检索命中去重后一并返回。
-- HTTP 客户端带熔断器（连续 5 次失败冷却 120s）、分操作超时（读 30s / 写 120s，
+- HTTP 客户端带熔断器（连续 5 次失败冷却 120s）、分操作超时（读 30s / 写 300s，
   infer=true 的 add 含真实 LLM 抽取）、可选 Bearer 认证（§6.2-B/C）、healthz 探活。
 - ``sync_turn`` 经 ``infer="true"`` 同步抽取派生事实（原文落 /messages/ 不建索引）；
   ``on_session_end`` 保留为显式批量 EXTRACT 入口（infer 模式下基本冗余）。
@@ -80,6 +80,7 @@ from jiuwen_memory.api import (
     DisclosureLevel,
     EvolveMode,
     LocalMediaImports,
+    LockTimeoutError,
     Modality,
     PermissionDeniedError,
     RequestSecurityContext,
@@ -127,7 +128,8 @@ install_privacy_filter(logger)
 # HTTP 客户端：分操作超时（秒）。infer=true 的 add 触发真实 LLM 抽取 + dedup，
 # 写路径超时须长于读路径（§6.2-C，对齐 mem2_provider）。
 _READ_TIMEOUT = 30.0
-_WRITE_TIMEOUT = 120.0
+_WRITE_TIMEOUT = 300.0
+_WRITE_LOCK_TIMEOUT_MESSAGE = "Timed out waiting for the memory write lock."
 
 # HTTP 客户端熔断器：连续 N 次失败后短路冷却，避免服务端不可用时每轮
 # prefetch/sync_turn 都等满超时拖慢宿主（§6.2-C）。
@@ -395,8 +397,8 @@ def _agent_default_config(experience_space: str = "") -> dict[str, Any]:
             "llm_model": os.getenv("JIUWEN_MEMORY_MODEL", "deepseek-v4-pro"),
             "llm_temperature": float(os.getenv("JIUWEN_MEMORY_TEMPERATURE", "0.0")),
             "llm_max_tokens": int(os.getenv("JIUWEN_MEMORY_MAX_TOKENS", "4096")),
-            # 单次 LLM 出站等待上限（秒）：内核默认 300s，agent 场景收紧到与 HTTP
-            # 写超时（_WRITE_TIMEOUT=120）对齐，避免 infer=true 抽取卡死时占满线程池。
+            # 单次 LLM 出站等待上限（秒）：agent 场景默认 120s，独立于 HTTP 写入等待；
+            # 限制单次模型调用，避免 infer=true 抽取卡死时占满线程池。
             "llm_timeout": float(os.getenv("JIUWEN_MEMORY_TIMEOUT", "120")),
             # 只填到 /v1；SDK 会自动拼 /embeddings
             "embedder_base_url": os.getenv("EMBED_API_BASE", "https://api.siliconflow.cn/v1"),
@@ -408,6 +410,17 @@ def _agent_default_config(experience_space: str = "") -> dict[str, Any]:
         # document 模式下 KV 不再持有 MemoryUnit（真源在 md+shadow），但端口必须保留：
         # dreaming 注册表读写、lifecycle policy/sweep 数据源、装配期 manager.kv() 硬依赖。
         "kv_store": {"default": "memory"},
+        # 抽取与落库共用用户写锁，为并发会话保留有界排队时间。
+        "write": {
+            "default": {
+                "target": "grouped",
+                "params": {
+                    "lock": "default",
+                    "executor": "default",
+                    "lock_wait_ms": 130_000,
+                },
+            },
+        },
         # vector / fulltext / graph 三个 KV 时代索引端口已删除：文档模式召回统一走
         # shadow（FTS5 + vec0），这三路无消费者——回落内核 defaults 的内存版（同样闲置）。
         # 内置配置显式指定当前工作目录，供文档存储和看门狗共用。
@@ -1621,9 +1634,16 @@ class AgentMemoryMemoryProvider(MemoryProvider):
             sources = kwargs.get("sources")
             if not sources or not self._initialized or self._client is None:
                 return None
-            result = await self._client.add(
-                "", self.bound_scope(), system_metadata={"infer": True, "sources": sources},
-            )
+            try:
+                result = await self._client.add(
+                    "", self.bound_scope(), system_metadata={"infer": True, "sources": sources},
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[AgentMemoryMemoryProvider] Team sync_turn add failed: error_type=%s",
+                    type(exc).__name__,
+                )
+                return None
             if result is not None:
                 return {"item_id": result.item_id, "stored": bool(result.item_id)}
             return None
@@ -2040,8 +2060,9 @@ class _AddResult:
     """add 的统一结果（两模式共用）。
 
     ``item_id is None`` 表示未落任何新记忆——infer/procedural 路径下 extractor
-    产空或派生记忆全量 dedup 是**合法结果**，与传输失败（整个 add 返回 None）
-    严格区分，调用方不得混淆（§6.2-A）。
+    产空或派生记忆全量 dedup 是**合法结果**，不能与失败混淆（§6.2-A）。
+    写锁超时与 HTTP 写入故障通过 AgentMemoryClientError 透出；未分类的 SDK
+    故障及未就绪或熔断中的 HTTP 客户端返回 None。
     """
 
     item_id: str | None
@@ -2050,19 +2071,18 @@ class _AddResult:
 
 
 class AgentMemoryClientError(RuntimeError):
-    """服务端业务拒绝（HTTP 4xx）——old_text 不唯一、非文档模式等。
+    """可向调用方展示的业务拒绝或已分类写入错误。
 
-    对显式工具调用（read_md_file / edit_md_file）有信号价值，须透出给 LLM
-    （``handle_tool_call`` 兜底转 ``{"error": ...}``），区别于传输失败降级
-    None；不计入熔断器——业务拒绝不代表服务不可用。
+    ``handle_tool_call`` 转为 ``{"error": ...}``，普通后台同步捕获并记录。
+    写锁竞争及已有读改文档的业务拒绝不计入熔断器；HTTP 传输失败仍计数。
     """
 
 
 class AgentMemoryTransportError(RuntimeError):
     """轨迹写入的传输失败（mem2.0 §2.1：add_trajectory 出错抛回）。
 
-    与既有降级语义（add → None）相反：轨迹链路要求发送方按可重试错误退避
-    重发，传输失败必须抛回——本异常只由 add_trajectory 的 HTTP 实现抛出。
+    轨迹链路要求发送方按可重试错误退避重发，传输失败必须抛回；
+    本异常只由 add_trajectory 的 HTTP 实现抛出，普通写入使用 AgentMemoryClientError。
     """
 
 
@@ -2074,14 +2094,12 @@ _COLLECTIVE_REQUEST: ContextVar[tuple[object, dict[str, str]] | None] = ContextV
 class _AgentMemoryClient:
     """AgentMemory 记忆操作的 async 客户端协议。
 
-    失败语义（对齐 mem2_provider）：传输/HTTP 失败时**降级返回**（add → None、
-    search → []）并记入熔断器（HTTP 模式），不向调用方抛异常——prefetch/
-    sync_turn 的既有 try/except 兜底不变，但主要失败路径在此处已收敛。
+    查询维持降级空结果；add 的写锁超时及 HTTP 写入错误安全映射后向上抛，
+    未分类的 SDK 写入故障返回 None。HTTP 传输失败仍记入熔断器，写锁竞争不计数。
+    显式工具将错误转为 JSON；普通 prefetch/sync_turn 的异常捕获保持不变。
 
-    md 文件操作（md文件接口 F08 read_md_file / edit_md_file）例外：**业务错误向上抛**——
-    old_text 不唯一 / 文件模式未开等 4xx 对显式工具调用有信号价值，
-    ``handle_tool_call`` 外层兜底转 ``{"error": ...}`` 透出给 LLM；只有传输
-    失败（HTTP 模式）降级返回 None，与 add 同口径。
+    md 文件操作（md文件接口 F08 read_md_file / edit_md_file）保留原有行为：
+    old_text 不唯一 / 文件模式未开等业务错误向上抛，HTTP 传输失败返回 None。
     """
 
     _bound_collective_coordinates: dict[str, str] | None = None
@@ -2484,20 +2502,23 @@ class _HttpClient(_AgentMemoryClient):
         *,
         write: bool = False,
         raise_on_client_error: bool = False,
+        raise_on_write_error: bool = False,
         request_headers: dict[str, str] | None = None,
     ) -> Any:
-        """POST ``/v1/<verb>``；返回解析后的 JSON body，传输失败返回 None。
+        """POST ``/v1/<verb>``；默认降级，可按调用方需求透出分类错误。
 
-        熔断开启或未初始化 → 直接 None。传输失败（网络/HTTP 错误/非 JSON）记入
-        熔断器并降级返回 None，调用方按各自语义转成空结果——不向上抛，
-        避免拖垮宿主的每轮 prefetch/sync_turn。
+        熔断开启或未初始化 → 直接 None。默认将传输失败记入熔断器并返回 None；
+        启用错误透传的调用方自行决定工具返回或后台日志，不重试请求。
 
         4xx 是**业务拒绝**而非服务不可用：``raise_on_client_error=True`` 的调用方
         （显式工具）抛:class:`AgentMemoryClientError` 把服务端错误信息透出给
         LLM（不计熔断）；其余调用方维持降级 None（既有行为不变）。
+        add 设置 raise_on_write_error，将锁超时、HTTP 状态及传输错误安全映射后透出。
         """
         if self._http is None or not self._is_initialized or self._is_breaker_open():
             return None
+        import httpx
+
         try:
             resp = await self._http.post(
                 f"/v1/{verb}",
@@ -2506,6 +2527,16 @@ class _HttpClient(_AgentMemoryClient):
                 timeout=self._write_timeout if write else self._read_timeout,
             )
             if resp.is_error:
+                if raise_on_write_error:
+                    try:
+                        error_body = resp.json()
+                    except ValueError:
+                        error_body = None
+                    if (
+                        isinstance(error_body, dict)
+                        and error_body.get("error") == "LockTimeoutError"
+                    ):
+                        raise AgentMemoryClientError(_WRITE_LOCK_TIMEOUT_MESSAGE)
                 if raise_on_client_error and 400 <= resp.status_code < 500:
                     raise AgentMemoryClientError(
                         f"/v1/{verb} rejected: HTTP {resp.status_code}: {resp.text[:300]}"
@@ -2517,6 +2548,8 @@ class _HttpClient(_AgentMemoryClient):
                     resp.status_code,
                     resp.text[:200],
                 )
+                if raise_on_write_error:
+                    raise AgentMemoryClientError(f"Memory write failed: HTTP {resp.status_code}.")
                 return None
             self._record_success()
             return resp.json()
@@ -2529,6 +2562,14 @@ class _HttpClient(_AgentMemoryClient):
                 verb,
                 type(exc).__name__,
             )
+            if raise_on_write_error:
+                if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+                    message = "Unable to connect to the memory service."
+                elif isinstance(exc, httpx.TimeoutException):
+                    message = "Memory service request timed out; write outcome is unknown."
+                else:
+                    message = "Memory write failed; write outcome is unknown."
+                raise AgentMemoryClientError(message) from exc
             return None
 
     @staticmethod
@@ -2611,7 +2652,8 @@ class _HttpClient(_AgentMemoryClient):
 
         响应是顶层数组（list[MemoryUnit] 序列化）。**空数组是合法结果**：
         infer=true 时派生记忆可能全量 dedup（update/noop）——返回
-        ``_AddResult(item_id=None)`` 而非失败。传输失败才返回 None。
+        ``_AddResult(item_id=None)`` 而非失败。HTTP 写入错误通过 AgentMemoryClientError
+        透出；未初始化或熔断中返回 None。
         """
         payload: dict[str, Any] = {
             "content": content,
@@ -2632,7 +2674,7 @@ class _HttpClient(_AgentMemoryClient):
             len(content),
         )
         units = await self._post_verb(
-            "add", payload, write=True,
+            "add", payload, write=True, raise_on_write_error=True,
             request_headers=self._request_headers(),
         )
         if units is None:
@@ -3478,6 +3520,9 @@ class _InProcessClient(_AgentMemoryClient):
                 system_metadata=system_metadata,
                 user_metadata=user_metadata,
             )
+        except LockTimeoutError as exc:
+            logger.warning("[AgentMemoryMemoryProvider/in-process] add: write lock timed out")
+            raise AgentMemoryClientError(_WRITE_LOCK_TIMEOUT_MESSAGE) from exc
         except Exception as exc:
             logger.warning(
                 "[AgentMemoryMemoryProvider/in-process] add failed: error_type=%s",

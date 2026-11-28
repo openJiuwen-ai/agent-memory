@@ -20,12 +20,16 @@
 - 经验检索不按 experience_capabilities 或 tier 排除条件动作；该清单只用于非空时的技能同步筛选。空间授权及经验类型、类别过滤保持生效。
 
 - Team 自动回写和主动提炼通过 add 的 `system_metadata["sources"]` 提交材料。用户原文、派单和交付均由宿主标记来源。
+- 普通 Work/Coding/Team 后台 `sync_turn` 捕获写入异常、记录警告并返回，不自动重试；显式工具仍返回安全错误，任务取消继续向上传播。
 - 群体请求用可信宿主绑定坐标。HTTP 成员管理使用 Memory 预登记的专用身份，数据请求使用普通身份。
 
 - 普通 Work/Coding 按场景策略执行；接续预取与回写保持优先，SDK 接续只注册任务/恢复工具，不将文档工具交给接续客户端。
 - Code/Team 分别继承 BaseDocumentScene，仅复用项目绑定、文档配置与超时保护；工具、Pipeline 和召回策略各自定义，Team 不继承 Code。
 - 普通 Coding/Team 在配置来源解析后覆盖 write_document=true；SDK 接续保留独立配置基准，不应用场景覆盖，HTTP 不应用本地 SDK 配置。
 - 内置文档 SDK 配置显式声明 `markdown_store.default.params.root: "."`，供文档存储和看门狗共用。配置片段可以覆盖该目录。
+- 内置 SDK 写入装配显式设置 `write.default.params.lock_wait_ms=130000`，允许宿主配置覆盖；不修改通用锁默认等待、租约或宿主调用总超时。
+- 写入工具保留 SDK/HTTP 写锁超时、HTTP 请求超时与连接失败的安全提示；HTTP 超时表示结果未确认。锁竞争不触发服务熔断，其他传输失败仍计数；读取接口维持原有降级。
+- HTTP 客户端写入超时默认 300 秒、读取 30 秒；不改变单次 LLM 超时或宿主调用预算。
 - 注册表仅保存工厂，每个 Provider 创建独立场景；普通文档可注入宿主持有者共享 Runtime；未注入时各自持有。资源锁与接续共享池保持独立。
 - sdk_runtime.py 中的共享池只适用于 mode=continuity、持久 fixed_path SQLite Registry；HTTP 和普通 SDK 不进入共享池。
 - Pool 按规范 Registry 路径排他，同路径不同配置/主体返回冲突；Provider 不共享请求安全上下文。
