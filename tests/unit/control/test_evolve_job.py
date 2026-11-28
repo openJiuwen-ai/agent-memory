@@ -333,3 +333,27 @@ def test_evolver_for_unit_with_empty_bucket_still_calls_global_evolver() -> None
     assert selector_calls == [], "空桶不触发逐条选取"
     assert evolver.calls == [[]], "空桶仍调全局 evolver 一次（空列表）"
     assert info.status == JobStatus.SUCCEEDED
+
+@pytest.mark.parametrize("use_resolver", [False, True])
+@pytest.mark.parametrize("path", [None, "memory/dreaming/user_profile.md"])
+def test_profile_cancellation_reports_completed_outputs(use_resolver, path):
+    from unittest.mock import AsyncMock, Mock
+
+    from jiuwen_memory.common.type_def import CandidateOutcome
+    from jiuwen_memory.control.jobs import JobCancelledError
+
+    def finish(request):
+        job.request_cancel()
+        return EvolveResult(profile_path=path)
+
+    job = EvolveJob(
+        scope=Scope(org="acme", user="alice"), kv=InMemoryKVStore(),
+        evolver=Mock(evolve=finish), mode=EvolveMode.MEMORY_CONSOLIDATE,
+        resolver=Mock(resolve=AsyncMock(return_value=CandidateOutcome())) if use_resolver else None,
+    )
+    with pytest.raises(JobCancelledError) as cancelled:
+        asyncio.run(job.run())
+    detail = cancelled.value.detail
+    assert detail.get("profile_path") == path
+    assert detail["partial_write"] == ("true" if path else "false")
+    assert detail["retry_requires_reconciliation"] == "true"

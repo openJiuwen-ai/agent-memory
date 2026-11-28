@@ -43,7 +43,11 @@ from jiuwen_memory_entry.core.dev_security import with_local_dev_security
 from jiuwen_memory_entry.core.error_response import error_response
 from jiuwen_memory_entry.core.import_support import import_required, import_required_attr
 from jiuwen_memory_entry.http_server.human_view import handle_human_request
-from jiuwen_memory_entry.portal.requests import BROWSER_VERBS, invoke_browser_api
+from jiuwen_memory_entry.portal.requests import (
+    BROWSER_VERBS,
+    PROFILE_SUMMARY_VERBS,
+    invoke_browser_api,
+)
 from jiuwen_memory_entry.portal.sessions import (
     BROWSER_HEADER,
     SESSION_HEADER,
@@ -344,7 +348,10 @@ class HttpServer(Server):
                     if browser_request and verb not in BROWSER_VERBS:
                         self._send_error("NotFound", request_id=request_id)
                         return
-                    if not is_known_verb(verb) and verb not in CONFIG_VERBS:
+                    if not (
+                        is_known_verb(verb) or verb in CONFIG_VERBS
+                        or (browser_request and verb in PROFILE_SUMMARY_VERBS)
+                    ):
                         self._send_error("UnknownVerb", verb, request_id=request_id)
                         return
                 else:
@@ -476,6 +483,7 @@ class HttpServer(Server):
                                     raise ValidationError("invalid collective context") from exc
                                 security = bind_collective_context(security, coordinates)
                             body = invoke_api(srv.api, verb, payload, security)
+                        srv.register_profile_owner(security)
                         self.send(200, body, request_id=security.request_id)
                 except AuthenticationError:
                     self._send_error("AuthenticationError", request_id=request_id)
@@ -677,7 +685,7 @@ def main(argv: list[str] | None = None) -> int:
                 "development authentication is enabled; identities are for local testing only "
                 "and this mode must not be used in production"
             )
-        srv = HttpServer.build(config)
+        srv = HttpServer.build(HttpServer.resident_config(config))
         srv.serve(args.host, args.port)
     except (ValidationError, OSError) as exc:
         logger.error("HTTP server refused to start: %s", exc)

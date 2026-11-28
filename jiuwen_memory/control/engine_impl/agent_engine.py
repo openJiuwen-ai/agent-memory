@@ -64,7 +64,7 @@ from jiuwen_memory.common.type_def import (
 from jiuwen_memory.config.document_flag import resolve_index_builder_default
 from jiuwen_memory.construction import EvolveMode
 from jiuwen_memory.construction.classifier import Classifier, ClassifierProducer
-from jiuwen_memory.construction.evolver import Evolver, EvolverProducer
+from jiuwen_memory.construction.evolver import Evolver, EvolverProducer, ProfileSummaryOperation
 from jiuwen_memory.construction.index_builder import (
     IndexBuilder,
     IndexBuilderProducer,
@@ -290,6 +290,10 @@ class AgentEngine(GroupedWriteMixin, HumanViewEngineMixin, MemoryEngine):
         读写（注册表 key 非 MemoryUnit）；MemoryUnit 读取经 ``_domain_store``。
         """
         return self._kv
+
+    @property
+    def document_store(self) -> DomainStore:
+        return self._domain_store
 
     def candidate_scopes(self) -> list[Scope]:
         """返回演进候选数据面中已有记忆的作用域（对齐 CloudEngine，经 DomainStore）。
@@ -934,6 +938,7 @@ class AgentEngine(GroupedWriteMixin, HumanViewEngineMixin, MemoryEngine):
         candidate: CandidateSource | dict | None = None,
         buckets: list[Scope] | None = None,
         denied_scopes: list[str] | None = None,
+        summarize_profile: ProfileSummaryOperation | None = None,
     ) -> str | None:
         if self._job_factory is None:
             raise RuntimeError(
@@ -962,6 +967,7 @@ class AgentEngine(GroupedWriteMixin, HumanViewEngineMixin, MemoryEngine):
             retriever=self._retriever,
             buckets=buckets,
             denied_scopes=denied_scopes,
+            summarize_profile=summarize_profile,
         )
 
     async def admin_get(self, key: str) -> str:  # 由 API 层直达 PolicyManager

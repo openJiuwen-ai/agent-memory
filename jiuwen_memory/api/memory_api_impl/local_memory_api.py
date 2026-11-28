@@ -30,6 +30,7 @@ from jiuwen_memory.common.security.capabilities import (
     validate_authorization_capabilities,
 )
 from jiuwen_memory.common.security.protection.workload_guard import WorkloadGuard
+from jiuwen_memory.construction.evolver_impl.user_profile_summary import UserProfileSummary
 from jiuwen_memory.construction.router import EMPTY_ROUTE_TABLE, Router, RouteTable
 from jiuwen_memory.control import collective
 from jiuwen_memory.control.application import (
@@ -108,6 +109,7 @@ class LocalMemoryAPI(
         authorizer: Authorizer | None = None,
         credential_registry: CredentialStatusRegistry | None = None,
         document_mode: bool = False,
+        profile_summary: UserProfileSummary | None = None,
         continuity: Continuity | None = None,
         continuity_connectors: dict | None = None,
         privacy=None,
@@ -117,6 +119,7 @@ class LocalMemoryAPI(
         collective_members=None,
         collective_dedup=None,
         collective_extractor=None,
+        dreaming_registry_kv=None,
     ) -> None:
         if audit_integrity_provider is not None and audit_verify_guard is None:
             raise ValidationError(
@@ -172,6 +175,7 @@ class LocalMemoryAPI(
         self._collective_members = collective_members
         self._collective_dedup = collective_dedup
         self._collective_extractor = collective_extractor
+        self._profile_summary = profile_summary
         self._orchestrator = orchestrator
         self._executor = executor
         self._merge_extract_default = bool(merge_extract_default)
@@ -189,7 +193,8 @@ class LocalMemoryAPI(
         # fan-out 逐桶裁决都在 API 层——Engine / EvolveJob 是纯执行件。须在全部
         # 组件装配完成后创建（它反向引用本 API 的鉴权组件、Engine 与 Scheduler）。
         self._dreaming = DreamingCoordinator(
-            registry=DreamingRegistry(engine.kv, lock=dreaming_lock),
+            registry=DreamingRegistry(dreaming_registry_kv or engine.kv, lock=dreaming_lock),
+            summary=self._summarize_profile if profile_summary is not None else None,
             scheduler=scheduler,
             commands=self._commands,
             authorize=self._authorize,

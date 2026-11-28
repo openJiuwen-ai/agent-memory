@@ -1549,6 +1549,10 @@ def test_portal_uses_existing_authentication_and_requires_same_origin(http_endpo
     assert response_headers["cache-control"] == "no-store"
     browser = Browser(launch["portal_url"])
     assert browser.call("list", personal_list())[0] == 200
+    assert browser.call("profile-summary", {}) == (200, {"available": False})
+    assert browser.call("profile-summary", {}, origin="http://evil.test")[0] == 404
+    status, _, _ = _request(base_url, "/v1/profile-summary", b"{}", key="test-key")
+    assert status == 404
     assert browser.call("list", personal_list(), origin="http://evil.test")[0] == 404
     assert browser.call("admin_get", {})[0] == 404
     status, _, _ = _request(base_url, "/portal/api/list", b"{}", key="test-key", headers=headers)

@@ -158,6 +158,11 @@
     .toolbar-action { min-height:28px; padding:0 0 0 8px; white-space:nowrap; }
     .toolbar-action:hover { color:var(--accent); }
     .toolbar-action svg { width:16px; height:16px; }
+    .profile-summary-body { line-height:1.65; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .profile-summary-body :is(h3,h4,h5,h6) { margin:16px 0 6px; }
+    .profile-summary-body :is(ul,ol) { margin:6px 0 12px; padding-inline-start:24px; }
+    #profile-summary-input { min-height:220px; margin-bottom:12px; }
+    #profile-summary .profile-summary-content { padding:16px; border:1px solid var(--line); border-radius:12px; }
     .overview-block { min-width:0; margin-bottom:32px; }
     .overview-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
     .metric-grid { display:grid; grid-template-columns:1.95fr repeat(5,minmax(0,1fr)); padding:16px 0; border-radius:16px; background:linear-gradient(165deg,#f0f6fc,#f7fafa); }
@@ -397,6 +402,24 @@
   <h2 id="distribution-title" class="overview-heading" data-i18n="sourceDistribution">记忆来源</h2>
   <div id="overview-sources"></div>
 </section>
+<section id="profile-summary" class="overview-block" aria-labelledby="profile-summary-title">
+  <div class="overview-heading">
+    <h2 id="profile-summary-title" data-i18n="profileSummaryTitle">记忆摘要</h2>
+    <button id="edit-profile-summary" class="pill-button" type="button" hidden data-i18n="profileSummaryEdit">编辑摘要</button>
+  </div>
+  <div class="profile-summary-content">
+  <div id="profile-summary-body" class="profile-summary-body"></div>
+  <form id="profile-summary-form" hidden>
+    <label for="profile-summary-input" data-i18n="profileSummaryMarkdown">摘要正文（Markdown）</label>
+    <textarea id="profile-summary-input" spellcheck="false"></textarea>
+    <div class="row">
+      <button id="cancel-profile-summary" class="pill-button" type="button" data-i18n="cancel">取消</button>
+      <button id="save-profile-summary" class="emphasis pill-button" type="submit" data-i18n="profileSummarySave">保存摘要</button>
+    </div>
+  </form>
+  <p id="profile-summary-status" class="muted small" role="status"></p>
+  </div>
+</section>
 </section><section id="memories" role="tabpanel" aria-labelledby="tab-memories" hidden>
   <div class="page-heading">
     <div><h1 id="memory-page-title" data-i18n="memoryLibrary">记忆仓库</h1><p id="memory-page-description" class="muted" data-i18n="allMyMemoriesHint">汇总所有记忆来源，按需筛选与管理。</p></div>
@@ -580,6 +603,17 @@ const messages = {
   friday: ["周五","Fri"],
   heatLess: ["少","Less"],
   heatMore: ["多","More"],
+  profileSummaryTitle: ["记忆摘要", "Memory Summary"],
+  profileSummaryEdit: ["编辑摘要", "Edit summary"],
+  profileSummaryMarkdown: ["摘要正文（Markdown）", "Summary (Markdown)"],
+  profileSummarySave: ["保存摘要", "Save summary"],
+  profileSummaryEmpty: ["还没有记忆摘要。你可以先补充想让助手记住的信息。", "No summary yet. You can add information you want the assistant to remember."],
+  profileSummaryUnavailable: ["当前实例不支持记忆摘要。", "Memory summaries are unavailable for this instance."],
+  profileSummaryLoading: ["正在读取记忆摘要…", "Loading memory summary…"],
+  profileSummarySaved: ["记忆摘要已保存。", "Memory summary saved."],
+  profileSummaryLoadError: ["无法读取记忆摘要，请刷新概览后重试。", "Could not load the memory summary. Refresh the overview to try again."],
+  profileSummarySaveError: ["无法保存记忆摘要，草稿仍在编辑框中。", "Could not save the summary. Your draft is still in the editor."],
+  profileSummaryConflict: ["记忆摘要已有更新。草稿仍在编辑框中，请先复制要保留的内容，再取消编辑查看最新版。", "The summary has changed. Copy any changes you want to keep, then cancel to see the latest version."],
   sourceDistribution: ["记忆来源","Memory sources"],
   emptyDistribution: ["暂无有效记忆","No active memories yet"],
   sourcesOverview: ["来源应用数统计所有可见记录中已标注的应用。来源分布统计有效记忆，日期按浏览器时区统计全部状态的写入。","Source Apps counts distinct named apps across all visible records. Source distribution counts active memories. Daily additions use the browser time zone and include all statuses."],
@@ -2002,7 +2036,125 @@ function renderSourceDistribution(counts, active) {
 }
 
 const overviewStates = ['active', 'superseded', 'forgotten', 'archived'];
+let profileSummary = null;
+let profileSummaryRequest = 0;
+
+function profileSummaryLine(tag, text) {
+  const element = node(tag);
+  const inline = /(\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\))/g;
+  let offset = 0;
+  for (const match of text.matchAll(inline)) {
+    element.append(node('span', text.slice(offset, match.index)));
+    if (match[2]) element.append(node('strong', match[2]));
+    else if (match[3]) element.append(node('code', match[3]));
+    else {
+      const link = node('a', match[4]);
+      link.href = match[5];
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      element.append(link);
+    }
+    offset = match.index + match[0].length;
+  }
+  element.append(node('span', text.slice(offset)));
+  return element;
+}
+
+function renderProfileSummary(body) {
+  const root = $('profile-summary-body');
+  root.replaceChildren();
+  if (!body) return;
+  let list = null;
+  for (const line of body.split('\n')) {
+    const heading = /^(#{1,6})\s+(.+)$/.exec(line);
+    const item = /^\s*(?:([-*+])|(\d+[.)]))\s+(.+)$/.exec(line);
+    if (item) {
+      const tag = item[2] ? 'ol' : 'ul';
+      if (list?.tag !== tag) {
+        list = {tag, element: node(tag)};
+        root.append(list.element);
+      }
+      list.element.append(profileSummaryLine('li', item[3]));
+    } else {
+      list = null;
+      if (heading) root.append(profileSummaryLine('h' + Math.min(6, heading[1].length + 2), heading[2]));
+      else if (line) root.append(profileSummaryLine('div', line));
+      else root.append(node('br'));
+    }
+  }
+}
+
+function showProfileSummary(result) {
+  profileSummary = result.available ? result : null;
+  $('edit-profile-summary').hidden = !profileSummary;
+  renderProfileSummary(profileSummary?.body || '');
+  setText($('profile-summary-status'), !profileSummary ? msg('profileSummaryUnavailable')
+    : profileSummary.body.trim() ? '' : msg('profileSummaryEmpty'));
+}
+
+async function loadProfileSummary() {
+  if (!$('profile-summary-form').hidden) return;
+  const sequence = ++profileSummaryRequest;
+  if (!profileSummary) setText($('profile-summary-status'), msg('profileSummaryLoading'));
+  try {
+    const result = await request('profile-summary');
+    if (sequence === profileSummaryRequest && $('profile-summary-form').hidden) {
+      showProfileSummary(result);
+    }
+  } catch (error) {
+    if (sequence === profileSummaryRequest && $('profile-summary-form').hidden) {
+      if (error.status === 404) showProfileSummary({available: false});
+      else setText($('profile-summary-status'), msg('profileSummaryLoadError'));
+    }
+  }
+}
+
+function closeProfileEditor() {
+  $('profile-summary-form').hidden = true;
+  $('profile-summary-body').hidden = false;
+  $('edit-profile-summary').hidden = !profileSummary;
+  $('edit-profile-summary').focus();
+}
+
+$('edit-profile-summary').onclick = () => {
+  if (!profileSummary) return;
+  ++profileSummaryRequest;
+  $('profile-summary-input').value = profileSummary.body;
+  $('profile-summary-form').hidden = false;
+  $('profile-summary-body').hidden = true;
+  $('edit-profile-summary').hidden = true;
+  setText($('profile-summary-status'), '');
+  $('profile-summary-input').focus();
+};
+$('cancel-profile-summary').onclick = () => {
+  closeProfileEditor();
+  return loadProfileSummary();
+};
+$('profile-summary-form').onsubmit = async event => {
+  event.preventDefault();
+  const save = $('save-profile-summary');
+  const cancel = $('cancel-profile-summary');
+  const input = $('profile-summary-input');
+  if (!profileSummary || save.disabled) return;
+  save.disabled = cancel.disabled = input.disabled = true;
+  setText($('profile-summary-status'), '');
+  try {
+    const result = await request('profile-summary-edit', {
+      body: input.value, revision: profileSummary.revision,
+    });
+    showProfileSummary(result);
+    closeProfileEditor();
+    setText($('profile-summary-status'), msg('profileSummarySaved'));
+  } catch (error) {
+    setText($('profile-summary-status'), msg(error.status === 409
+      ? 'profileSummaryConflict' : 'profileSummarySaveError'));
+  } finally {
+    save.disabled = cancel.disabled = input.disabled = false;
+  }
+};
+
 async function loadOverview() {
+  const summary = loadProfileSummary();
   const sequence = ++overviewRequest;
   setText($('overview-error'), '');
   for (const id of ['all', ...overviewStates, 'sources']) setText($('stat-' + id), '—');
@@ -2029,6 +2181,7 @@ async function loadOverview() {
   } finally {
     if (sequence === overviewRequest) setText($('activity-loading'), '');
   }
+  await summary;
 }
 
 async function openMemoryFilter(status, source = null) {

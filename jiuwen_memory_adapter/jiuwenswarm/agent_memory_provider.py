@@ -103,6 +103,15 @@ from jiuwen_memory.api import (
 from jiuwen_memory.api import Scope as ApiScope
 from jiuwen_memory_adapter.jiuwenswarm.base_document_scene import BaseDocumentScene
 from jiuwen_memory_adapter.jiuwenswarm.experience_author_key import configure_experience_author_key
+from jiuwen_memory_adapter.jiuwenswarm.memory_background import (
+    MemoryBackground,
+    background_for,
+    consolidation_interval,
+    document_root,
+    start_memory_background,
+    track_memory_operation,
+    with_consolidation_scheduler,
+)
 from jiuwen_memory_adapter.jiuwenswarm.memory_scene import MemorySceneContext
 from jiuwen_memory_adapter.jiuwenswarm.memory_scenes import create_memory_scene
 from jiuwen_memory_adapter.jiuwenswarm.memory_tools import MAX_TOP_K as _MAX_TOP_K
@@ -1255,6 +1264,9 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         self._initialized = True
         if self._connection == "local":
             await asyncio.to_thread(self._client.lease)
+        consolidation_registration = getattr(self._client, "register_memory_consolidation", None)
+        if consolidation_registration is not None:
+            await consolidation_registration(self.bound_scope())
         logger.info(
             "[AgentMemoryMemoryProvider] initialized (mode=%s, config=%s, scope=%s)",
             "http" if self._base_url else "in-process",
@@ -1333,6 +1345,30 @@ class AgentMemoryMemoryProvider(MemoryProvider):
         return _Scope(org=self._scope_id, space=self._experience_space)
 
     # -- MemoryProvider: 工具声明 + 调度 -------------------------------------- #
+
+    @staticmethod
+    async def start_background_memory(
+        *,
+        config_dict: dict[str, Any] | None,
+        security_provider: Callable[[], RequestSecurityContext],
+        document_runtime_holder: Any = None,
+    ) -> MemoryBackground | None:
+        """Start SDK background memory for the service lifetime."""
+        config = _merge_config_over_default(config_dict or {})
+        config, _ = _resolve_sdk_config(None, config, {})
+
+        def build_client(options: dict[str, Any]):
+            def create_client():
+                return _InProcessClient(
+                    None, config_dict=options, security_provider=security_provider,
+                    manage_configuration=document_runtime_holder is not None, strict_close=True,
+                )
+
+            if document_runtime_holder is not None:
+                return document_runtime_holder.acquire(options, security_provider, create_client)
+            return create_client()
+
+        return await start_memory_background(config, build_client)
 
     def _ensure_client(self) -> _AgentMemoryClient:
         if self._client is None and self._connection == "local":
@@ -2387,10 +2423,12 @@ def _build_client(
             if config_dict or not config_path else None
         )
         config, _ = _resolve_sdk_config(config_path, config, config_overrides)
+        config = with_consolidation_scheduler(config)
         return document_runtime_holder.acquire(config, security_provider, lambda: _InProcessClient(
             None, config_dict=config, security_provider=security_provider,
             manage_configuration=manage_configuration, portal_instance_id=portal_instance_id,
             strict_close=True,
+            schedule_document_memory=True,
         ))
     if config_dict or not config_path:
         # [本地修改 2026-10-20] 上层 config_dict 深合并到内置 agent 默认装配之上，
@@ -3482,6 +3520,7 @@ class _InProcessClient(_AgentMemoryClient):
         config_overrides: dict[str, Any] | None = None,
         strict_close: bool = False,
         provision_author_key: bool = False,
+        schedule_document_memory: bool = False,
     ) -> None:
         if security_provider is None:
             # P1-2 fail-closed：进程内直连不再从业务 scope 自述身份。缺少可信身份
@@ -3501,6 +3540,7 @@ class _InProcessClient(_AgentMemoryClient):
             isinstance(experience_builder, dict)
             and "skill_files" in experience_builder.get("params", {})
         )
+        self._document_root = document_root(config)
         # assemble_runtime 而非 assemble：保留 start/close 生命周期句柄——文档模式
         # （watch_document=true）下 start_background 起看门狗（监听 md 手改同步影子
         # 索引），close 释放 shadow sqlite。
@@ -3525,6 +3565,10 @@ class _InProcessClient(_AgentMemoryClient):
             self._portal_claim.close()
             raise
         self._api = self._runtime.api
+        interval = consolidation_interval(config or {}) if schedule_document_memory else None
+        self._memory_background = (
+            MemoryBackground(self._document_root, self, interval) if interval is not None else None
+        )
 
     @property
     def runtime(self) -> Any:
@@ -3646,6 +3690,8 @@ class _InProcessClient(_AgentMemoryClient):
                 "(document watch unavailable): %s",
                 exc,
             )
+        if self._memory_background is not None and background_for(self._document_root) is None:
+            self.bind_memory_consolidation_readiness(self._memory_background.ready)
 
     @staticmethod
     def _to_api_scope(scope):
@@ -3658,6 +3704,7 @@ class _InProcessClient(_AgentMemoryClient):
             session=getattr(scope, "session", ""),
         )
 
+    @track_memory_operation
     async def add(
         self, content, scope, *, tags=None, system_metadata=None, user_metadata=None,
     ) -> _AddResult | None:
@@ -3681,6 +3728,7 @@ class _InProcessClient(_AgentMemoryClient):
                 type(exc).__name__,
             )
             return None
+        await self.register_memory_consolidation(api_scope)
         if not units:
             return _AddResult(item_id=None)
         unit = units[0]
@@ -3760,6 +3808,7 @@ class _InProcessClient(_AgentMemoryClient):
             tier=getattr(getattr(first_unit, "tier", None), "value", ""),
         )
 
+    @track_memory_operation
     async def search(self, query, scope, *, top_k=10, filters=None) -> list[dict[str, Any]]:
         api_scope = self._to_api_scope(scope)
         try:
@@ -3790,6 +3839,7 @@ class _InProcessClient(_AgentMemoryClient):
             {"content": it.content, "score": it.score, "item_id": it.unit_id} for it in result.items
         ]
 
+    @track_memory_operation
     async def list_semantic(self, scope) -> list[dict[str, Any]]:
         """列出 scope 下已建索引的记忆单元（MemoryAPI.list，同步方法须 to_thread）。
 
@@ -3826,6 +3876,7 @@ class _InProcessClient(_AgentMemoryClient):
             extensions.setdefault("coords", {})["team"] = team
         return Context(scope=api_scope, extensions=extensions)
 
+    @track_memory_operation
     async def read_md_file(
         self, md_filename, scope, *, project="", line_range=None, team="", target=None
     ) -> list[dict[str, Any]] | None:
@@ -3854,6 +3905,7 @@ class _InProcessClient(_AgentMemoryClient):
             for unit in units
         ]
 
+    @track_memory_operation
     async def edit_md_file(
         self, md_filename, scope, old_text, new_text, *, project="", team="", target=None
     ) -> list[dict[str, Any]] | None:
@@ -4005,6 +4057,19 @@ class _InProcessClient(_AgentMemoryClient):
             interval=interval,
             ready=ready,
         )
+    async def register_memory_consolidation(self, scope) -> None:
+        background = background_for(self._document_root) or self._memory_background
+        if background is not None:
+            try:
+                await background.register(self._to_api_scope(scope), self._security())
+            except Exception as exc:
+                logger.warning("Memory consolidation registration failed: %s", type(exc).__name__)
+
+    def bind_memory_consolidation_readiness(self, ready) -> None:
+        self._api.bind_memory_consolidation_readiness(ready)
+
+    def ensure_memory_consolidation(self, scope, **kwargs) -> str:
+        return self._api.ensure_memory_consolidation(scope, **kwargs)
 
     async def close(self) -> None:
         # 停看门狗/释放 shadow sqlite（文档模式），幂等；runtime.close 是同步方法。

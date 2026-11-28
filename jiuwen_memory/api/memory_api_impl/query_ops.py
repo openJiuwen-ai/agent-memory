@@ -36,12 +36,14 @@ from jiuwen_memory.common.security.authorization.collective_read import (
     own_visibility,
 )
 from jiuwen_memory.common.security.privacy.base import privacy_operation
+from jiuwen_memory.common.security.space_roles import SpaceAction
 from jiuwen_memory.common.security.types import Action, RequestSecurityContext
 from jiuwen_memory.common.time_utils import as_utc
 from jiuwen_memory.common.trace import TraceLevel, traced
 from jiuwen_memory.common.type_def import (
     COORDS_KEY,
     EXT_MAX_TOKENS,
+    CandidateGroup,
     CandidateSource,
     ChannelError,
     Context,
@@ -96,6 +98,7 @@ from jiuwen_memory.control.types import (
 )
 from jiuwen_memory.retrieval.trace_projection import capture_retrieval
 from jiuwen_memory.retrieval.types import DisclosureLevel, RetrievalQuery, RetrievalResult
+from jiuwen_memory.storage.markdown_impl import profile_document
 
 from .local_support import (
     _ROOT,
@@ -1604,13 +1607,14 @@ class QueryOpsMixin:
         # 立即执行：fan-out 候选源先逐桶裁决（获准桶 / 拒绝桶标签），再走纯执行链。
         buckets, denied = self._dreaming.authorize_fan_out(security, scope, candidate, mode)
         job_id = asyncio.run(
-            self._commands.evolve(
-                scope,
-                mode,
-                channel,
+            self._dreaming.submit_evolve(
+                scope=scope,
+                mode=mode,
+                channel=channel,
                 candidate=candidate,
                 buckets=buckets,
                 denied_scopes=denied,
+                security=security,
             )
         )
         detail = {
@@ -1627,6 +1631,94 @@ class QueryOpsMixin:
             detail=detail,
         )
         return job_id
+
+    def summary(self, scope: Scope, *, security: RequestSecurityContext) -> str | None:
+        return self._summarize_profile(scope, security, lambda: None)
+
+    def _authorize_profile_owner(self, scope: Scope, security: RequestSecurityContext) -> None:
+        profile_document.profile_id(scope)
+        actor = security.auth.actor
+        if scope != Scope(org=actor.org, space=actor.space, user=actor.user):
+            raise PermissionDeniedError(message="Profile summary requires the owner identity")
+        self._authorize(security, scope, Action.READ, "summary")
+
+    def read_profile_summary(
+        self, scope: Scope, *, security: RequestSecurityContext,
+    ) -> tuple[str, str] | None:
+        if self._profile_summary is None:
+            return None
+        self._authorize_profile_owner(scope, security)
+        result = self._profile_summary.read(scope)
+        self._log(security.auth.actor, "summary", target_scope=scope)
+        return result
+
+    def edit_profile_summary(
+        self, scope: Scope, body: str, revision: str, *, security: RequestSecurityContext,
+    ) -> tuple[str, str]:
+        if self._profile_summary is None:
+            raise ValidationError("Profile summary requires document memory")
+        if not isinstance(body, str) or not isinstance(revision, str):
+            raise ValidationError("Profile summary body and revision must be strings")
+        self._authorize_profile_owner(scope, security)
+        self._authorize(
+            security, scope, Action.WRITE, "summary", space_action=SpaceAction.UPDATE,
+        )
+        self._ensure_space_writable(scope)
+        self._ensure_audit_integrity_healthy()
+        result = self._profile_summary.edit(scope, body, revision)
+        self._log(security.auth.actor, "summary", target_scope=scope)
+        return result
+
+    def _summarize_profile(
+        self, scope: Scope, security: RequestSecurityContext,
+        check_cancelled: Callable[[], None],
+        groups: list[CandidateGroup] | None = None,
+    ) -> str | None:
+        if self._profile_summary is None:
+            return None
+        self._authorize_profile_owner(scope, security)
+        self._authorize(
+            security, scope, Action.WRITE, "summary", space_action=SpaceAction.UPDATE,
+        )
+        self._ensure_space_writable(scope)
+        self._ensure_audit_integrity_healthy()
+
+        def authorized(scopes: list[Scope]) -> list[Scope]:
+            readable = []
+            for bucket in scopes:
+                check_cancelled()
+                try:
+                    self._authorize(security, bucket, Action.READ, "summary")
+                except PermissionDeniedError:
+                    continue
+                readable.append(bucket)
+            return readable
+
+        path = self._profile_summary.summary(scope, authorized, check_cancelled, groups)
+        self._log(security.auth.actor, "summary", target_scope=scope)
+        return path
+
+    def bind_memory_consolidation_readiness(
+        self, ready: Callable[[Scope], Awaitable[bool]],
+    ) -> None:
+        self._dreaming.set_memory_consolidation_readiness(ready)
+
+    def ensure_memory_consolidation(
+        self,
+        scope: Scope,
+        *,
+        security: RequestSecurityContext,
+        interval: int,
+    ) -> str:
+        if interval <= 0:
+            raise ValidationError("Memory consolidation requires a positive interval")
+        mode = EvolveMode.MEMORY_CONSOLIDATE
+        self._dreaming.check_authorization(security, scope, mode)
+        self.restore_dreaming()
+        return self._dreaming.register(
+            scope=scope, mode=mode, channel=Channel.BACKGROUND, candidate=None,
+            interval=interval, security=security, keep_matching_interval=True,
+        )
 
     def ensure_experience_dreaming(
         self,

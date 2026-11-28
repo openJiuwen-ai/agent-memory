@@ -1104,6 +1104,69 @@ class SqliteDocumentShadowIndex(DocumentShadowIndex):
                 conn.execute("ROLLBACK")
                 raise
 
+    def profile_input_high_watermark(self) -> int:
+        """Initialize the commit-ordered profile input index on first use."""
+        with self._lock:
+            conn = self._ensure_conn()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='profile_input'"
+                ).fetchone()
+                if not exists:
+                    conn.execute(
+                        "CREATE TABLE profile_input (sequence INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "unit_id TEXT NOT NULL UNIQUE)"
+                    )
+                    conn.execute(
+                        "INSERT INTO profile_input(unit_id) SELECT unit_id FROM memory_unit "
+                        "ORDER BY rowid"
+                    )
+                    conn.execute(
+                        "CREATE TRIGGER profile_input_insert AFTER INSERT ON memory_unit BEGIN "
+                        "INSERT INTO profile_input(unit_id) VALUES (NEW.unit_id); END"
+                    )
+                    conn.execute(
+                        "CREATE TRIGGER profile_input_delete AFTER DELETE ON memory_unit BEGIN "
+                        "DELETE FROM profile_input WHERE unit_id=OLD.unit_id; END"
+                    )
+                row = conn.execute(
+                    "SELECT seq FROM sqlite_sequence WHERE name='profile_input'"
+                ).fetchone()
+                conn.commit()
+                return int(row[0]) if row else 0
+            except BaseException:
+                conn.rollback()
+                raise
+
+    def profile_input_page(
+        self, scope: Scope, after: int, through: int, limit: int,
+    ) -> list[tuple[int, str, bytes]]:
+        with self._lock:
+            rows = self._ensure_conn().execute(
+                "SELECT p.sequence, m.unit_id, m.unit_json FROM profile_input AS p "
+                "JOIN memory_unit AS m ON m.unit_id=p.unit_id "
+                'WHERE m.org=? AND m.space=? AND m."user"=? AND m.agent=? AND m.session=? '
+                "AND p.sequence>? AND p.sequence<=? ORDER BY p.sequence LIMIT ?",
+                (scope.org, scope.space, scope.user, scope.agent, scope.session,
+                 after, through, limit),
+            ).fetchall()
+        return [(seq, uid, bytes(raw)) for seq, uid, raw in rows]
+
+    def profile_input_owner_scopes(self, scope: Scope, after: int, through: int) -> list[Scope]:
+        with self._lock:
+            rows = self._ensure_conn().execute(
+                "SELECT DISTINCT m.agent, m.session FROM profile_input AS p "
+                "JOIN memory_unit AS m ON m.unit_id=p.unit_id "
+                'WHERE m.org=? AND m.space=? AND m."user"=? '
+                "AND p.sequence>? AND p.sequence<=? ORDER BY m.agent, m.session",
+                (scope.org, scope.space, scope.user, after, through),
+            ).fetchall()
+        return [
+            Scope(org=scope.org, space=scope.space, user=scope.user, agent=agent, session=session)
+            for agent, session in rows
+        ]
+
     def list_units(self, scope: Scope) -> list[tuple[str, bytes]]:
         """全量拉 ``(unit_id, unit_json bytes)``，供 list 接口内存过滤排序分页（F07 §5.3）。
 

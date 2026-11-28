@@ -16,6 +16,7 @@ from jiuwen_memory.common.type_def import (
     Scope,
 )
 from jiuwen_memory.construction import EvolveMode
+from jiuwen_memory.construction.evolver import ProfileSummaryOperation
 from jiuwen_memory.construction.source_update import SourceUpdatePlan
 from jiuwen_memory.control.engine import MemoryEngine
 from jiuwen_memory.control.policy import PolicyManager
@@ -237,6 +238,7 @@ class MemoryCommandService:
         candidate: CandidateSource | dict | None = None,
         buckets: list[Scope] | None = None,
         denied_scopes: list[str] | None = None,
+        summarize_profile: ProfileSummaryOperation | None = None,
     ) -> str | None:
         """提交一次性 EvolveJob（纯执行链）。
 
@@ -250,6 +252,7 @@ class MemoryCommandService:
             candidate=candidate,
             buckets=buckets,
             denied_scopes=denied_scopes,
+            **({"summarize_profile": summarize_profile} if summarize_profile else {}),
         )
 
     async def evolve_v2(self, scope: Scope, options: EvolveTaskOptions) -> str:

@@ -24,20 +24,30 @@ With the offline defaults, the runtime uses in-memory storage.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
+from dataclasses import replace
+from threading import Lock
 from typing import Any
 
 from profiles import Config
 
 from jiuwen_memory.api import (
     AUTO_SECURITY_RUNTIME,
+    COLLECTIVE_MANAGER_ID,
+    AgentMemoryError,
     CloseableSecurityCapability,
+    Credentials,
     HumanViewRuntime,
     MemoryRuntime,
     RequestSecurityContext,
+    Scope,
     ServerRuntime,
     assemble_server_runtime,
+    consolidation_interval,
+    fixed_personal_owner,
+    with_consolidation_scheduler,
 )
 from jiuwen_memory_entry.core.dispatch_request import DispatchRequest
 from jiuwen_memory_entry.core.legacy_request_adapter import build_legacy_dispatch_request
@@ -60,6 +70,42 @@ class Server:
         self.config = config
         self._runtime = runtime
         self.security_runtime = security_runtime
+        self._profile_interval: int | None = None
+        self._profile_owners: set[tuple[str, str, str]] = set()
+        self._profile_lock = Lock()
+
+    @staticmethod
+    def resident_config(config: Config) -> Config:
+        """Select the document scheduler only for long-lived standalone hosts."""
+        memory = config.settings.get("memory_api")
+        if not memory:
+            return config
+        prepared = with_consolidation_scheduler(memory)
+        if prepared is memory:
+            return config
+        return replace(config, settings={**config.settings, "memory_api": prepared})
+
+    def register_profile_owner(self, security: RequestSecurityContext) -> None:
+        if self._profile_interval is None:
+            return
+        actor = security.auth.actor
+        if not actor.org or not actor.user or actor.user == COLLECTIVE_MANAGER_ID:
+            return
+        owner = Scope(org=actor.org, space=actor.space, user=actor.user)
+        key = (owner.org, owner.space, owner.user)
+        with self._profile_lock:
+            if key in self._profile_owners:
+                return
+            try:
+                self.api.ensure_memory_consolidation(
+                    owner, security=security, interval=self._profile_interval,
+                )
+            except AgentMemoryError as exc:
+                logging.getLogger(__name__).warning(
+                    "Profile schedule registration skipped: %s", type(exc).__name__,
+                )
+                return
+            self._profile_owners.add(key)
 
     @property
     def api(self):
@@ -190,6 +236,16 @@ class Server:
         restore = getattr(self.api, "restore_dreaming", None)
         if callable(restore):
             restore()
+        if not callable(getattr(self.api, "ensure_memory_consolidation", None)):
+            return
+        memory = self.config.settings.get("memory_api") or {}
+        self._profile_interval = consolidation_interval(memory)
+        if self._profile_interval is not None:
+            owner = fixed_personal_owner(memory)
+            if owner is not None:
+                security = self._runtime.authenticate(Credentials())
+                if security.auth.actor == owner:
+                    self.register_profile_owner(security)
 
 
 def default_spaces() -> dict[str, Any]:

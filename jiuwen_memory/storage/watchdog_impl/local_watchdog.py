@@ -49,7 +49,7 @@ from jiuwen_memory.common.type_def import (
     Segment,
     Temporal,
 )
-from jiuwen_memory.storage.markdown_impl import experience_blocks
+from jiuwen_memory.storage.markdown_impl import experience_blocks, profile_document
 from jiuwen_memory.storage.markdown_impl._md_blocks import collect_md_blocks
 from jiuwen_memory.storage.markdown_impl._md_path import (
     _FILE_NAME_TO_CLASS,
@@ -302,6 +302,8 @@ class LocalWatchdog(Watchdog):
         md_filename = self._to_rel_path(abs_path)
         if md_filename is None:
             return  # 不在 memory 目录下，忽略
+        if profile_document.is_profile_path(md_filename):
+            return
         if (
             md_filename != experience_blocks.DOCUMENT_PATH
             and md_filename.rsplit("/", 1)[-1] == experience_blocks.FILE_NAME
@@ -524,6 +526,8 @@ class LocalWatchdog(Watchdog):
         """
         if md_filename == experience_blocks.DOCUMENT_PATH:
             return self._sync_experience(md_filename, deleted)
+        if profile_document.is_profile_path(md_filename):
+            return False
         scope = self._scope
         # ① 旧 unit 全集（含 content_hash）——insert 侧「已知块」扣除基准。用全集而非
         #    active：archived/forgotten 行的 md 块仍留在文件里（FORGET/ARCHIVE 只改

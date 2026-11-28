@@ -36,7 +36,7 @@ from jiuwen_memory.common.type_def import (
     candidate_from_dict,
 )
 from jiuwen_memory.construction import EvolveMode, Evolver
-from jiuwen_memory.construction.evolver import EvolverProducer
+from jiuwen_memory.construction.evolver import EvolverProducer, ProfileSummaryOperation
 from jiuwen_memory.control.jobs import JobFactory, JobType
 from jiuwen_memory.control.jobs_impl.candidate_resolver import (
     CandidateResolver,
@@ -296,6 +296,7 @@ async def submit_evolve(
     denied_scopes: list[str] | None = None,
     evolver_for_unit: Callable[[MemoryUnit], Evolver | None] | None = None,
     mode_evolvers: dict[EvolveMode, Evolver | ModeEvolverBinding] | None = None,
+    summarize_profile: ProfileSummaryOperation | None = None,
 ) -> str | None:
     """立即执行一次演进（唯一执行链条）：candidate → resolver → EvolveJob → submit。
 
@@ -319,14 +320,12 @@ async def submit_evolve(
         evolver_for_unit = None
     if mode is EvolveMode.EXPERIENCE_CONSOLIDATE:
         candidate = _experience_candidate(candidate)
-    resolver = build_resolver(
-        scope,
-        candidate,
-        kv=kv,
-        retriever=retriever,
-        buckets=buckets,
-        denied_scopes=denied_scopes,
-    )
+    resolver = None
+    if mode is not EvolveMode.MEMORY_CONSOLIDATE or candidate is not None:
+        resolver = build_resolver(
+            scope, candidate, kv=kv, retriever=retriever,
+            buckets=buckets, denied_scopes=denied_scopes,
+        )
     job = job_factory.get_job(
         JobType.EVOLVE,
         scope=scope,
@@ -334,5 +333,6 @@ async def submit_evolve(
         evolver=evolver,
         resolver=resolver,
         evolver_for_unit=evolver_for_unit,
+        **({"summarize_profile": summarize_profile} if summarize_profile else {}),
     )
     return await scheduler.submit(job, channel)

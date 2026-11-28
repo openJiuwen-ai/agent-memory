@@ -10,12 +10,13 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
 from jiuwen_memory.common.errors import AgentMemoryError, UnsupportedCapabilityError
 from jiuwen_memory.common.factory.factory import Factory
-from jiuwen_memory.common.type_def import HierarchyKind, MemoryUnit, Modality
+from jiuwen_memory.common.type_def import CandidateGroup, HierarchyKind, MemoryUnit, Modality
 
 from .base import ConstructionOperator
 from .hierarchy_composer import (
@@ -24,6 +25,8 @@ from .hierarchy_composer import (
     HierarchyComposeResult,
     HierarchyIncrementalContext,
 )
+
+ProfileSummaryOperation = Callable[[Callable[[], None], list[CandidateGroup] | None], str | None]
 
 
 class EvolveMode(str, Enum):
@@ -38,6 +41,7 @@ class EvolveMode(str, Enum):
     ASSOCIATE = "associate"
     CONSOLIDATE = "consolidate"
     EXPERIENCE_CONSOLIDATE = "experience_consolidate"
+    MEMORY_CONSOLIDATE = "memory_consolidate"
     FORGET = "forget"
     HIERARCHY = "hierarchy"
     CONFLICT_CONSOLIDATE = "conflict_consolidate"
@@ -52,6 +56,8 @@ class EvolveRequest:
     metadata: dict[str, str] = field(default_factory=dict)
     hierarchy_options: HierarchyComposeOptions | None = None
     hierarchy_incremental: HierarchyIncrementalContext | None = None
+    # Trusted, owner-scoped document operation supplied for this execution only.
+    summarize_profile: Callable[[], str | None] | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -76,6 +82,7 @@ class EvolveResult:
     created_units: list[MemoryUnit] = field(default_factory=list)
     duplicate_ids: list[str] = field(default_factory=list)
     hierarchy_result: HierarchyComposeResult | None = None
+    profile_path: str | None = None
 
 
 class ExtractNotCommittedError(AgentMemoryError):

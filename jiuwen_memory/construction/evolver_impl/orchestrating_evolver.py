@@ -447,12 +447,16 @@ class OrchestratingEvolver(Evolver):
         units: list[MemoryUnit] | EvolveRequest,
         mode: EvolveMode | None = None,
     ) -> EvolveResult:
+        summarize_profile = None
         if isinstance(units, EvolveRequest):
             request = units
             if mode is not None:
                 raise ValidationError("EvolveRequest 不可同时传入 mode")
             if not isinstance(request.mode, EvolveMode):
                 raise ValidationError("EvolveRequest.mode 必须是 EvolveMode")
+            summarize_profile = request.summarize_profile
+            if summarize_profile is not None and request.mode is not EvolveMode.MEMORY_CONSOLIDATE:
+                raise ValidationError("仅 MEMORY_CONSOLIDATE 接受 summarize_profile")
             if request.mode is EvolveMode.HIERARCHY:
                 return self._evolve_hierarchy(request)
             if request.hierarchy_options is not None or request.hierarchy_incremental is not None:
@@ -462,6 +466,11 @@ class OrchestratingEvolver(Evolver):
             units, mode = request.units, request.mode
         if not isinstance(mode, EvolveMode) or mode is EvolveMode.HIERARCHY:
             raise ValidationError("HIERARCHY 必须使用含有界区间的 EvolveRequest")
+        if mode is EvolveMode.MEMORY_CONSOLIDATE:
+            self._consolidate_memory(units)
+            # One incremental document per owner, including when this request has no units.
+            path = summarize_profile() if summarize_profile is not None else None
+            return EvolveResult(profile_path=path)
         eligible_units = []
         for unit in units:
             if unit.system_metadata.get("continuity_kind") == "relation":
@@ -518,6 +527,10 @@ class OrchestratingEvolver(Evolver):
         if self._hierarchy_composer is None:
             return None
         return self._hierarchy_composer.get_profile(kind)
+
+    @staticmethod
+    def _consolidate_memory(units: list[MemoryUnit]) -> None:
+        """预留普通记忆整理步骤，当前不修改输入或存储。"""
 
     def _evolve_hierarchy(self, request: EvolveRequest) -> EvolveResult:
         """只委托 Composer，不进入抽取、去重或内容合并。"""

@@ -86,7 +86,7 @@ def _build_server():
     if mode == "dev":
         config = with_local_dev_security(config)
         logger.warning("development authentication is enabled; do not use in production")
-    return Server.build(config)
+    return Server.build(Server.resident_config(config))
 
 
 # 认证、绑定策略、资源保护始终从同一个 Runtime 取得。
@@ -159,7 +159,9 @@ def _invoke_blocking(verb: str, payload: dict, *, context: Any = None):
             request_id=request_id,
         ) as security:
             # Agent tool surface: 暴露完整契约，含 HTTP/CLI 隐藏的 operation_id。
-            return invoke_api(_SRV.api, verb, payload, security, allow_internal=True)
+            result = invoke_api(_SRV.api, verb, payload, security, allow_internal=True)
+            _SRV.register_profile_owner(security)
+            return result
     except AgentMemoryError as api_error:
         raise RuntimeError(f"{type(api_error).__name__}: {api_error}") from api_error
 

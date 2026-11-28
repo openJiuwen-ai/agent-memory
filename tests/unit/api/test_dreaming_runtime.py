@@ -18,6 +18,7 @@ from jiuwen_memory.common.security import internal_context
 from jiuwen_memory.common.type_def import CandidateGroup, CandidateOutcome, FanOutCandidate, Scope
 from jiuwen_memory.config import Config
 from jiuwen_memory.construction import EvolveMode, EvolveResult
+from jiuwen_memory.construction.evolver import EvolveRequest
 from jiuwen_memory.control.jobs import Job
 from jiuwen_memory.control.jobs_impl.evolve_job import EvolveJob
 from jiuwen_memory.control.types import Channel, JobInfo, JobStatus
@@ -97,6 +98,32 @@ def _pending_driver(scheduler, parent_id):
     return asyncio.run_coroutine_threadsafe(snapshot(), scheduler._runner.ensure_loop()).result(
         timeout=5
     )
+
+
+def test_memory_consolidation_without_document_memory_skips_profile(runtime):
+    security = internal_context(ScopedAuthenticator(SCOPE))
+    assert runtime.api.summary(SCOPE, security=security) is None
+    job_id = runtime.api.evolve(SCOPE, EvolveMode.MEMORY_CONSOLIDATE, security=security)
+    _wait_for(lambda: runtime.scheduler.status(job_id).status == JobStatus.SUCCEEDED)
+    assert "profile_path" not in runtime.scheduler.status(job_id).detail
+
+
+def test_direct_memory_consolidation_dispatches_once_for_the_owner(runtime, monkeypatch):
+    evolver = runtime.api._engine._evolver
+    calls = []
+    monkeypatch.setattr(evolver, "_consolidate_memory", lambda units: calls.append("consolidate"))
+
+    def summarize():
+        calls.append(SCOPE)
+        return "memory/dreaming/user_profile.md"
+
+    mode = EvolveMode.MEMORY_CONSOLIDATE
+    result = evolver.evolve(EvolveRequest(units=[], mode=mode, summarize_profile=summarize))
+    assert result.profile_path == "memory/dreaming/user_profile.md"
+    assert calls == ["consolidate", SCOPE]
+    calls.clear()
+    assert evolver.evolve([], mode).profile_path is None
+    assert calls == ["consolidate"]
 
 
 def test_real_tick_executes_evolver_and_returns_string_job_id(runtime):

@@ -209,12 +209,13 @@ class _LocalHttpServer(HttpServer):
     def _request_id(self) -> str:
         return uuid.uuid4().hex
 
+    @contextmanager
     def _security(self, handler, request_id: str):
         runtime = self.security_runtime
         if runtime is None:
             raise AuthenticationError("authentication unavailable")
         peer = handler.client_address[0] if handler.client_address else ""
-        return authenticated(
+        with authenticated(
             runtime.authenticator,
             credentials_from_headers(handler.headers, peer_address=peer),
             audit=getattr(runtime, "audit", None) or self.audit,
@@ -222,7 +223,9 @@ class _LocalHttpServer(HttpServer):
             workload_guard=getattr(runtime, "workload_guard", None),
             surface=Surface.HTTP,
             request_id=request_id,
-        )
+        ) as security:
+            yield security
+            self.register_profile_owner(security)
 
     def _json_body(self, handler) -> dict | None:
         request_id = self._request_id()
@@ -1424,7 +1427,7 @@ class LocalService:
             )
         settings = load_layer(str(self.home.service_config))
         self._settings = settings
-        config = load_config([settings])
+        config = HttpServer.resident_config(load_config([settings]))
         from jiuwen_memory.api import assemble_server_runtime
 
         runtime = assemble_server_runtime(config=config.settings.get("memory_api"))

@@ -168,11 +168,12 @@ def test_the_table_has_no_entry_that_is_never_used() -> None:
     assert not unused, f"映射表中的入口名无调用点: {sorted(unused)}"
 
 
-def test_only_batch_entries_close_the_own_actions_set() -> None:
+def test_batch_and_profile_entries_close_the_own_actions_set() -> None:
     """「本人所写」附加集合只对目标可归属到单一作者的入口开放。
 
     演进与两个任务入口作用于整个空间、条目作者各不相同，且没有第二段鉴权来收边界；
     对它们并入附加集合等于按最宽的一条放行整批。
     """
     closed = {name for name, rule in ENTRY_RULES.items() if not rule.own_actions_apply}
-    assert closed == {"evolve", "job_status", "job_cancel"}
+    # Summary reads across source entries with potentially different authors.
+    assert closed == {"evolve", "job_status", "job_cancel", "summary"}

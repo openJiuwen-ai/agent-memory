@@ -66,6 +66,7 @@ from jiuwen_memory.storage.domain_store import DomainStore, DomainStoreProducer
 from jiuwen_memory.storage.kv import load_memory_unit
 from jiuwen_memory.storage.kv_impl.memory_list import list_memory_entries
 from jiuwen_memory.storage.markdown import MarkdownStore
+from jiuwen_memory.storage.markdown_impl import profile_document
 from jiuwen_memory.storage.markdown_impl._md_blocks import (
     collect_blocks_from_text,
     content_hash,
@@ -671,6 +672,69 @@ class CompositeDomainStore(DomainStore):
         return RankedStorageResult(candidates=ranked, errors=materialized.errors)
 
     # -- md 文件级接口（read_md_file / edit_md_file，F08 §D1/§D4）----------------- #
+
+    def profile_input_window(
+        self, scope: Scope, start: int,
+    ) -> tuple[int, list[Scope]]:
+        """Capture a committed input window before authorizing its scopes."""
+        self._require_profile_documents()
+        shadow = self._raw_shadow_index()
+        upper = shadow.profile_input_high_watermark()
+        return upper, shadow.profile_input_owner_scopes(scope, start, upper)
+
+    def profile_inputs(
+        self, scope: Scope, buckets: list[Scope], start: int, upper: int,
+    ) -> list[MemoryUnit]:
+        self._require_profile_documents()
+        shadow = self._raw_shadow_index()
+        filters = profile_document.candidates(scope).child.filters
+        owner = (scope.org, scope.space, scope.user)
+        selected: list[tuple[int, MemoryUnit]] = []
+        for bucket in buckets:
+            if (bucket.org, bucket.space, bucket.user) != owner:
+                raise ValidationError("Profile input bucket crosses the owner scope")
+            selected.extend(self._profile_candidates_in_bucket(
+                shadow, bucket, start, upper, filters,
+            ))
+        return [unit for _, unit in sorted(selected, key=lambda entry: entry[0])]
+
+    @staticmethod
+    def _profile_candidates_in_bucket(shadow, bucket, start, upper, filters):
+        cursor = start
+        while cursor < upper:
+            page = shadow.profile_input_page(bucket, cursor, upper, 256)
+            if not page:
+                break
+            for sequence, identifier, raw in page:
+                unit = load_memory_unit(raw, scope=bucket, key=identifier)
+                if unit is None:
+                    raise ValidationError("Could not read a profile input")
+                if profile_document.eligible(unit, filters):
+                    yield sequence, unit
+            cursor = page[-1][0]
+
+    def profile_snapshot(self, scope: Scope) -> str | None:
+        self._require_profile_documents()
+        md = self._raw_markdown()
+        shadow = self._raw_shadow_index()
+        with document_operation(md.root, shadow.write_lock_key, writing=True):
+            return profile_document.read_or_move_legacy(md.root, scope)
+
+    def publish_profile(self, scope: Scope, text: str, previous_text: str | None) -> bool:
+        """Atomically publish Markdown and its cursor if the user's file has not changed."""
+        self._require_profile_documents()
+        md = self._raw_markdown()
+        shadow = self._raw_shadow_index()
+        path = profile_document.absolute_path(md.root, profile_document.relative_path(scope))
+        with document_operation(md.root, shadow.write_lock_key, writing=True):
+            if profile_document.read(path) != previous_text:
+                return False
+            profile_document.replace_text(path, text)
+        return True
+
+    def _require_profile_documents(self) -> None:
+        if not self.should_write_document():
+            raise ValidationError("User-profile Dreaming requires ordinary document memory")
 
     def read_md_file(
         self,

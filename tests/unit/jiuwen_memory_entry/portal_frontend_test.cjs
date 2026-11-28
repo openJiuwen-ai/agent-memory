@@ -68,12 +68,14 @@ function memoryStorage() {
 function setup(handler, listHandler, {
   bootstrap, hash=bootstrap?'#access=grant':'', onHeaders,
   history={state:null,replaceState(state){this.state=state;}},
+  profileHandler=async () => response({available:false}),
   storage=memoryStorage(),
 } = {}) {
   const copied=[];
   const nodes = new Map();
   const get = id => { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); };
   for (const id of ['source', 'search-source', 'agent', 'project', 'tier', 'memory-class']) get(id).value = '*';
+  get('profile-summary-form').hidden = true;
   get('lifecycle').value = 'active';
   for (const [tag, id] of html.matchAll(/<[^>]+ id="([^"]+)"[^>]*>/g)) {
     for (const [, marker, key] of tag.matchAll(/ (data-i18n(?:-label|-placeholder)?)="(\w+)"/g)) {
@@ -110,6 +112,9 @@ function setup(handler, listHandler, {
       assert.match(url, /^\/v1\//);
       onHeaders?.(args.headers);
       const action = url.split('/').pop();
+      if (action.startsWith('profile-summary')) {
+        return profileHandler(action, JSON.parse(args.body));
+      }
       if (action === 'list' && listHandler) {
         const {offset,limit,extensions}=JSON.parse(args.body);
         return listHandler({offset,limit,...extensions.personal});
@@ -805,6 +810,40 @@ async function sharedPageManagesBothInstances(){
   assert.equal(reloaded.run('fields[0].base'),0.7);
   assert.ok(tokens.length&&tokens.every(token=>token==='tab-token'));
 }
+async function profileSummaryDisplaysAndEditsWithoutLosingConflictingDraft() {
+  let body = '## 用户偏好\n- **先给结论**\n<img src=x onerror=alert(1)>';
+  let revision = 'original';
+  const page = setup(() => assert.fail('unexpected API'), undefined, {
+    profileHandler: async (action, payload) => {
+      if (action === 'profile-summary-edit') {
+        if (payload.revision !== revision) return response({error:'ConflictError'}, false, 409);
+        body = payload.body;
+        revision = 'saved';
+      }
+      return response({available:true, body, revision});
+    },
+  });
+  await page.run('loadOverview()');
+  assert.match(page.get('profile-summary-body').textContent, /用户偏好.*先给结论.*<img/);
+  assert.deepEqual(page.get('profile-summary-body').children.map(child => child.tag),
+    ['h4', 'ul', 'div']);
+  page.get('edit-profile-summary').onclick();
+  assert.equal(page.get('profile-summary-input').value, body);
+  page.get('profile-summary-input').value = '## 用户偏好\n- 回答用中文';
+  await page.get('profile-summary-form').onsubmit({preventDefault() {}});
+  assert.match(page.get('profile-summary-body').textContent, /回答用中文/);
+  assert.equal(page.get('profile-summary-form').hidden, true);
+  page.get('edit-profile-summary').onclick();
+  page.get('profile-summary-input').value = '我的未保存修改';
+  body = 'Dreaming 的更新';
+  revision = 'dreaming';
+  await page.get('profile-summary-form').onsubmit({preventDefault() {}});
+  assert.match(page.get('profile-summary-status').textContent, /草稿仍在编辑框中/);
+  assert.equal(page.get('profile-summary-input').value, '我的未保存修改');
+  await page.get('cancel-profile-summary').onclick();
+  assert.match(page.get('profile-summary-body').textContent, /Dreaming 的更新/);
+}
+
 (async () => {
   await languageSwitchKeepsFiltersAndResults();
   await collectiveClassLabelsUseRawFilterValues();
@@ -814,6 +853,7 @@ async function sharedPageManagesBothInstances(){
   await filterBadgeCountsAdditionalPanelConditions();
   await unifiedSearchKeepsScopesSeparate();
   await topicShortcutsUseExistingFilters();
+  await profileSummaryDisplaysAndEditsWithoutLosingConflictingDraft();
   await overviewCountsAndFailure();
   await freshCopy();
   await partialBatchForget();
