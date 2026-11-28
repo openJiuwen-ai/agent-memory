@@ -84,6 +84,7 @@ def test_public_api_does_not_export_kernel_or_impl() -> None:
 
     required_exports = (
         "MemoryAPI",
+        "LockTimeoutError",
         "assemble",
         "assemble_runtime",
         "ServerRuntime",

@@ -276,7 +276,7 @@ class WorkMemoryScene:
             system_metadata=system_metadata,
         )
         if data is None:
-            return json.dumps({"error": "AgentMemory add failed (server unavailable)."})
+            return json.dumps({"error": "Memory write failed; check the service logs for details."})
         logger.info(
             "[AgentMemoryMemoryProvider] agent_memory_conclude stored=%s "
             "tags=%s project=%s",
@@ -309,7 +309,7 @@ class WorkMemoryScene:
             },
         )
         if data is None:
-            return json.dumps({"error": "AgentMemory add failed (server unavailable)."})
+            return json.dumps({"error": "Memory write failed; check the service logs for details."})
         logger.info(
             "[AgentMemoryMemoryProvider] agent_memory_procedural summarized=%s item_id=%s",
             redact_for_log(content),

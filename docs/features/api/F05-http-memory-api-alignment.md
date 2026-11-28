@@ -191,7 +191,7 @@ legacy handler 的入口；旧远程客户端不能因此继续使用已升级�
 - 旧 HTTP URL、CLI 命令别名与旧返回 envelope 不保留兼容；调用方需要一次性迁移。
 - 本仓库 `jiuwen_memory_adapter/jiuwenswarm/agent_memory_provider.py` 的远程客户端已迁移到
   当前 HTTP 契约：`POST /v1/<verb>`、嵌套 `scope`、`search` 读 `items`、`evolve` 返回裸 job_id。
-  其独立的读写超时策略使用 `_READ_TIMEOUT=30` / `_WRITE_TIMEOUT=120`，
-  `_build_client` 尚无超时装配配置通道；实际影响需按 `httpx` 的 per-phase timeout
-  语义单独评估，本次未调整。
-  SDK 进程内模式不经过 HTTP，但仍使用过渡安全上下文；本次不修改该 adapter。
+  其独立的读写超时策略使用 `_READ_TIMEOUT=30` / `_WRITE_TIMEOUT=300`，
+  `_build_client` 尚无超时装配配置通道；等待按 `httpx` 的 per-phase timeout
+  语义生效，宿主外层调用预算仍可能更早触发。
+  SDK 进程内模式不经过 HTTP，不受这组 HTTP 读写超时配置影响。
