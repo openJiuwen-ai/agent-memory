@@ -149,3 +149,7 @@ read-only fields and shows a message when configuration is unavailable.
 | Memories are visible and model settings are read-only | Have the host check that configuration management is enabled, the configuration store is writable, and the identity has permission to edit settings. HTTP enables configuration management automatically only for a declared fixed personal identity. A host can also configure its own storage and authorization. |
 
 For more integration options, see the [Portal design](../../features/F05-personal-memory-portal.md#6-启动与打开页面).
+
+## Browse experience memory
+
+Pass `experience_space` in the JSON body of `POST /portal/api/launch` or as a keyword to the SDK Portal handle’s `launch_url`. Open the link and choose Memory Library → Experience Memory to search, filter by category and inspect read-only details. Links without a bound space retain the personal memory view.

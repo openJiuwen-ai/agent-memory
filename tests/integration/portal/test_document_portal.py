@@ -134,6 +134,103 @@ class Browser:
             return response.code, json.load(response)
 
 
+@requires_shared_portal
+@pytest.mark.parametrize("write_document", [False, True])
+def test_sdk_portal_reads_experiences_from_the_provider_space(tmp_path, write_document):
+    from jiuwen_memory.api import PermissionDeniedError
+    from jiuwen_memory.common.experience import ReproductionEvent, UtilityStore
+    from jiuwen_memory.common.type_def import MemoryTier, MemoryUnit, Segment
+    from tests.support.whitebox import private, private_method
+
+    auth = build_dev_authenticator(
+        identities={"test": {"actor": {"org": "local", "user": "alice"}, "role": "root"}},
+    )
+
+    def security():
+        return new_request_context(
+            auth.authenticate(Credentials(api_key="test")), surface=Surface.SDK,
+        )
+
+    async def run():
+        scope = Scope(org="local", space="lessons")
+        options = {"security_provider": security, "experience_space": scope.space}
+        if write_document:
+            config = document_config(tmp_path)
+            config["shadow_index"]["default"]["params"]["tokenizer"] = "default"
+            options["config_dict"] = config
+        else:
+            config_path = tmp_path / "config.json"
+            config_path.write_text(json.dumps({"engine": {"default": "cloud"}}), encoding="utf-8")
+            options["config_path"] = str(config_path)
+        provider = AgentMemoryMemoryProvider(**options)
+        try:
+            await provider.initialize(user_id="alice", scope_id=scope.org)
+            api = provider.runtime.api
+            engine = private(api, "_engine")
+            if write_document:
+                store = private_method(engine, "_experience_domain")()
+            else:
+                store = private(engine, "_domain_store")
+            unit = MemoryUnit(
+                id="lesson", scope=scope, tier=MemoryTier.PROCEDURAL,
+                segments=[Segment(content="Validate the report before exporting")],
+                system_metadata={"memory_type": "experience", "category": "reports"},
+            )
+            await asyncio.to_thread(store.add, scope, [unit])
+            utility = UtilityStore(engine.kv)
+            for space, user, task in (
+                ("work", "alice", "visible-task"),
+                ("restricted", "alice", "restricted-task"),
+                ("work", "bob", "other-user-task"),
+            ):
+                event = ReproductionEvent(
+                    source_scope=[scope.org, space, user, "runner", f"{task}-session"],
+                    trajectory_id=task,
+                    author="a" * 64,
+                )
+                recorded = utility.write_reproduction_event(
+                    scope, unit.id, event.author, task, 1, event,
+                )
+                assert recorded, f"expected a new reproduction event for {task}"
+            authorize = private_method(api, "_authorize")
+            source_targets = []
+
+            def authorize_source(security, target, action, entry, *args, **kwargs):
+                if entry == "experience_source":
+                    source_targets.append(target)
+                    if target.space == "restricted":
+                        raise PermissionDeniedError("read")
+                return authorize(security, target, action, entry, *args, **kwargs)
+
+            link = await provider.open_portal()
+            assert link, provider.portal_status
+            browser = await asyncio.to_thread(Browser, link)
+            assert browser.shared is write_document
+            status, page = await asyncio.to_thread(browser.call, "experience_list", {})
+            assert status == 200 and page["available"]
+            assert [item["id"] for item in page["items"]] == [unit.id]
+            target = {"unit_id": unit.id}
+            with patch.object(api, "_authorize", side_effect=authorize_source):
+                status, detail = await asyncio.to_thread(browser.call, "experience_get", target)
+            assert status == 200 and detail["content"] == unit.content
+            assert [(item["task"], item["session"]) for item in detail["sources"]] == [
+                ("visible-task", "visible-task-session"),
+            ]
+            assert {(target.space, target.user) for target in source_targets} == {
+                ("work", "alice"), ("restricted", "alice"),
+            }
+            status, feedback = await asyncio.to_thread(
+                browser.call, "experience_rate", {**target, "choice": "helpful"},
+            )
+            assert status == 200 and feedback["mine"] == "helpful"
+            status, detail = await asyncio.to_thread(browser.call, "experience_get", target)
+            assert status == 200 and detail["feedback"] == feedback
+        finally:
+            await provider.shutdown()
+
+    asyncio.run(run())
+
+
 def _shared_portal_worker(pipe, start, root, instance_id, port, user, registry=None):
     from jiuwen_memory_entry.portal import shared
 

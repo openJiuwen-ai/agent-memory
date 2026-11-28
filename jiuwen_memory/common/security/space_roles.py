@@ -212,6 +212,7 @@ ENTRY_RULES: dict[str, EntryRule] = {
     "search": EntryRule(SpaceAxis.CONTENT, SpaceAction.READ),
     "list": EntryRule(SpaceAxis.CONTENT, SpaceAction.READ),
     "get": EntryRule(SpaceAxis.CONTENT, SpaceAction.READ),
+    "experience_source": EntryRule(SpaceAxis.CONTENT, SpaceAction.READ),
     "inspect": EntryRule(SpaceAxis.CONTENT, SpaceAction.READ),
     "trace": EntryRule(SpaceAxis.CONTENT, SpaceAction.READ),
     # 取内容轴读动作、又不带条目信息，因此第 7 步对它另设排除：落第 10 步的

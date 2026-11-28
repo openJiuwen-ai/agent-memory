@@ -100,3 +100,7 @@ curl -fsS "${portal_base_url}/portal/api/launch" \
 | 能读记忆，模型设置却不可编辑 | 由宿主检查是否启用了配置管理、配置库位置是否可写，以及当前身份是否有配置权限。HTTP 自动启用配置管理需要声明固定个人身份，宿主也可以显式装配配置存储和授权。 |
 
 更多接入选项见 [Portal 设计说明](../../features/F05-personal-memory-portal.md#6-启动与打开页面)。
+
+## 查看空间中的经验记忆
+
+在 HTTP 签发接口 `POST /portal/api/launch` 的 JSON 请求体中传入 `{"experience_space":"你的空间名"}`，或在 SDK Portal 的 `launch_url` 中传入同名关键字参数。打开返回的链接，选择「记忆仓库 → 经验记忆」，可搜索正文、按类别筛选，点击条目查看适用条件、所需能力和操作建议。普通链接沿用个人记忆范围。

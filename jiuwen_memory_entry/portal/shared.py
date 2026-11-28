@@ -29,6 +29,10 @@ from jiuwen_memory_entry.core.api_contract import CONFIG_VERBS
 from jiuwen_memory_entry.local.locks import acquire_file_lock as _acquire_file_lock
 from jiuwen_memory_entry.local.locks import file_lock as _lock_file
 from jiuwen_memory_entry.portal.hosting import _PortalServer, request_error, runtime_request
+from jiuwen_memory_entry.portal.requests import (
+    EXPERIENCE_VERBS,
+    portal_experience_space,
+)
 
 if os.name == "nt":
     from jiuwen_memory_entry.portal import _windows_ipc as _ipc
@@ -123,6 +127,7 @@ class _BrowserAccess:
     registration: str
     write_scope: dict | None
     provider_bound: bool
+    experience_space: str | None = None
 
 
 def _identity(auth, *, bind_credential=True):
@@ -307,6 +312,7 @@ class SharedPortalHandle:
                 return 200, runtime_request(
                     runtime, auth, message["verb"], message["payload"],
                     Scope(**scope) if scope else None,
+                    experience_space=message.get("experience_space"),
                 )
             except Exception as error:
                 return request_error(error)
@@ -350,7 +356,7 @@ class SharedPortalHandle:
             return None
         return address if status == 200 else None
 
-    def launch_url(self, write_scope=None):
+    def launch_url(self, write_scope=None, *, experience_space=None):
         with self._lock:
             if self.closed:
                 return None
@@ -362,12 +368,16 @@ class SharedPortalHandle:
                 self._register(identity=identity)
             payload = asdict(write_scope) if write_scope is not None else None
             try:
-                status, link = self._control("launch", write_scope=payload)
+                status, link = self._control(
+                    "launch", write_scope=payload, experience_space=experience_space,
+                )
             except ConnectionError:
                 status = 404
             if status == 404:
                 self._register()
-                status, link = self._control("launch", write_scope=payload)
+                status, link = self._control(
+                    "launch", write_scope=payload, experience_space=experience_space,
+                )
             if status != 200:
                 raise BackendError("could not open the shared Portal")
             self.address = link.partition("#")[0].partition("?")[0]
@@ -399,6 +409,9 @@ class _Registry:
             self.register(info, info["instance_id"], endpoint)
 
     def dispatch(self, verb, payload, access: _BrowserAccess, _peer):
+        provider_bound = access.provider_bound or (
+            access.experience_space is not None and verb in EXPERIENCE_VERBS
+        )
         with self.lock:
             opening_instance = self.registrations.get(access.registration)
             candidates = [
@@ -409,7 +422,7 @@ class _Registry:
             if opening_instance.identity != access.identity:
                 return _OFFLINE
             candidates.insert(0, opening_instance)
-        elif access.provider_bound:
+        elif provider_bound:
             return _OFFLINE
         else:
             candidates.sort(key=lambda source: source.instance_id != access.preferred_instance)
@@ -420,8 +433,7 @@ class _Registry:
             for source in candidates:
                 eligible.setdefault(source.instance_id, []).append(source)
             return self.configuration(verb, payload, access, eligible, opening_instance)
-        if access.provider_bound:
-            # An SDK continuity session must never switch to another Provider.
+        if provider_bound:
             candidates = candidates[:1]
         for instance in candidates:
             try:
@@ -500,6 +512,7 @@ class _Registry:
         return self._call_source(instance, access.identity, {
             "verb": verb, "payload": payload,
             "write_scope": access.write_scope,
+            "experience_space": access.experience_space,
         }, timeout=300)
 
     def _accepts_identity(self, source, identity, checked_endpoint):
@@ -547,11 +560,16 @@ class _Registry:
                 return 200, None
             if action != "launch" or instance.identity is None:
                 return 404, None
+            experience_space = message.get("experience_space")
+            if experience_space is not None:
+                experience_space = portal_experience_space(experience_space)
             access = _BrowserAccess(
                 instance.identity, instance_id, registration, message.get("write_scope"),
                 provider_bound=instance.runtime_key is not None,
+                experience_space=experience_space,
             )
-            address, _, fragment = self.portal.launch_url(access).partition("#")
+            link = self.portal.launch_url(access, page_bound=experience_space is not None)
+            address, _, fragment = link.partition("#")
         # A new document navigation also replaces the old session when an iframe is reused.
         return 200, f"{address}?open={uuid4().hex}#{fragment}"
 
